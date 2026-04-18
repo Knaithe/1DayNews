@@ -1,0 +1,648 @@
+#!/usr/bin/env python3
+"""
+0day/1day RCE vulnerability intelligence aggregator.
+
+Flow:
+    RSS feeds + GitHub CVE repo search
+      -> dedup by CVE / content hash
+      -> keyword score (RCE pattern + asset/CVE hit, with exclude list)
+      -> Telegram push
+
+Run:
+    pip install -r requirements.txt
+    export TG_BOT_TOKEN=xxx TG_CHAT_ID=xxx
+    python vuln_monitor.py
+
+First run: leave TG_* unset to "dry run" and let the cache warm up, so you
+don't get spammed by historical items on the real run.
+"""
+import os
+import re
+import sys
+import json
+import time
+import hashlib
+import logging
+from logging.handlers import RotatingFileHandler
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import feedparser
+import requests
+
+
+# ================== CONFIG ==================
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
+TG_CHAT_ID   = os.getenv("TG_CHAT_ID", "")
+GH_TOKEN     = os.getenv("GH_TOKEN", "")
+PROXY        = os.getenv("HTTPS_PROXY", "")
+
+SCRIPT_DIR     = Path(__file__).resolve().parent
+CACHE_FILE     = SCRIPT_DIR / "vuln_cache.json"
+LOCK_FILE      = SCRIPT_DIR / "vuln_monitor.lock"
+ALERT_STATE    = SCRIPT_DIR / "vuln_alert_state.json"
+LOG_FILE       = SCRIPT_DIR / "vuln_monitor.log"
+CACHE_TTL_DAYS = 60
+ITEM_PER_FEED  = 50
+PUSH_SLEEP_SEC = 1.5
+REQUEST_TIMEOUT = 20
+LOG_MAX_BYTES  = 5 * 1024 * 1024
+LOG_BACKUPS    = 5
+ALERT_COOLDOWN_SEC = 3600
+
+RSS_FEEDS = [
+    # ---- vendor PSIRT ----
+    # Citrix, F5, Assetnote intentionally omitted: no working RSS as of 2026.
+    #   Citrix — Salesforce SPA (covered by watchTowr + KEV JSON + Sploitus below).
+    #   F5     — my.f5.com SPA (covered by Sploitus below).
+    #   Assetnote — dropped RSS after Searchlight acquisition.
+    ("Fortinet",    "https://www.fortiguard.com/rss/ir.xml"),
+    ("PaloAlto",    "https://security.paloaltonetworks.com/rss.xml"),
+    ("Cisco",       "https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml"),
+    ("MSRC",        "https://api.msrc.microsoft.com/update-guide/rss"),
+    ("VMware",      "https://blogs.vmware.com/security/feed"),
+    # ---- Sploitus keyword feeds (fill PSIRT gaps with exploit/PoC signal) ----
+    ("Sploitus_Citrix",   "https://sploitus.com/rss?query=citrix"),
+    ("Sploitus_Ivanti",   "https://sploitus.com/rss?query=ivanti"),
+    ("Sploitus_F5",       "https://sploitus.com/rss?query=f5+big-ip"),
+    # ---- research teams ----
+    ("watchTowr",   "https://labs.watchtowr.com/rss/"),
+    ("ZDI",         "https://www.zerodayinitiative.com/rss/published/"),
+    ("ProjectDisc", "https://blog.projectdiscovery.io/rss/"),
+    ("Horizon3",    "https://www.horizon3.ai/feed/"),
+    ("Rapid7",      "https://www.rapid7.com/blog/rss/"),
+    ("GreyNoise",   "https://www.greynoise.io/blog/rss.xml"),
+]
+
+# CISA KEV uses a JSON endpoint (1500+ entries with structured fields, not RSS).
+KEV_JSON_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+
+
+# ================== RCE PATTERNS ==================
+RCE_PATTERNS = [
+    # naming
+    r"\bRCE\b", r"remote code execution", r"arbitrary (code|command) execution",
+    r"code injection", r"command injection", r"OS command injection",
+    # auth prerequisite
+    r"unauthenticated", r"pre[- ]?auth(entication)?", r"\bunauth\b",
+    r"no authentication (required|needed)", r"anonymous\s+(access|rce|exec)",
+    # deserialization / injection
+    r"deserializ(ation|ing)", r"insecure deserialization", r"unsafe deserialization",
+    r"\bSSTI\b", r"server[- ]side template injection",
+    r"\bSSRF\b.*(RCE|code exec|chain|gadget)",
+    r"\bXXE\b.*(RCE|exec|chain)",
+    r"SQL injection.*(RCE|xp_cmdshell|OS cmd|command|exec)",
+    r"prototype pollution.*(RCE|exec|gadget|chain)",
+    r"\bJNDI\b", r"\bOGNL\b",
+    # memory corruption
+    r"memory corruption", r"stack[- ]?(buffer )?overflow", r"heap[- ]?overflow",
+    r"use[- ]after[- ]free\b", r"\bUAF\b", r"double free",
+    r"type confusion", r"out[- ]of[- ]bounds? (read|write)", r"\bOOB\b",
+    r"integer overflow.*(exec|RCE|oob)",
+    r"race condition.*(exec|RCE|kernel)",
+    # file upload / traversal escalating to exec
+    r"(unrestricted|arbitrary) file upload.*(exec|shell|webshell|RCE)",
+    r"(path|directory) traversal.*(write|overwrite|exec|upload|RCE)",
+    r"webshell", r"arbitrary file write.*(exec|RCE|service)",
+    # in-the-wild / value tags
+    r"exploited in the wild", r"active(ly)? exploited", r"in[- ]the[- ]wild exploit",
+    r"zero[- ]?day\b", r"\b0[- ]?day\b",
+    r"exploit chain", r"full chain", r"pre[- ]auth.*(chain|code exec|RCE)",
+    # famous exploit nicknames
+    r"log4shell", r"spring4shell", r"proxyshell", r"proxylogon", r"proxynotshell",
+    r"bluekeep", r"eternalblue", r"shellshock", r"heartbleed",
+    r"zerologon", r"printnightmare", r"hivenightmare", r"follina",
+    r"citrix\s?bleed", r"ghostcat", r"dirtycow", r"dirty pipe", r"looney tunables",
+    r"regresshion", r"text4shell",
+]
+
+
+# ================== ASSET KEYWORDS ==================
+ASSET_KEYWORDS = [
+    # ----- boundary / VPN / firewall / remote access -----
+    "citrix","netscaler","adc","citrix gateway","xenapp","xenmobile",
+    "fortinet","fortigate","fortios","fortimanager","fortiproxy","fortiweb","fortiadc","fortinac","fortiswitch","fortianalyzer","fortiportal","fortisiem","fortisoar",
+    "ivanti","pulse secure","pulse connect","connect secure","ivanti epm","endpoint manager","avalanche","neurons","moveit","goanywhere","ivanti csa",
+    "palo alto","globalprotect","pan-os","prisma","expedition","cortex",
+    "cisco asa","cisco ftd","firepower","anyconnect","cisco ios","ios-xe","ios-xr","nx-os","ise","ucs","dna center","webex","sd-wan","cisco meraki","cucm","callmanager",
+    "f5","big-ip","big-iq","nginx plus",
+    "checkpoint","check point","gaia","harmony",
+    "sonicwall","sma","sma 100","sma 200","tz","nsa",
+    "zyxel","juniper","junos","junos space","nsm",
+    "barracuda","esg","barracuda waf","barracuda backup",
+    "sophos","sfos","xg firewall","sophos utm",
+    "watchguard","firebox","stormshield","kemp loadmaster","a10","array networks",
+    "mikrotik","routeros","pfsense","opnsense",
+    "aruba","clearpass","aruba controller","arubaos","arubaos-switch",
+    "hp procurve","aruba cx","d-link","tp-link","tp link","netgear","asus router","draytek","vigor","tenda","linksys","ubiquiti","unifi","edgerouter",
+    "rdp","remote desktop","terminal server","rds","rdweb","rdgateway","rdp client",
+    "smb","smbv1","smbv2","smbv3","cifs","netbios",
+    "openssh","ssh","vnc","telnet","winrm","rpc","dcom","rras",
+    "teamviewer","anydesk","rustdesk","splashtop","logmein","connectwise","screenconnect","kaseya","vsa","n-able","n-central","atera","ninjarmm","dameware","dwservice",
+
+    # ----- Microsoft -----
+    "windows","windows server","windows 10","windows 11",
+    "active directory","domain controller","ad cs","ad fs","adfs","ntlm","kerberos","ldap","dns server","dhcp","spn","gmsa",
+    "exchange","exchange online","outlook","owa","ecp",
+    "microsoft 365","office 365","office","word","excel","powerpoint","onenote","visio","access",
+    "sharepoint","teams","skype","lync","onedrive","dynamics 365","dynamics crm","dynamics ax","dynamics nav",
+    "iis","asp.net","aspnet",".net","dotnet","kestrel","msmq",
+    "hyper-v","hyperv","wsl","wsa",
+    "azure","azure ad","entra","entra id","intune","defender","defender for endpoint","defender for office","defender for identity",
+    "wsus","sccm","mecm","configuration manager","system center","scom","scvmm",
+    "print spooler","spoolsv","msdtc","mshtml","jscript","vbscript",
+    "visual studio","vscode","msbuild","powershell","wmi","wmic",
+    "mssql","sql server","ssrs","ssis","ssas",
+    "edge","internet explorer","chakra","media foundation","windows codecs","directx","directshow",
+    "smartscreen","applocker","mpengine","mpclient","windows defender",
+
+    # ----- databases -----
+    "mysql","mariadb","percona",
+    "postgresql","postgres","timescaledb","redshift","greenplum",
+    "oracle database","oracle db","oracle weblogic","oracle ebs","e-business suite","peoplesoft","jd edwards","oracle middleware","oracle fusion","opatch","oracle tuxedo",
+    "mssql","sql server","sybase","sap ase",
+    "mongodb","mongo","cosmosdb",
+    "redis","keydb","dragonflydb","valkey",
+    "elasticsearch","opensearch","elastic","kibana","logstash","beats","fleet",
+    "clickhouse","cassandra","scylladb","hbase","accumulo",
+    "influxdb","questdb","victoriametrics",
+    "couchdb","couchbase","ravendb","firebird","foxpro",
+    "memcached","etcd","consul",
+    "neo4j","arangodb","janusgraph",
+    "db2","informix","teradata","vertica","snowflake","databricks",
+    "splunk","splunk enterprise","splunk universal forwarder","splunk phantom",
+    "h2 database","h2 console","hsqldb","derby",
+    "dm8","达梦","kingbase","人大金仓","tidb","oceanbase",
+
+    # ----- virt / container / k8s / cloud-native -----
+    "vmware","vcenter","esxi","vsphere","workstation","fusion","horizon","airwatch","workspace one","nsx","vrealize","aria","tanzu",
+    "proxmox","xenserver","citrix hypervisor","xcp-ng","kvm","qemu","libvirt","virtualbox","parallels",
+    "docker","docker engine","docker desktop","containerd","runc","cri-o","podman","buildah","skopeo","lxc","lxd","openvz",
+    "kubernetes","k8s","kube-apiserver","kubelet","kube-proxy","kubeadm","helm","rancher","openshift","ocp","eks","aks","gke","kops",
+    "istio","linkerd","envoy","cilium","calico","flannel","weave",
+    "argo","argocd","flux","tekton","spinnaker","crossplane","knative",
+    "nomad","consul","vault","terraform","terragrunt","packer","ansible","awx","ansible tower","chef","puppet","saltstack","salt master","rundeck",
+    "openstack","nova","neutron","swift","keystone","cinder",
+    "harbor","quay","nexus","artifactory","jfrog",
+
+    # ----- CI/CD / devtools / package managers -----
+    "jenkins","gitlab","gitea","gogs","github enterprise","github actions","bitbucket","bitbucket server","subversion","svn","mercurial","perforce","cvs",
+    "teamcity","bamboo","circleci","buildkite","drone","woodpecker","concourse","travis","azure devops","vsts","tfs","azure pipelines",
+    "docker registry","distribution",
+    "sonarqube","sonar","snyk","fortify","checkmarx","veracode",
+    "maven","gradle","npm","yarn","pnpm","pip","pypi","composer","packagist","rubygems","bundler","nuget","cargo","go modules","stack","mix",
+    "phabricator","gerrit",
+
+    # ----- web servers / middleware / app servers / MQ -----
+    "apache","apache httpd","httpd","nginx","caddy","lighttpd","h2o","openresty","tengine",
+    "tomcat","jetty","undertow","resin",
+    "weblogic","websphere","jboss","wildfly","glassfish","payara","jeus",
+    "kestrel",
+    "haproxy","traefik","kong","apisix","tyk","apigee","wso2","zuul",
+    "varnish","squid",
+    "rabbitmq","activemq","kafka","pulsar","nats","mosquitto","emqx","nsq","zeromq",
+    "zookeeper","bookkeeper",
+    "apache shiro","shiro","apache dubbo","dubbo","dubbo admin","apache superset","apache airflow","airflow","apache nifi","nifi","apache druid","druid","apache kylin","kylin","apache ofbiz","ofbiz","apache solr","solr","apache flink","flink","apache spark","spark","apache storm","apache cxf","cxf","apache camel","camel","apache poi","poi","apache fineract","apache unomi","unomi","apache skywalking","apache seatunnel","seatunnel","apache linkis","linkis","apache streampipes","apache inlong","inlong","apache rocketmq","rocketmq","apache iotdb","apache atlas",
+
+    # ----- frameworks / runtimes -----
+    "log4j","log4j2","log4net","logback","slf4j",
+    "spring","spring framework","spring boot","spring cloud","spring security","spring cloud gateway","spring cloud function","spring data","spring webflow",
+    "struts","apache struts","struts2",
+    "fastjson","jackson","xstream","snakeyaml","dom4j","xmlbeans",
+    "laravel","symfony","codeigniter","yii","cakephp","zend","thinkphp","phalcon","slim",
+    "django","flask","fastapi","tornado","pyramid","aiohttp","werkzeug","jinja","bottle",
+    "rails","ruby on rails","sinatra","padrino",
+    "express","koa","hapi","nestjs","next.js","nuxt","gatsby","sveltekit","remix","astro","fastify",
+    "asp.net core","blazor","razor",
+    "gin","echo","fiber","beego",
+    "actix","axum","rocket","warp",
+    "node.js","nodejs","deno","bun",
+    "php","php-fpm","cgi","fastcgi",
+
+    # ----- CMS / e-commerce / forum / wiki -----
+    "wordpress","wp plugin","elementor","woocommerce",
+    "drupal","joomla","magento","prestashop","opencart","shopify","bigcommerce","oscommerce",
+    "phpmyadmin","phpbb","vbulletin","xenforo","mybb","discuz","dedecms","ecshop","eyoucms","phpcms","seacms","jeecms","siteserver","dotnetnuke","dnn","umbraco","kentico","sitecore","episerver","optimizely","adobe experience manager","aem",
+    "typo3","concrete5","silverstripe","craft cms","ghost","strapi","directus","keystone","contentful","sanity",
+    "mediawiki","dokuwiki","bookstack","xwiki","confluence","notion",
+    "liferay","alfresco","nuxeo","documentum","sharepoint","owncloud","nextcloud","seafile","pydio",
+
+    # ----- mail servers / collaboration -----
+    "exim","postfix","sendmail","qmail","opensmtpd","dovecot","courier","cyrus",
+    "zimbra","lotus domino","ibm domino","notes",
+    "roundcube","horde","squirrelmail","afterlogic","icewarp","mdaemon","hmailserver","mailenable","open-xchange",
+    "slack","mattermost","rocket.chat","discord","zulip","lark","feishu","dingtalk","wecom",
+    "zoom","gotomeeting","bluejeans",
+    "asterisk","freeswitch","kamailio","opensips","3cx","avaya","mitel","grandstream","yealink",
+
+    # ----- backup / storage / file transfer -----
+    "veeam","commvault","veritas","netbackup","backup exec","rubrik","cohesity","arcserve","unitrends","acronis","datto",
+    "truenas","freenas","synology","dsm","qnap","qts","netapp","ontap","dell emc","isilon","data domain","powerprotect","nas","san",
+    "accellion","fta","kiteworks","filecloud","crushftp","serv-u","wsftp","wing ftp","filezilla server","pureftpd","vsftpd","proftpd",
+
+    # ----- monitoring / ITSM / RMM / inventory -----
+    "zabbix","nagios","nagios xi","icinga","prtg","librenms","cacti","observium","op5","whatsup gold","checkmk","pandora fms",
+    "prometheus","grafana","alertmanager","thanos","cortex","loki","tempo","jaeger","zipkin",
+    "elk","graylog","logrhythm","qradar","arcsight","sumologic","datadog","new relic","appdynamics","dynatrace","instana","sentry",
+    "manageengine","adselfservice","adaudit","desktop central","endpoint central","servicedesk plus","servicenow","bmc remedy","helix","jira service management","opmanager","applications manager","password manager pro","exchange reporter plus","mobile device manager plus","patch manager plus","access manager plus","pam360",
+    "lansweeper","solarwinds","orion","sam","wpm","dameware",
+    "snipe-it","osticket","glpi","otrs","zammad","spiceworks","freshservice",
+
+    # ----- security products -----
+    "crowdstrike","sentinelone","carbon black","cylance","defender atp","mde",
+    "kaspersky","symantec","norton","mcafee","trend micro","bitdefender","eset","avast","avg","comodo","sophos central","fortiedr","cortex xdr","cortex xsoar","demisto","phantom","swimlane","tines",
+    "360安全","奇安信","天擎","qax edr","深信服","sangfor","绿盟","venustech","安恒",
+    "nessus","qualys","rapid7","insightvm","nexpose","tenable","acunetix","appscan","burp","burp suite","netsparker","invicti","nikto","wpscan",
+
+    # ----- PKI / identity / secrets -----
+    "keycloak","okta","auth0","ping identity","pingfederate","pingaccess","onelogin","duo","centrify","beyondtrust","cyberark","thycotic","delinea","hashicorp vault","conjur",
+    "freeipa","openldap","389-ds","apache directory","samba","winbind","sssd",
+    "certbot","acme","step-ca","ejbca","dogtag","venafi",
+    "password manager","lastpass","1password","bitwarden","vaultwarden","keepass","passbolt","psono","enpass",
+
+    # ----- archivers / parsers / media -----
+    "winrar","7-zip","7zip","peazip","unrar","unzip","tar","zstd","bzip2","xz",
+    "adobe reader","acrobat","foxit","pdfium","mupdf","poppler","sumatrapdf","nitro pdf",
+    "imagemagick","graphicsmagick","libjpeg","libpng","libwebp","libtiff","libheif","libvips","exiftool","exiv2","libraw",
+    "ffmpeg","libav","x264","x265","gstreamer","vlc","stagefright",
+    "libxml","libxml2","libxslt","expat",
+    "openssl","libssl","wolfssl","mbedtls","gnutls","nss","boringssl","libssh","libssh2",
+    "curl","libcurl","wget","stunnel",
+
+    # ----- browsers / engines -----
+    "chrome","chromium","v8","blink","firefox","spidermonkey","safari","webkit","gecko","edge","brave","opera","vivaldi",
+    "electron","cef","webview","webview2","wasmtime",
+
+    # ----- BMC / firmware -----
+    "ipmi","idrac","ilo","xclarity","ami megarac","megarac","bmc","redfish","cimc","imm",
+    "bios","uefi","tpm","intel amt","intel me","amd psp",
+
+    # ----- ICS / OT (optional) -----
+    "siemens","simatic","wincc","step 7","rockwell","studio 5000","factorytalk","schneider","modicon","ecostruxure","mitsubishi","beckhoff","twincat","codesys","moxa","opc ua","ignition",
+
+    # ----- cloud consoles / IAM -----
+    "aws","amazon web services","ec2","s3","rds","lambda","iam","cloudfront","cloudformation","ecs","fargate",
+    "azure","app service","aks","arc",
+    "gcp","google cloud","gke","cloud run","cloud functions","anthos",
+    "aliyun","alibaba cloud","tencent cloud","huawei cloud","qcloud","cloudflare","fastly","akamai","guardicore","incapsula","imperva",
+
+    # ----- control panels / hosting -----
+    "cpanel","plesk","webmin","usermin","virtualmin","ispconfig","directadmin","vestacp","hestiacp","cyberpanel","centos web panel","cwp","宝塔","baota","bt panel","aapanel","1panel","x-ui",
+    "cockpit","unraid","homeassistant","home assistant",
+
+    # ----- Chinese vendors / high-frequency pentest targets -----
+    "用友","yonyou","金蝶","kingdee","seeyon","致远","泛微","weaver","e-office","e-cology","tongda","通达","landray","蓝凌","fastadmin",
+    "h3c","华三","华为","huawei","ruijie","锐捷",
+
+    # ----- misc media/home -----
+    "jellyfin","plex","emby","sonarr","radarr","qbittorrent","transmission","deluge","sabnzbd","nzbget",
+]
+
+
+# ================== EXCLUDE ==================
+EXCLUDE_PATTERNS = [
+    r"\bXSS\b", r"cross[- ]site[- ]scripting",
+    r"\bCSRF\b", r"cross[- ]site request forgery",
+    r"clickjacking", r"open redirect", r"host header injection",
+    r"information disclosure(?!.*(pre-?auth|unauth|RCE|chain|exploit|credential))",
+    r"authenticated admin(?!.*(chain|bypass|RCE|0[- ]?day))",
+    r"local privilege escalation(?!.*(chain|RCE|kernel 0[- ]?day))",
+    r"\bDoS\b(?!.*(unauth|pre-?auth|chain|kernel))",
+    r"denial of service(?!.*(unauth|pre-?auth|chain|kernel))",
+    r"\bSSRF\b(?!.*(RCE|code exec|chain|bypass))",
+]
+
+CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.I)
+
+
+# ================== LOG / HTTP ==================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger("vuln")
+
+SESS = requests.Session()
+SESS.headers["User-Agent"] = "vuln-intel/1.0"
+if PROXY:
+    SESS.proxies = {"http": PROXY, "https": PROXY}
+
+
+# ================== LOCK ==================
+class SingletonLock:
+    """Prevent overlapping runs. fcntl on POSIX, msvcrt on Windows."""
+
+    def __init__(self, path):
+        self.path = path
+        self.fh = None
+
+    def __enter__(self):
+        self.fh = open(self.path, "a+b")
+        self.fh.seek(0, 2)
+        if self.fh.tell() == 0:
+            self.fh.write(b"0")
+            self.fh.flush()
+        self.fh.seek(0)
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError) as ex:
+            self.fh.close()
+            self.fh = None
+            raise RuntimeError(f"another instance is running ({self.path}): {ex}")
+        return self
+
+    def __exit__(self, *a):
+        if self.fh:
+            try:
+                if sys.platform != "win32":
+                    import fcntl
+                    fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                self.fh.close()
+            except Exception:
+                pass
+
+
+# ================== CACHE ==================
+def load_cache():
+    if not CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def save_cache(cache):
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS)).timestamp()
+    cache = {k: v for k, v in cache.items() if v.get("ts", 0) > cutoff}
+    tmp = CACHE_FILE.with_suffix(CACHE_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, CACHE_FILE)
+
+def item_key(title, link, text):
+    cves = sorted(set(c.upper() for c in CVE_RE.findall(text)))
+    if cves:
+        return "cve:" + cves[0]
+    return "h:" + hashlib.sha1((title + "|" + (link or "")).encode("utf-8")).hexdigest()[:16]
+
+
+# ================== FILTER ==================
+def any_match(text, patterns):
+    return any(re.search(p, text, re.I) for p in patterns)
+
+def any_contains(text, kws):
+    low = text.lower()
+    return any(k in low for k in kws)
+
+def score(text):
+    if any_match(text, EXCLUDE_PATTERNS):
+        return False, "excluded"
+    rce   = any_match(text, RCE_PATTERNS)
+    asset = any_contains(text, ASSET_KEYWORDS)
+    cve   = bool(CVE_RE.search(text))
+    if rce and (asset or cve):
+        return True, "RCE+asset/CVE"
+    if asset and cve:
+        return True, "asset+CVE"
+    if rce and "exploit" in text.lower():
+        return True, "RCE+exploit"
+    return False, "no hit"
+
+
+# ================== SOURCES ==================
+def fetch_rss(name, url):
+    """Fetch with our own timeout (feedparser.parse(url) has no timeout control)."""
+    out = []
+    try:
+        r = SESS.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        if r.status_code != 200:
+            log.warning(f"RSS {name} HTTP {r.status_code}")
+            return out
+        d = feedparser.parse(r.content)
+        if getattr(d, "bozo", False) and not d.entries:
+            log.warning(f"RSS {name} parse error: {getattr(d, 'bozo_exception', '')}")
+            return out
+        for e in d.entries[:ITEM_PER_FEED]:
+            title   = (e.get("title") or "").strip()
+            link    = (e.get("link") or "").strip()
+            summary = re.sub(r"<[^>]+>", " ", e.get("summary", "") or "").strip()
+            out.append({
+                "source": name,
+                "title": title,
+                "link": link,
+                "summary": summary[:500],
+                "text": f"{title}\n{summary}",
+            })
+    except Exception as ex:
+        log.warning(f"RSS {name} err: {ex}")
+    return out
+
+def fetch_kev_json():
+    """CISA KEV: gold-standard in-the-wild exploited list. JSON with 1500+ entries."""
+    out = []
+    try:
+        r = SESS.get(KEV_JSON_URL, timeout=REQUEST_TIMEOUT)
+        if r.status_code != 200:
+            log.warning(f"KEV HTTP {r.status_code}")
+            return out
+        data = r.json()
+        for v in data.get("vulnerabilities", []):
+            cve = v.get("cveID", "")
+            vendor = v.get("vendorProject", "")
+            product = v.get("product", "")
+            name = v.get("vulnerabilityName", "")
+            short = v.get("shortDescription", "")
+            ransomware = v.get("knownRansomwareCampaignUse", "")
+            due = v.get("dueDate", "")
+            title = f"[KEV] {cve} {vendor} {product}: {name}"
+            summary = f"{short} (due {due}, ransomware={ransomware})"
+            out.append({
+                "source": "CISA_KEV",
+                "title": title[:300],
+                "link": f"https://nvd.nist.gov/vuln/detail/{cve}",
+                "summary": summary[:500],
+                "text": f"{title}\n{summary}",
+            })
+    except Exception as ex:
+        log.warning(f"KEV err: {ex}")
+    return out
+
+
+def fetch_github_cve():
+    out = []
+    year = datetime.now().year
+    headers = {"Accept": "application/vnd.github+json"}
+    if GH_TOKEN:
+        headers["Authorization"] = f"Bearer {GH_TOKEN}"
+    for q in (f"CVE-{year}-", f"CVE-{year - 1}-"):
+        try:
+            r = SESS.get(
+                "https://api.github.com/search/repositories",
+                params={"q": f"{q} in:name", "sort": "updated", "order": "desc", "per_page": 30},
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+            if r.status_code != 200:
+                log.warning(f"GitHub {q} status {r.status_code}: {r.text[:150]}")
+                continue
+            for repo in r.json().get("items", []):
+                name = repo["full_name"]
+                desc = repo.get("description") or ""
+                out.append({
+                    "source": "GitHub",
+                    "title": name,
+                    "link": repo["html_url"],
+                    "summary": desc[:500],
+                    "text": f"{name}\n{desc}",
+                })
+        except Exception as ex:
+            log.warning(f"GitHub {q} err: {ex}")
+        time.sleep(2)
+    return out
+
+
+# ================== PUSH ==================
+def tg_escape(s):
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def format_msg(it, reason):
+    cves = sorted(set(c.upper() for c in CVE_RE.findall(it["text"])))
+    cve_tag = " ".join(cves) if cves else "N/A"
+    return (
+        f"<b>[{tg_escape(it['source'])}]</b> <code>{tg_escape(cve_tag)}</code>\n"
+        f"<b>{tg_escape(it['title'][:220])}</b>\n"
+        f"{tg_escape(it['summary'][:600])}\n"
+        f"{tg_escape(it['link'])}\n"
+        f"<i>match: {tg_escape(reason)}</i>"
+    )[:4000]
+
+def send_telegram(msg):
+    if not (TG_BOT_TOKEN and TG_CHAT_ID):
+        log.info(f"[DRY] {msg[:300]}")
+        return True
+    try:
+        r = SESS.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": TG_CHAT_ID,
+                "text": msg,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code != 200:
+            log.warning(f"TG push {r.status_code}: {r.text[:200]}")
+            return False
+        return True
+    except Exception as ex:
+        log.warning(f"TG err: {ex}")
+        return False
+
+
+def send_failure_alert(msg):
+    """Rate-limited error notification so silent cron breakage is noticed."""
+    now = time.time()
+    state = {}
+    if ALERT_STATE.exists():
+        try:
+            state = json.loads(ALERT_STATE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if now - state.get("last_alert_ts", 0) < ALERT_COOLDOWN_SEC:
+        log.warning(f"alert suppressed (cooldown): {msg[:150]}")
+        return
+    if not (TG_BOT_TOKEN and TG_CHAT_ID):
+        log.error(f"[ALERT-DRY] {msg[:500]}")
+    else:
+        try:
+            SESS.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": TG_CHAT_ID,
+                    "text": f"vuln-monitor error\n\n{msg[:3800]}",
+                    "disable_web_page_preview": True,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+        except Exception as ex:
+            log.error(f"alert push failed: {ex}")
+    state["last_alert_ts"] = now
+    try:
+        tmp = ALERT_STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, ALERT_STATE)
+    except Exception as ex:
+        log.warning(f"alert state save failed: {ex}")
+
+
+# ================== MAIN ==================
+def _run():
+    cache = load_cache()
+    now = datetime.now(timezone.utc).timestamp()
+
+    items = []
+    for name, url in RSS_FEEDS:
+        items.extend(fetch_rss(name, url))
+    items.extend(fetch_kev_json())
+    items.extend(fetch_github_cve())
+    log.info(f"collected {len(items)} items")
+
+    seen_this_run = set()
+    pushed = 0
+    skipped_seen = 0
+    skipped_filter = 0
+
+    for it in items:
+        key = item_key(it["title"], it["link"], it["text"])
+        if key in cache or key in seen_this_run:
+            skipped_seen += 1
+            continue
+        seen_this_run.add(key)
+
+        hit, reason = score(it["text"])
+        cache[key] = {"ts": now, "pushed": hit, "title": it["title"][:120], "reason": reason}
+        if not hit:
+            skipped_filter += 1
+            continue
+
+        ok = send_telegram(format_msg(it, reason))
+        if ok:
+            pushed += 1
+        time.sleep(PUSH_SLEEP_SEC)
+
+    save_cache(cache)
+    log.info(
+        f"done: pushed={pushed}  filtered={skipped_filter}  already_seen={skipped_seen}  "
+        f"cache_size={len(cache)}"
+    )
+
+
+def main():
+    try:
+        with SingletonLock(LOCK_FILE):
+            _run()
+    except RuntimeError as ex:
+        log.warning(str(ex))
+        sys.exit(0)
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        log.exception("unhandled error")
+        send_failure_alert(tb[-3500:])
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

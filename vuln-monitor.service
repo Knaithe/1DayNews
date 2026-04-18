@@ -1,0 +1,40 @@
+[Unit]
+Description=Vulnerability intelligence aggregator (oneshot)
+Documentation=https://github.com/yourself/vuln-monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=vuln
+Group=vuln
+WorkingDirectory=/opt/vuln-monitor
+EnvironmentFile=/opt/vuln-monitor/.env
+ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/vuln_monitor.py
+
+# resource / time caps
+RuntimeMaxSec=600
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# sandboxing
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/vuln-monitor
+ProtectHome=true
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

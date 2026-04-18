@@ -1,0 +1,49 @@
+# ===== secrets =====
+.env
+.env.*
+!env.example
+
+# ===== runtime state (must not be shared) =====
+vuln_cache.json
+vuln_cache.json.tmp
+vuln_alert_state.json
+vuln_alert_state.tmp
+vuln_monitor.lock
+vuln_monitor.log
+vuln_monitor.log.*
+
+# ===== python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# virtualenvs
+venv/
+.venv/
+env/
+ENV/
+
+# ===== editors / IDEs =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code local settings (per-user, not shared)
+.claude/settings.local.json
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== ad-hoc =====
+*.bak
+*.orig
+scratch/
+tmp/
