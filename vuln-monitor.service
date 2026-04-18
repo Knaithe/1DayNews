@@ -1,6 +1,6 @@
 [Unit]
 Description=Vulnerability intelligence aggregator (oneshot)
-Documentation=https://github.com/yourself/vuln-monitor
+Documentation=https://github.com/Knaithe/1DayNews
 After=network-online.target
 Wants=network-online.target
 

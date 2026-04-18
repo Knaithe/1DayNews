@@ -44,36 +44,55 @@ python vuln_monitor.py
 ```bash
 export TG_BOT_TOKEN="123456:ABC..."   # BotFather /newbot 拿
 export TG_CHAT_ID="-1001234567890"    # bot 拉进频道后 getUpdates
-export GH_TOKEN="ghp_..."             # 可选，GitHub 限流 60→5000 req/hr
+export  ="ghp_..."             # 可选，GitHub 限流 60→5000 req/hr
 
 python vuln_monitor.py
 ```
 
 Windows CMD 用 `set` 代替 `export`。
 
-## 部署到 Linux 服务器（推荐）
+## 一键部署到 Linux 服务器
+
+### 方式 A：远程一行（推荐）
 
 ```bash
-# 在本地打包
-scp vuln_monitor.py requirements.txt env.example \
-    vuln-monitor.service vuln-monitor.timer deploy.sh \
-    user@server:/tmp/vuln/
-
-# 服务器上
-ssh user@server
-sudo bash /tmp/vuln/deploy.sh
-# 第一次会生成 /opt/vuln-monitor/.env 模板并退出
-sudo vim /opt/vuln-monitor/.env     # 填 TG_BOT_TOKEN / TG_CHAT_ID / GH_TOKEN
-sudo bash /tmp/vuln/deploy.sh        # 再跑一次，完成部署
+curl -sSL https://raw.githubusercontent.com/Knaithe/1DayNews/master/deploy.sh | sudo bash
 ```
 
-`deploy.sh` 做的事：
-1. 建系统用户 `vuln`
-2. 拷代码到 `/opt/vuln-monitor/`
-3. 建 venv、装依赖
-4. 拷 systemd unit/timer 到 `/etc/systemd/system/`
-5. enable + start timer
-6. 首次跑一次（无 TG env，纯 dry run）把 cache 预热好 → 避免真 TG 推送时首次刷 1500 条
+脚本会交互式问你三件事：`TG_BOT_TOKEN` / `TG_CHAT_ID` / `GH_TOKEN`（最后一个可跳过）。
+
+### 方式 B：非交互（CI / cloud-init / ansible）
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Knaithe/1DayNews/master/deploy.sh | \
+  sudo TG_BOT_TOKEN="123456:ABC..." \
+       TG_CHAT_ID="-1001234567890" \
+       GH_TOKEN="ghp_..." \
+       bash
+```
+
+### 方式 C：从本地 checkout
+
+```bash
+git clone https://github.com/Knaithe/1DayNews.git
+cd 1DayNews
+sudo bash deploy.sh
+```
+
+`deploy.sh` 做的 7 步：
+1. 装系统依赖（`python3 / venv / git / curl`，自动识别 apt/dnf/yum）
+2. 拉代码：已有 `.git` 则 `pull --ff-only`；本地 checkout 则 `cp`；都没有则 `git clone`
+3. 建系统用户 `vuln`（nologin）
+4. 写 `.env`（优先环境变量 → 交互输入 → 复用已有；`chmod 600`）
+5. 建 venv、`pip install -r requirements.txt`
+6. 拷 systemd unit/timer 到 `/etc/systemd/system/` + `daemon-reload`
+7. **用 `env -i` 预热 cache**（强制 dry run 把 1900+ 条塞进去）→ 再 `enable --now` timer
+
+这样设计的好处：首次真正触发 timer 时 cache 已满 → 只推增量（典型 0~10 条），不会刷屏。
+
+### 升级
+
+重新跑同一条命令即可。`deploy.sh` 会 `git pull` 并保留 `.env` / `vuln_cache.json` / 日志。想强制重配 `.env`：`FORCE_ENV=1 sudo bash deploy.sh`。
 
 ### 运行时观察
 
