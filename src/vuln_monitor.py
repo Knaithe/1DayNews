@@ -23,6 +23,7 @@ import json
 import time
 import hashlib
 import logging
+import platform
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,10 +33,42 @@ import requests
 
 
 # ================== CONFIG ==================
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
-TG_CHAT_ID   = os.getenv("TG_CHAT_ID", "")
-GH_TOKEN     = os.getenv("GH_TOKEN", "")
-PROXY        = os.getenv("HTTPS_PROXY", "")
+def _user_config_path() -> Path:
+    """XDG-compliant per-user config path. Cross-platform.
+
+    Linux / macOS: $XDG_CONFIG_HOME/vuln-monitor/config.json  (default ~/.config/...)
+    Windows:       %APPDATA%\\vuln-monitor\\config.json
+    """
+    if platform.system() == "Windows":
+        base = os.getenv("APPDATA") or str(Path.home())
+    else:
+        base = os.getenv("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "vuln-monitor" / "config.json"
+
+
+USER_CONFIG_FILE = _user_config_path()
+
+
+def _load_user_config() -> dict:
+    """Load persisted local config. Returns {} if missing or unreadable."""
+    if not USER_CONFIG_FILE.exists():
+        return {}
+    try:
+        return json.loads(USER_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"WARN: failed to parse {USER_CONFIG_FILE}: {e}", file=sys.stderr)
+        return {}
+
+
+# Resolution order for credentials:
+#   1. environment variable   (CI / systemd / one-off override)
+#   2. user config file       (persisted via `scripts/configure.py`)
+#   3. empty string           (TG_* empty -> dry mode, no push)
+_user_cfg = _load_user_config()
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or _user_cfg.get("tg_bot_token", "")
+TG_CHAT_ID   = os.getenv("TG_CHAT_ID")   or _user_cfg.get("tg_chat_id", "")
+GH_TOKEN     = os.getenv("GH_TOKEN")     or _user_cfg.get("gh_token", "")
+PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
 # Runtime state (cache / lock / alert-state / log) lives in DATA_DIR.

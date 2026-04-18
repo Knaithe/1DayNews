@@ -37,15 +37,32 @@ python src/vuln_monitor.py
 
 ## 本地真推 Telegram
 
-```bash
-export TG_BOT_TOKEN="123456:ABC..."   # BotFather /newbot 拿
-export TG_CHAT_ID="-1001234567890"    # bot 拉进频道后 getUpdates
-export GH_TOKEN="ghp_..."             # 可选，GitHub 限流 60→5000 req/hr
+一次性配置，后续无需再导 env：
 
+```bash
+python scripts/configure.py
+```
+
+会交互式问 `TG_BOT_TOKEN` / `TG_CHAT_ID` / `GH_TOKEN` / `HTTPS_PROXY`，写到：
+
+- Linux / macOS：`~/.config/vuln-monitor/config.json`（`chmod 600`）
+- Windows：`%APPDATA%\vuln-monitor\config.json`
+- 遵循 `$XDG_CONFIG_HOME` 覆盖
+
+之后直接跑：
+
+```bash
 python src/vuln_monitor.py
 ```
 
-Windows CMD 用 `set` 代替 `export`。
+**优先级**：环境变量 > 配置文件 > 空（dry mode）。所以临时覆盖 / CI / 调试时随时 `TG_CHAT_ID=-100xxx python src/vuln_monitor.py` 即可。
+
+其他命令：
+
+```bash
+python scripts/configure.py --show   # 查看当前配置（token 打码）
+python scripts/configure.py --path   # 只打印配置文件路径
+```
 
 ## 一键部署到 Linux 服务器
 

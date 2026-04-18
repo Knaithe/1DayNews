@@ -43,6 +43,38 @@
 - `ProtectSystem=strict` 只需要把 `/opt/vuln-monitor` 整体设为 `ReadWritePaths`
 - 本地 `python src/vuln_monitor.py` 开发时，state 文件自动落在仓库根（见下方 `DATA_DIR` 规则）
 
+## 凭证解析规则（Telegram / GitHub token）
+
+Python 启动时按优先级解析 `TG_BOT_TOKEN` / `TG_CHAT_ID` / `GH_TOKEN` / `HTTPS_PROXY`：
+
+```
+1. 环境变量                              ← CI / systemd / 一次性覆盖
+2. 用户配置文件 config.json              ← 个人本地持久化
+3. 空字符串（TG_* 空即进入 dry mode）
+```
+
+**用户配置文件路径**（跨平台）：
+
+| 平台 | 路径 |
+|---|---|
+| Linux / macOS | `$XDG_CONFIG_HOME/vuln-monitor/config.json`（默认 `~/.config/...`） |
+| Windows | `%APPDATA%\vuln-monitor\config.json` |
+
+格式：
+
+```json
+{
+  "tg_bot_token": "123456:ABC...",
+  "tg_chat_id":   "-1001234567890",
+  "gh_token":     "ghp_...",
+  "https_proxy":  ""
+}
+```
+
+创建：`python scripts/configure.py`（交互式，POSIX 下自动 `chmod 600`）。
+
+**为什么不自动去读 `.env`**：`.env` 是 systemd `EnvironmentFile` 的目标格式，仅用于服务器部署。本地用 JSON 配置文件避免两种格式混淆，也避免需要 `python-dotenv` 依赖。
+
 ## DATA_DIR 解析规则
 
 Python 启动时按优先级决定运行态文件放哪：
