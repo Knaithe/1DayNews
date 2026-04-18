@@ -10,7 +10,8 @@ User=vuln
 Group=vuln
 WorkingDirectory=/opt/vuln-monitor
 EnvironmentFile=/opt/vuln-monitor/.env
-ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/vuln_monitor.py
+Environment=VULN_DATA_DIR=/opt/vuln-monitor
+ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/vuln_monitor.py
 
 # resource / time caps
 RuntimeMaxSec=600

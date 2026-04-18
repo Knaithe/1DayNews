@@ -45,13 +45,23 @@ SELF_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" 2>/de
 
 if [ -d "$APP_DIR/.git" ]; then
     git -C "$APP_DIR" pull --ff-only
-elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/vuln_monitor.py" ]; then
-    # running from a local checkout — copy files in
+elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/src/vuln_monitor.py" ]; then
+    # running from a local checkout — copy the tree (code + systemd + deploy + docs)
     mkdir -p "$APP_DIR"
-    for f in vuln_monitor.py requirements.txt env.example probe_feeds.py \
-             vuln-monitor.service vuln-monitor.timer deploy.sh README.md; do
-        [ -f "$SELF_DIR/$f" ] && install -m 644 "$SELF_DIR/$f" "$APP_DIR/$f"
-    done
+    # rsync if available, else cp fallback
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete \
+              --exclude='.git/' --exclude='venv/' --exclude='__pycache__/' \
+              --exclude='vuln_cache.json*' --exclude='vuln_monitor.log*' \
+              --exclude='vuln_monitor.lock' --exclude='vuln_alert_state.json*' \
+              --exclude='.env' \
+              "$SELF_DIR/" "$APP_DIR/"
+    else
+        cp -r "$SELF_DIR/src" "$SELF_DIR/systemd" "$SELF_DIR/scripts" "$SELF_DIR/docs" "$APP_DIR/" 2>/dev/null || true
+        for f in requirements.txt env.example deploy.sh README.md .gitignore; do
+            [ -f "$SELF_DIR/$f" ] && install -m 644 "$SELF_DIR/$f" "$APP_DIR/$f"
+        done
+    fi
 else
     # fresh install via curl|bash — clone the repo
     git clone --depth=1 "$REPO_URL" "$APP_DIR"
@@ -113,17 +123,19 @@ chmod 600 "$APP_DIR/.env"
 
 # ---------- 6. systemd units ----------
 echo ">>> [6/7] installing systemd units ..."
-install -m 644 "$APP_DIR/vuln-monitor.service" "$SYSTEMD_DIR/vuln-monitor.service"
-install -m 644 "$APP_DIR/vuln-monitor.timer"   "$SYSTEMD_DIR/vuln-monitor.timer"
+install -m 644 "$APP_DIR/systemd/vuln-monitor.service" "$SYSTEMD_DIR/vuln-monitor.service"
+install -m 644 "$APP_DIR/systemd/vuln-monitor.timer"   "$SYSTEMD_DIR/vuln-monitor.timer"
 systemctl daemon-reload
 
 # ---------- 7. warm cache (dry) then enable timer ----------
 echo ">>> [7/7] warming cache (dry run, NO Telegram push) ..."
-# env -i guarantees no TG_* leak from the installer shell — forces dry mode
+# env -i guarantees no TG_* leak from the installer shell — forces dry mode.
+# VULN_DATA_DIR pinned to APP_DIR so cache lands at /opt/vuln-monitor/ not src/.
 sudo -u "$APP_USER" env -i \
     HOME="$APP_DIR" \
     PATH="/usr/bin:/bin" \
-    "$APP_DIR/venv/bin/python" "$APP_DIR/vuln_monitor.py" || {
+    VULN_DATA_DIR="$APP_DIR" \
+    "$APP_DIR/venv/bin/python" "$APP_DIR/src/vuln_monitor.py" || {
         echo "    (cache warm exited non-zero; it's OK, timer will retry)"
     }
 

@@ -38,10 +38,23 @@ GH_TOKEN     = os.getenv("GH_TOKEN", "")
 PROXY        = os.getenv("HTTPS_PROXY", "")
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
-CACHE_FILE     = SCRIPT_DIR / "vuln_cache.json"
-LOCK_FILE      = SCRIPT_DIR / "vuln_monitor.lock"
-ALERT_STATE    = SCRIPT_DIR / "vuln_alert_state.json"
-LOG_FILE       = SCRIPT_DIR / "vuln_monitor.log"
+# Runtime state (cache / lock / alert-state / log) lives in DATA_DIR.
+# Resolution order:
+#   1. $VULN_DATA_DIR env var (systemd / deploy.sh set this explicitly)
+#   2. SCRIPT_DIR.parent if SCRIPT_DIR is named "src" (repo layout: src/vuln_monitor.py)
+#   3. SCRIPT_DIR (script sits at data root)
+if os.getenv("VULN_DATA_DIR"):
+    DATA_DIR = Path(os.getenv("VULN_DATA_DIR")).resolve()
+elif SCRIPT_DIR.name == "src":
+    DATA_DIR = SCRIPT_DIR.parent
+else:
+    DATA_DIR = SCRIPT_DIR
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+CACHE_FILE     = DATA_DIR / "vuln_cache.json"
+LOCK_FILE      = DATA_DIR / "vuln_monitor.lock"
+ALERT_STATE    = DATA_DIR / "vuln_alert_state.json"
+LOG_FILE       = DATA_DIR / "vuln_monitor.log"
 CACHE_TTL_DAYS = 60
 ITEM_PER_FEED  = 50
 PUSH_SLEEP_SEC = 1.5

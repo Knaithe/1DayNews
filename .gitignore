@@ -4,13 +4,14 @@
 !env.example
 
 # ===== runtime state (must not be shared) =====
-vuln_cache.json
-vuln_cache.json.tmp
-vuln_alert_state.json
-vuln_alert_state.tmp
-vuln_monitor.lock
-vuln_monitor.log
-vuln_monitor.log.*
+# Match at any depth so running from repo root OR src/ both stay clean.
+**/vuln_cache.json
+**/vuln_cache.json.tmp
+**/vuln_alert_state.json
+**/vuln_alert_state.tmp
+**/vuln_monitor.lock
+**/vuln_monitor.log
+**/vuln_monitor.log.*
 
 # ===== python =====
 __pycache__/
