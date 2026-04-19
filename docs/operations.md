@@ -1,5 +1,17 @@
 # 运维
 
+## 凭证存储位置
+
+按场景分两处，程序启动时按"环境变量 > 本地配置 > 空"的优先级解析：
+
+| 场景 | 位置 | 写入方式 | 权限 |
+|---|---|---|---|
+| 服务器 / systemd | `/opt/vuln-monitor/.env` | `deploy.sh` 写（交互或 env 传参） | `chmod 600`，owner `vuln` |
+| 本地开发 / 个人机 | `~/.config/vuln-monitor/config.json`（Linux/macOS）<br>`%APPDATA%\vuln-monitor\config.json`（Windows） | `python scripts/configure.py` | POSIX 下 `chmod 600`，Windows 靠 `APPDATA` 天然隔离 |
+| CI / 一次性 | 环境变量 | `TG_BOT_TOKEN=... python src/vuln_monitor.py` | — |
+
+完整的解析优先级和文件格式见 [`architecture.md`](architecture.md#凭证解析规则telegram--github-token)。
+
 ## 进程保护：文件锁
 
 位置：`DATA_DIR/vuln_monitor.lock`
@@ -126,7 +138,8 @@ jq '.seen | keys | length' /opt/vuln-monitor/vuln_cache.json
 
 | 症状 | 原因 | 排查 |
 |---|---|---|
-| timer 跑了但没推送 | dry mode（TG env 没加载） | 确认 `.env` 的 `TG_BOT_TOKEN/TG_CHAT_ID` 有值；`systemctl cat vuln-monitor.service` 看 `EnvironmentFile` |
+| 服务器 timer 跑了但没推送 | dry mode（`.env` 没加载或字段为空） | `systemctl cat vuln-monitor.service` 看 `EnvironmentFile` 路径；`cat /opt/vuln-monitor/.env` 确认 `TG_BOT_TOKEN/TG_CHAT_ID` 有值 |
+| 本地跑了但没推送 | 配置文件缺失或字段为空 | `python scripts/configure.py --show` 看当前配置；`--path` 查文件位置 |
 | 每次都推一堆历史 CVE | cache 丢了或权限错 | `ls -la /opt/vuln-monitor/vuln_cache.json`，应当 `vuln:vuln` 可写 |
 | 抓源一直 timeout | 出口到源站网络问题 | 部署地不在海外时，`HTTPS_PROXY` 走代理；或换美国 VPS |
 | 某源 404 | 源 URL 变了 | `python scripts/probe_feeds.py` 找新 URL |

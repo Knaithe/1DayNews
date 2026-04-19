@@ -7,7 +7,8 @@
 ├── src/
 │   └── vuln_monitor.py        # 主程序（所有逻辑都在这一个文件里）
 ├── scripts/
-│   └── probe_feeds.py         # 源失效时用来批量探测替代 URL 的工具
+│   ├── probe_feeds.py         # 源失效时用来批量探测替代 URL 的工具
+│   └── configure.py           # 本地交互式写 ~/.config/vuln-monitor/config.json
 ├── systemd/
 │   ├── vuln-monitor.service   # oneshot 服务单元（带完整沙盒指令）
 │   └── vuln-monitor.timer     # 5 分钟触发定时器
@@ -27,7 +28,9 @@
 ```
 /opt/vuln-monitor/
 ├── src/vuln_monitor.py        # code（跟仓库结构一致）
-├── scripts/probe_feeds.py
+├── scripts/
+│   ├── probe_feeds.py
+│   └── configure.py
 ├── systemd/*.{service,timer}
 ├── venv/                      # Python 虚拟环境（deploy.sh 创建）
 ├── .env                       # 敏感变量，600
