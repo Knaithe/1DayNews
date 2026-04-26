@@ -372,6 +372,32 @@ ADVISORY_RE = re.compile(
     re.I,
 )
 
+# Sources whose advisories are high-value even when DB fields are incomplete.
+HIGH_PRIORITY_SOURCES = frozenset({
+    "Fortinet", "PaloAlto", "Cisco", "CISA_KEV", "ZDI",
+    "watchTowr", "MSRC", "Horizon3", "ProjectDisc",
+})
+# Reasons that indicate a genuinely interesting finding.
+STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "RCE+exploit"})
+
+# Fallback advisory page per vendor (used when we know the source but have no
+# item-level URL).
+VENDOR_URL_FALLBACK = {
+    "Fortinet":     "https://www.fortiguard.com/psirt",
+    "PaloAlto":     "https://security.paloaltonetworks.com",
+    "Cisco":        "https://sec.cloudapps.cisco.com/security/center/publicationListing.x",
+    "CISA_KEV":     "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+    "MSRC":         "https://msrc.microsoft.com/update-guide",
+    "ZDI":          "https://www.zerodayinitiative.com/advisories/published/",
+    "watchTowr":    "https://labs.watchtowr.com",
+    "Horizon3":     "https://www.horizon3.ai/attack-research/",
+    "ProjectDisc":  "https://blog.projectdiscovery.io",
+    "Rapid7":       "https://www.rapid7.com/blog/",
+    "VMware":       "https://blogs.vmware.com/security/",
+    "GreyNoise":    "https://www.greynoise.io/blog",
+    "GitHub":       "https://github.com",
+}
+
 
 # ================== LOG / HTTP ==================
 logging.basicConfig(
@@ -496,6 +522,88 @@ def _backfill_row(conn, key, it):
         (tag if tag != "N/A" else None, it["source"],
          it["title"][:300], it["link"], it["summary"][:500], key),
     )
+
+def _infer_source_from_title(title):
+    """Best-effort vendor inference from title keywords."""
+    low = (title or "").lower()
+    for kw, src in (
+        ("[kev]", "CISA_KEV"),
+        ("zdi-", "ZDI"),
+        ("fortiweb", "Fortinet"), ("fortigate", "Fortinet"), ("fortios", "Fortinet"),
+        ("fortimanager", "Fortinet"), ("fortianalyzer", "Fortinet"), ("forticlient", "Fortinet"),
+        ("fortiproxy", "Fortinet"), ("fortisandbox", "Fortinet"), ("fortisiem", "Fortinet"),
+        ("fortisoar", "Fortinet"), ("fortiswitch", "Fortinet"), ("fortiadc", "Fortinet"),
+        ("fortinac", "Fortinet"), ("fortiportal", "Fortinet"),
+        ("pan-os", "PaloAlto"), ("globalprotect", "PaloAlto"), ("cortex xdr", "PaloAlto"),
+        ("palo alto", "PaloAlto"), ("prisma access", "PaloAlto"),
+        ("cisco", "Cisco"), ("ios-xe", "Cisco"), ("ios-xr", "Cisco"),
+        ("webex", "Cisco"), ("anyconnect", "Cisco"), ("firepower", "Cisco"),
+        ("vmware", "VMware"), ("vcenter", "VMware"), ("esxi", "VMware"),
+    ):
+        if kw in low:
+            return src
+    return None
+
+def _enrich_record(cve_id, source, title, link):
+    """Heuristic enrichment for incomplete records.
+
+    Returns (cve_id, source, link) with NULLs filled where possible.
+    """
+    # --- infer source from advisory ID pattern ---
+    if not source and cve_id:
+        for pat, src in (
+            (r"FG-IR-", "Fortinet"), (r"ZDI-", "ZDI"), (r"cisco-sa-", "Cisco"),
+            (r"PAN-SA-", "PaloAlto"), (r"VMSA-", "VMware"),
+        ):
+            if re.match(pat, cve_id, re.I):
+                source = src
+                break
+    # --- infer source from title keywords ---
+    if not source:
+        source = _infer_source_from_title(title)
+    # --- construct link from advisory ID ---
+    if not link and cve_id:
+        if re.match(r"CVE-\d{4}-\d+", cve_id, re.I):
+            link = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+        elif re.match(r"FG-IR-\d+-\d+", cve_id, re.I):
+            link = f"https://fortiguard.fortinet.com/psirt/{cve_id}"
+        elif re.match(r"ZDI-\d+-\d+", cve_id, re.I):
+            link = f"https://www.zerodayinitiative.com/advisories/{cve_id}/"
+        elif re.match(r"cisco-sa-", cve_id, re.I):
+            link = f"https://sec.cloudapps.cisco.com/security/center/content/CiscoSecurityAdvisory/{cve_id}"
+        elif re.match(r"PAN-SA-", cve_id, re.I):
+            link = f"https://security.paloaltonetworks.com/{cve_id}"
+    # --- fallback: vendor advisory listing page ---
+    if not link and source and source in VENDOR_URL_FALLBACK:
+        link = VENDOR_URL_FALLBACK[source]
+    return cve_id, source, link
+
+def _auto_enrich():
+    """Find incomplete strong-reason records and persist heuristic enrichment.
+
+    Returns number of records updated.
+    """
+    conn = _get_conn()
+    init_db(conn)
+    placeholders = ",".join("?" for _ in STRONG_REASONS)
+    candidates = conn.execute(
+        f"SELECT key, cve_id, source, title, link FROM vulns "
+        f"WHERE (link IS NULL OR link = '') AND reason IN ({placeholders})",
+        tuple(STRONG_REASONS),
+    ).fetchall()
+    updated = 0
+    for key, cve_id, source, title, link in candidates:
+        new_cve, new_src, new_link = _enrich_record(cve_id, source, title, link)
+        if new_link != link or new_src != source or new_cve != cve_id:
+            conn.execute(
+                "UPDATE vulns SET cve_id=COALESCE(?,cve_id), source=COALESCE(?,source), "
+                "link=COALESCE(?,link) WHERE key=?",
+                (new_cve, new_src, new_link, key),
+            )
+            updated += 1
+    conn.commit()
+    conn.close()
+    return updated
 
 def item_key(title, link, text):
     cves = sorted(set(c.upper() for c in CVE_RE.findall(text)))
@@ -867,11 +975,27 @@ def cmd_query(args):
 def cmd_brief(args):
     """Notification-friendly output: one block per vuln, copy-paste ready.
 
-    Quality gates (enforced at SQL level via quality_filter=True):
-      - link IS NOT NULL
-      - source IS NOT NULL
-      - reason NOT IN ('no hit', 'excluded') unless --reason explicitly set
+    Pipeline: _auto_enrich() → SQL quality filter → output.
     """
+    enriched = _auto_enrich()
+    explain = getattr(args, "explain", False)
+    if explain:
+        conn = _get_conn()
+        init_db(conn)
+        total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
+        no_link = conn.execute("SELECT COUNT(*) FROM vulns WHERE link IS NULL OR link=''").fetchone()[0]
+        placeholders = ",".join("?" for _ in STRONG_REASONS)
+        strong_no_link = conn.execute(
+            f"SELECT COUNT(*) FROM vulns WHERE (link IS NULL OR link='') AND reason IN ({placeholders})",
+            tuple(STRONG_REASONS),
+        ).fetchone()[0]
+        conn.close()
+        print(f"[explain] enriched {enriched} records this pass")
+        print(f"[explain] db total={total}  still_no_link={no_link}  strong_without_link={strong_no_link}")
+        if strong_no_link:
+            print(f"[explain] {strong_no_link} strong records could not be enriched (run 'rebuild' to fix from feeds)")
+        print(f"[explain] quality filter: link NOT NULL, source NOT NULL, reason NOT IN (no hit, excluded)")
+        print()
     rows = _query_rows(args, quality_filter=True)
     if not rows:
         print("(no results matching quality threshold)")
@@ -969,6 +1093,7 @@ def main():
 
     bp = sub.add_parser("brief", help="Notification-friendly output (human readable, with URL)")
     _add_filter_args(bp)
+    bp.add_argument("--explain", action="store_true", help="Show enrichment/filter diagnostics")
 
     sub.add_parser("stats", help="Database statistics")
     sub.add_parser("rebuild", help="Re-fetch sources and backfill NULL fields in existing records")

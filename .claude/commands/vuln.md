@@ -45,8 +45,9 @@ Filter flags (also work with `brief`):
 ### brief — Notification-friendly output (human readable, with URL)
 ```bash
 $PY $SCRIPT brief --pushed --days 1
+$PY $SCRIPT brief --explain --days 7     # show enrichment diagnostics
 ```
-Each record shows: ID, source, date, title, URL, match reason. Designed for copy-paste and forwarding.
+Runs auto-enrichment before querying: fills missing URLs/source from CVE, advisory ID, or title keywords. Then applies quality filter. Add `--explain` to see enrichment stats and filter reasons.
 
 ### stats — Database overview
 ```bash
