@@ -52,7 +52,7 @@ elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/src/vuln_monitor.py" ]; then
     if command -v rsync >/dev/null 2>&1; then
         rsync -a --delete \
               --exclude='.git/' --exclude='venv/' --exclude='__pycache__/' \
-              --exclude='vuln_cache.json*' --exclude='vuln_monitor.log*' \
+              --exclude='vuln_cache.json*' --exclude='vuln_cache.db*' --exclude='vuln_monitor.log*' \
               --exclude='vuln_monitor.lock' --exclude='vuln_alert_state.json*' \
               --exclude='.env' \
               "$SELF_DIR/" "$APP_DIR/"

@@ -24,6 +24,8 @@ import time
 import hashlib
 import logging
 import platform
+import sqlite3
+import argparse
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -84,7 +86,8 @@ else:
     DATA_DIR = SCRIPT_DIR
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-CACHE_FILE     = DATA_DIR / "vuln_cache.json"
+DB_FILE        = DATA_DIR / "vuln_cache.db"
+_JSON_LEGACY   = DATA_DIR / "vuln_cache.json"   # migration source
 LOCK_FILE      = DATA_DIR / "vuln_monitor.lock"
 ALERT_STATE    = DATA_DIR / "vuln_alert_state.json"
 LOG_FILE       = DATA_DIR / "vuln_monitor.log"
@@ -420,21 +423,59 @@ class SingletonLock:
                 pass
 
 
-# ================== CACHE ==================
-def load_cache():
-    if not CACHE_FILE.exists():
-        return {}
-    try:
-        return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+# ================== DATABASE ==================
+def _get_conn():
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
-def save_cache(cache):
+def init_db(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS vulns (
+            key        TEXT PRIMARY KEY,
+            cve_id     TEXT,
+            source     TEXT,
+            title      TEXT NOT NULL,
+            link       TEXT,
+            summary    TEXT,
+            reason     TEXT,
+            pushed     INTEGER DEFAULT 0,
+            created_at REAL NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON vulns(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pushed     ON vulns(pushed)")
+    conn.commit()
+
+def migrate_json_cache(conn):
+    """One-time migration from vuln_cache.json → SQLite."""
+    if not _JSON_LEGACY.exists():
+        return
+    if conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0] > 0:
+        return
+    try:
+        old = json.loads(_JSON_LEGACY.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    for key, val in old.items():
+        cve_id = key.split(":", 1)[1] if key.startswith("cve:") else None
+        conn.execute(
+            "INSERT OR IGNORE INTO vulns (key,cve_id,title,reason,pushed,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (key, cve_id, val.get("title", "")[:300], val.get("reason", ""),
+             1 if val.get("pushed") else 0, val.get("ts", 0)),
+        )
+    conn.commit()
+    _JSON_LEGACY.rename(_JSON_LEGACY.with_suffix(".json.migrated"))
+    log.info(f"migrated {len(old)} entries from JSON to SQLite")
+
+def db_cleanup(conn):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS)).timestamp()
-    cache = {k: v for k, v in cache.items() if v.get("ts", 0) > cutoff}
-    tmp = CACHE_FILE.with_suffix(CACHE_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, CACHE_FILE)
+    conn.execute("DELETE FROM vulns WHERE created_at < ?", (cutoff,))
+    conn.commit()
 
 def item_key(title, link, text):
     cves = sorted(set(c.upper() for c in CVE_RE.findall(text)))
@@ -635,7 +676,9 @@ def send_failure_alert(msg):
 
 # ================== MAIN ==================
 def _run():
-    cache = load_cache()
+    conn = _get_conn()
+    init_db(conn)
+    migrate_json_cache(conn)
     now = datetime.now(timezone.utc).timestamp()
 
     items = []
@@ -652,13 +695,24 @@ def _run():
 
     for it in items:
         key = item_key(it["title"], it["link"], it["text"])
-        if key in cache or key in seen_this_run:
+        if key in seen_this_run:
             skipped_seen += 1
+            continue
+        if conn.execute("SELECT 1 FROM vulns WHERE key=?", (key,)).fetchone():
+            skipped_seen += 1
+            seen_this_run.add(key)
             continue
         seen_this_run.add(key)
 
         hit, reason = score(it["text"])
-        cache[key] = {"ts": now, "pushed": hit, "title": it["title"][:120], "reason": reason}
+        cves = sorted(set(c.upper() for c in CVE_RE.findall(it["text"])))
+        cve_id = cves[0] if cves else None
+        conn.execute(
+            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,pushed,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (key, cve_id, it["source"], it["title"][:300], it["link"],
+             it["summary"][:500], reason, 1 if hit else 0, now),
+        )
         if not hit:
             skipped_filter += 1
             continue
@@ -668,26 +722,135 @@ def _run():
             pushed += 1
         time.sleep(PUSH_SLEEP_SEC)
 
-    save_cache(cache)
+    conn.commit()
+    db_cleanup(conn)
+    total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
+    conn.close()
     log.info(
         f"done: pushed={pushed}  filtered={skipped_filter}  already_seen={skipped_seen}  "
-        f"cache_size={len(cache)}"
+        f"db_size={total}"
     )
 
 
+# ================== TABLE FORMATTER ==================
+def fmt_table(headers, rows):
+    if not rows:
+        print("(no results)")
+        return
+    all_rows = [headers] + rows
+    widths = [max(len(str(c)) for c in col) for col in zip(*all_rows)]
+    def fmt_row(r):
+        return "  ".join(str(c).ljust(w) for c, w in zip(r, widths))
+    print(fmt_row(headers))
+    print("  ".join("─" * w for w in widths))
+    for r in rows:
+        print(fmt_row(r))
+
+
+# ================== CLI: query ==================
+def cmd_query(args):
+    conn = _get_conn()
+    init_db(conn)
+    where, params = [], []
+    if args.cve:
+        where.append("cve_id LIKE ?"); params.append(f"%{args.cve}%")
+    if args.source:
+        where.append("source LIKE ?"); params.append(f"%{args.source}%")
+    if args.keyword:
+        where.append("(title LIKE ? OR summary LIKE ?)")
+        params.extend([f"%{args.keyword}%"] * 2)
+    if args.days:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=args.days)).timestamp()
+        where.append("created_at > ?"); params.append(cutoff)
+    if args.pushed:
+        where.append("pushed = 1")
+    if args.reason:
+        where.append("reason LIKE ?"); params.append(f"%{args.reason}%")
+
+    sql = "SELECT cve_id,source,title,reason,pushed,created_at FROM vulns"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC"
+    sql += f" LIMIT {args.limit}"
+
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+
+    headers = ["CVE", "Source", "Title", "Reason", "Pushed", "Date"]
+    table = []
+    for cve, src, title, reason, pushed, ts in rows:
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else "-"
+        table.append([
+            cve or "-", src or "-", (title or "")[:55],
+            reason or "-", "Y" if pushed else "N", dt,
+        ])
+    fmt_table(headers, table)
+    print(f"\n({len(rows)} rows)")
+
+
+# ================== CLI: stats ==================
+def cmd_stats(args):
+    conn = _get_conn()
+    init_db(conn)
+    total   = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
+    pushed  = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
+    day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).timestamp()
+    recent  = conn.execute("SELECT COUNT(*) FROM vulns WHERE created_at>?", (day_ago,)).fetchone()[0]
+    last_ts = conn.execute("SELECT MAX(created_at) FROM vulns").fetchone()[0]
+    last_dt = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if last_ts else "-"
+    print(f"Total: {total}  |  Pushed: {pushed}  |  Last 24h: {recent}  |  Last update: {last_dt}\n")
+
+    sources = conn.execute("SELECT source,COUNT(*) FROM vulns GROUP BY source ORDER BY COUNT(*) DESC").fetchall()
+    print("── By Source ──")
+    fmt_table(["Source", "Count"], [[s or "(migrated)", str(n)] for s, n in sources])
+
+    print()
+    reasons = conn.execute(
+        "SELECT reason,COUNT(*) FROM vulns WHERE pushed=1 GROUP BY reason ORDER BY COUNT(*) DESC"
+    ).fetchall()
+    print("── By Reason (pushed only) ──")
+    fmt_table(["Reason", "Count"], [[r, str(n)] for r, n in reasons])
+    conn.close()
+
+
+# ================== MAIN ==================
 def main():
-    try:
-        with SingletonLock(LOCK_FILE):
-            _run()
-    except RuntimeError as ex:
-        log.warning(str(ex))
-        sys.exit(0)
-    except Exception:
-        import traceback
-        tb = traceback.format_exc()
-        log.exception("unhandled error")
-        send_failure_alert(tb[-3500:])
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="vuln-monitor: 0day/1day RCE intelligence")
+    sub = parser.add_subparsers(dest="cmd")
+
+    sub.add_parser("fetch", help="Fetch all sources, dedup, store, push")
+
+    qp = sub.add_parser("query", help="Query stored vulnerabilities")
+    qp.add_argument("--cve",     help="Filter by CVE ID (substring match)")
+    qp.add_argument("--source",  help="Filter by source name")
+    qp.add_argument("--keyword", "-k", help="Search title and summary")
+    qp.add_argument("--days",    type=int, help="Only last N days")
+    qp.add_argument("--pushed",  action="store_true", help="Only pushed items")
+    qp.add_argument("--reason",  help="Filter by match reason")
+    qp.add_argument("--limit",   type=int, default=50, help="Max rows (default 50)")
+
+    sub.add_parser("stats", help="Database statistics")
+
+    args = parser.parse_args()
+
+    if args.cmd == "query":
+        cmd_query(args)
+    elif args.cmd == "stats":
+        cmd_stats(args)
+    else:
+        # default / "fetch": original behavior
+        try:
+            with SingletonLock(LOCK_FILE):
+                _run()
+        except RuntimeError as ex:
+            log.warning(str(ex))
+            sys.exit(0)
+        except Exception:
+            import traceback
+            tb = traceback.format_exc()
+            log.exception("unhandled error")
+            send_failure_alert(tb[-3500:])
+            sys.exit(1)
 
 
 if __name__ == "__main__":

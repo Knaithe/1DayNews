@@ -7,6 +7,10 @@
 # Match at any depth so running from repo root OR src/ both stay clean.
 **/vuln_cache.json
 **/vuln_cache.json.tmp
+**/vuln_cache.json.migrated
+**/vuln_cache.db
+**/vuln_cache.db-wal
+**/vuln_cache.db-shm
 **/vuln_alert_state.json
 **/vuln_alert_state.tmp
 **/vuln_monitor.lock
