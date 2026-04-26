@@ -6,9 +6,10 @@
 
 把分散在 20+ 个信息源（厂商 PSIRT、研究团队博客、CISA KEV、GitHub PoC、Sploitus）的漏洞信息，用一套 RCE 聚焦的关键词规则筛一遍，去重后推到你的 Telegram 频道。
 
-- **增量**：CVE 号为主键的去重 cache（60 天 TTL），同一 CVE 跨源只推一次
-- **准实时**：systemd timer 5 分钟一触发（源刷新频率本身是上限）
-- **生产级**：文件锁防并发、原子写 cache、日志轮转、失败告警限流
+- **增量**：CVE 号为主键的去重（SQLite，60 天 TTL），同一 CVE 跨源只推一次
+- **准实时**：systemd timer 5 分钟一触发，或用 openclaw `/loop` 定时驱动
+- **可查询**：`query` 子命令按 CVE/厂商/关键词/时间/推送状态检索，`stats` 看全局统计
+- **生产级**：文件锁防并发、SQLite WAL 模式、日志轮转、失败告警限流
 - **聚焦 RCE**：白名单正则 + 500 项资产关键词 + 黑名单，过滤 XSS/CSRF/LPE/DoS 噪声
 
 想看细节：
@@ -28,12 +29,35 @@ cd 1DayNews
 pip install -r requirements.txt
 
 # 不设 TG token = dry run，只打日志不推送
-python src/vuln_monitor.py
+python src/vuln_monitor.py fetch
 
-# 输出：仓库根目录 vuln_monitor.log
+# 输出：仓库根目录 vuln_monitor.log + vuln_cache.db
 ```
 
-首次跑会拉 KEV 1500+ 条 + 各源约 400 条，~20 分钟。之后 cache 里有 1900+ 条，增量运行只需几秒。
+首次跑会拉 KEV 1500+ 条 + 各源约 400 条，~20 分钟。之后 SQLite 里有 1900+ 条，增量运行只需几秒。
+
+## CLI 子命令
+
+```bash
+python src/vuln_monitor.py fetch                          # 抓取 → 去重 → 存库 → 推送
+python src/vuln_monitor.py query --cve CVE-2026-1340      # 按 CVE 查
+python src/vuln_monitor.py query --source CISA_KEV --days 7  # 按源 + 时间
+python src/vuln_monitor.py query -k "FortiWeb RCE"        # 关键词搜索
+python src/vuln_monitor.py query --pushed --days 1         # 最近推送的
+python src/vuln_monitor.py stats                           # 数据库统计概览
+```
+
+`query` 支持的过滤参数：
+
+| 参数 | 说明 |
+|---|---|
+| `--cve` | CVE 编号（子串匹配） |
+| `--source` | 源名称（CISA_KEV / Fortinet / watchTowr / ZDI ...） |
+| `--keyword` / `-k` | 在标题和摘要中搜索 |
+| `--days` | 只看最近 N 天 |
+| `--pushed` | 只看推送过的 |
+| `--reason` | 按匹配原因过滤（RCE+asset/CVE / asset+CVE / RCE+exploit） |
+| `--limit` | 最大行数（默认 50） |
 
 ## 本地真推 Telegram
 
@@ -52,10 +76,10 @@ python scripts/configure.py
 之后直接跑：
 
 ```bash
-python src/vuln_monitor.py
+python src/vuln_monitor.py fetch
 ```
 
-**优先级**：环境变量 > 配置文件 > 空（dry mode）。所以临时覆盖 / CI / 调试时随时 `TG_CHAT_ID=-100xxx python src/vuln_monitor.py` 即可。
+**优先级**：环境变量 > 配置文件 > 空（dry mode）。所以临时覆盖 / CI / 调试时随时 `TG_CHAT_ID=-100xxx python src/vuln_monitor.py fetch` 即可。
 
 其他命令：
 
@@ -98,6 +122,33 @@ sudo bash deploy.sh
 
 部署细节（7 步脚本做了什么、沙盒配置、为什么能一次装好不刷屏）见 [`docs/architecture.md`](docs/architecture.md) 和 [`docs/operations.md`](docs/operations.md)。
 
+### 卸载
+
+```bash
+sudo bash uninstall.sh          # 停服务、删代码，保留数据
+sudo bash uninstall.sh --purge  # 彻底清除（含 db/log/env）
+```
+
+## 通过 openclaw 使用
+
+项目内置了 Claude Code skill（`.claude/commands/vuln.md`），openclaw 从项目目录启动即可使用：
+
+```bash
+cd /opt/vuln-monitor
+claude
+```
+
+在 Claude Code 内：
+
+| 操作 | 输入 |
+|---|---|
+| 手动抓取 | `/vuln` → "fetch" |
+| 定时抓取（替代 systemd） | `/loop 5m /vuln fetch` |
+| 查询漏洞 | `/vuln` → "最近有什么新漏洞" / "查一下 CVE-2026-1340" |
+| 统计 | `/vuln` → "stats" |
+
+skill 会将自然语言映射为对应的 CLI 子命令。如需全局使用，把 `.claude/commands/vuln.md` 复制到 `~/.claude/commands/`。
+
 ## 运行时观察
 
 ```bash
@@ -105,12 +156,13 @@ systemctl list-timers vuln-monitor.timer   # 下次触发
 journalctl -u vuln-monitor.service -f      # 实时日志
 sudo systemctl start vuln-monitor.service  # 手动跑一次
 tail -f /opt/vuln-monitor/vuln_monitor.log # 文件日志
+python /opt/vuln-monitor/src/vuln_monitor.py stats  # 数据库统计
 ```
 
 ## FAQ
 
 **Q: 首次真推 Telegram 会不会刷屏？**
-不会。`deploy.sh` 用 `env -i` 强制 dry-run 把 1900+ 条塞进 cache，之后 timer 只推增量（典型 0-10 条）。
+不会。`deploy.sh` 用 `env -i` 强制 dry-run 把 1900+ 条塞进 SQLite，之后 timer 只推增量（典型 0-10 条）。
 
 **Q: 国内部署能用吗？**
 Telegram API 直连被墙。需要 ① 部署在海外（推荐），或 ② 设 `HTTPS_PROXY`。GitHub/MSRC/KEV 国内直连也慢。
@@ -123,6 +175,9 @@ Telegram API 直连被墙。需要 ① 部署在海外（推荐），或 ② 设
 
 **Q: 想按严重性分频道？**
 `score()` 返回带等级 dict，`send_telegram(chat_id, msg)` 按等级查不同 chat_id。见 [`docs/architecture.md`](docs/architecture.md) 最后一节"下一步演进"。
+
+**Q: 数据存在哪？**
+`vuln_cache.db`（SQLite），默认在项目根目录，部署后在 `/opt/vuln-monitor/vuln_cache.db`。旧版 JSON cache 首次运行时自动迁移。
 
 ## 许可
 
