@@ -362,6 +362,15 @@ EXCLUDE_PATTERNS = [
 ]
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.I)
+# Vendor advisory ID patterns (fallback when no CVE found)
+ADVISORY_RE = re.compile(
+    r"FG-IR-\d+-\d+"           # Fortinet
+    r"|cisco-sa-[\w-]+"        # Cisco
+    r"|PAN-SA-\d+-\d+"         # Palo Alto
+    r"|ZDI-\d+-\d+"            # ZDI
+    r"|VMSA-\d+-\d+",          # VMware
+    re.I,
+)
 
 
 # ================== LOG / HTTP ==================
@@ -603,20 +612,31 @@ def fetch_github_cve():
 def tg_escape(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+def _extract_id(text, link):
+    """Extract CVE or vendor advisory ID from text+link."""
+    cves = sorted(set(c.upper() for c in CVE_RE.findall(text)))
+    if cves:
+        return " ".join(cves)
+    # fallback: vendor advisory ID from text or link
+    for src in (text, link or ""):
+        m = ADVISORY_RE.search(src)
+        if m:
+            return m.group()
+    return "N/A"
+
 def format_msg(it, reason):
-    cves = sorted(set(c.upper() for c in CVE_RE.findall(it["text"])))
-    cve_tag = " ".join(cves) if cves else "N/A"
+    tag = _extract_id(it["text"], it["link"])
     return (
-        f"<b>[{tg_escape(it['source'])}]</b> <code>{tg_escape(cve_tag)}</code>\n"
+        f"<b>[{tg_escape(it['source'])}]</b> <code>{tg_escape(tag)}</code>\n"
         f"<b>{tg_escape(it['title'][:220])}</b>\n"
-        f"{tg_escape(it['summary'][:600])}\n"
         f"{tg_escape(it['link'])}\n"
+        f"{tg_escape(it['summary'][:400])}\n"
         f"<i>match: {tg_escape(reason)}</i>"
     )[:4000]
 
 def send_telegram(msg):
     if not (TG_BOT_TOKEN and TG_CHAT_ID):
-        log.info(f"[DRY] {msg[:300]}")
+        log.info(f"[DRY] {msg[:500]}")
         return True
     try:
         r = SESS.post(
@@ -705,8 +725,8 @@ def _run():
         seen_this_run.add(key)
 
         hit, reason = score(it["text"])
-        cves = sorted(set(c.upper() for c in CVE_RE.findall(it["text"])))
-        cve_id = cves[0] if cves else None
+        tag = _extract_id(it["text"], it["link"])
+        cve_id = tag if tag != "N/A" else None
         conn.execute(
             "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,pushed,created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
