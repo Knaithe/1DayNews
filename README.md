@@ -39,19 +39,30 @@ python src/vuln_monitor.py fetch
 ## CLI 子命令
 
 ```bash
-python src/vuln_monitor.py fetch                          # 抓取 → 去重 → 存库 → 推送
-python src/vuln_monitor.py query --cve CVE-2026-1340      # 按 CVE 查
-python src/vuln_monitor.py query --source CISA_KEV --days 7  # 按源 + 时间
-python src/vuln_monitor.py query -k "FortiWeb RCE"        # 关键词搜索
-python src/vuln_monitor.py query --pushed --days 1         # 最近推送的
-python src/vuln_monitor.py stats                           # 数据库统计概览
+python src/vuln_monitor.py fetch                              # 抓取 → 去重 → 存库 → 推送
+python src/vuln_monitor.py query --pushed --days 1            # 简表（含 URL）
+python src/vuln_monitor.py query --full --cve CVE-2026-1340   # 详细视图
+python src/vuln_monitor.py query --json --source CISA_KEV     # JSON 输出
+python src/vuln_monitor.py brief --pushed --days 1            # 通知友好格式（适合转发）
+python src/vuln_monitor.py stats                              # 数据库统计概览
 ```
 
-`query` 支持的过滤参数：
+### 三种查询视图
+
+| 模式 | 命令 | 适用场景 |
+|---|---|---|
+| 简表 | `query` | 快速浏览，表格含 ID/Source/Title/URL/Reason/Date |
+| 详细 | `query --full` | 逐条展开，含完整标题、URL、摘要 |
+| 通知 | `brief` | 人类可读，适合复制转发，每条含可点击链接 |
+| JSON | `query --json` | 程序解析 / AI 处理 |
+
+无 CVE 的厂商公告会显示公告编号（如 `FG-IR-26-127`、`ZDI-26-298`）而非 N/A。每条记录都带原始 URL。
+
+### 过滤参数（query 和 brief 通用）
 
 | 参数 | 说明 |
 |---|---|
-| `--cve` | CVE 编号（子串匹配） |
+| `--cve` | CVE 或公告编号（子串匹配，如 `FG-IR-26`） |
 | `--source` | 源名称（CISA_KEV / Fortinet / watchTowr / ZDI ...） |
 | `--keyword` / `-k` | 在标题和摘要中搜索 |
 | `--days` | 只看最近 N 天 |
@@ -145,6 +156,7 @@ claude
 | 手动抓取 | `/vuln` → "fetch" |
 | 定时抓取（替代 systemd） | `/loop 5m /vuln fetch` |
 | 查询漏洞 | `/vuln` → "最近有什么新漏洞" / "查一下 CVE-2026-1340" |
+| 通知格式 | `/vuln` → "Fortinet 最近的漏洞，给我可以转发的格式" |
 | 统计 | `/vuln` → "stats" |
 
 skill 会将自然语言映射为对应的 CLI 子命令。如需全局使用，把 `.claude/commands/vuln.md` 复制到 `~/.claude/commands/`。

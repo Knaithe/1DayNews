@@ -768,7 +768,8 @@ def fmt_table(headers, rows):
 
 
 # ================== CLI: query ==================
-def cmd_query(args):
+def _query_rows(args):
+    """Shared query logic — returns (conn, rows) with all fields."""
     conn = _get_conn()
     init_db(conn)
     where, params = [], []
@@ -787,7 +788,7 @@ def cmd_query(args):
     if args.reason:
         where.append("reason LIKE ?"); params.append(f"%{args.reason}%")
 
-    sql = "SELECT cve_id,source,title,reason,pushed,created_at FROM vulns"
+    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at DESC"
@@ -795,17 +796,63 @@ def cmd_query(args):
 
     rows = conn.execute(sql, params).fetchall()
     conn.close()
+    return rows
 
-    headers = ["CVE", "Source", "Title", "Reason", "Pushed", "Date"]
+def cmd_query(args):
+    rows = _query_rows(args)
+
+    if args.json:
+        out = []
+        for cve, src, title, link, summary, reason, pushed, ts in rows:
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else None
+            out.append({"id": cve, "source": src, "title": title, "url": link,
+                        "summary": summary, "reason": reason, "pushed": bool(pushed), "date": dt})
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
+    if args.full:
+        # one-record-per-block, human readable, all fields
+        for i, (cve, src, title, link, summary, reason, pushed, ts) in enumerate(rows):
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if ts else "-"
+            if i > 0:
+                print()
+            print(f"[{src or '-'}] {cve or 'N/A'}  ({reason or '-'})  {dt}")
+            print(f"  {title or '-'}")
+            print(f"  {link or '(no url)'}")
+            if summary:
+                print(f"  {summary[:200]}")
+        print(f"\n({len(rows)} rows)")
+        return
+
+    # default: compact table WITH url
+    headers = ["ID", "Source", "Title", "URL", "Reason", "Date"]
     table = []
-    for cve, src, title, reason, pushed, ts in rows:
+    for cve, src, title, link, summary, reason, pushed, ts in rows:
         dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else "-"
         table.append([
-            cve or "-", src or "-", (title or "")[:55],
-            reason or "-", "Y" if pushed else "N", dt,
+            cve or "-", src or "-", (title or "")[:45],
+            (link or "-")[:55], reason or "-", dt,
         ])
     fmt_table(headers, table)
     print(f"\n({len(rows)} rows)")
+
+
+# ================== CLI: brief ==================
+def cmd_brief(args):
+    """Notification-friendly output: one block per vuln, copy-paste ready."""
+    rows = _query_rows(args)
+    if not rows:
+        print("(no results)")
+        return
+    for i, (cve, src, title, link, summary, reason, pushed, ts) in enumerate(rows):
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else "-"
+        tag = cve or "N/A"
+        print(f"{'─' * 60}" if i > 0 else "", end="\n" if i > 0 else "")
+        print(f"{tag}  [{src or '-'}]  {dt}")
+        print(f"{title or '-'}")
+        print(f"{link or '(no url)'}")
+        print(f"match: {reason or '-'}")
+    print(f"\n({len(rows)} results)")
 
 
 # ================== CLI: stats ==================
@@ -840,14 +887,23 @@ def main():
 
     sub.add_parser("fetch", help="Fetch all sources, dedup, store, push")
 
+    # shared filter args for query and brief
+    def _add_filter_args(p):
+        p.add_argument("--cve",     help="Filter by CVE ID (substring match)")
+        p.add_argument("--source",  help="Filter by source name")
+        p.add_argument("--keyword", "-k", help="Search title and summary")
+        p.add_argument("--days",    type=int, help="Only last N days")
+        p.add_argument("--pushed",  action="store_true", help="Only pushed items")
+        p.add_argument("--reason",  help="Filter by match reason")
+        p.add_argument("--limit",   type=int, default=50, help="Max rows (default 50)")
+
     qp = sub.add_parser("query", help="Query stored vulnerabilities")
-    qp.add_argument("--cve",     help="Filter by CVE ID (substring match)")
-    qp.add_argument("--source",  help="Filter by source name")
-    qp.add_argument("--keyword", "-k", help="Search title and summary")
-    qp.add_argument("--days",    type=int, help="Only last N days")
-    qp.add_argument("--pushed",  action="store_true", help="Only pushed items")
-    qp.add_argument("--reason",  help="Filter by match reason")
-    qp.add_argument("--limit",   type=int, default=50, help="Max rows (default 50)")
+    _add_filter_args(qp)
+    qp.add_argument("--full",   action="store_true", help="Detailed multi-line output")
+    qp.add_argument("--json",   action="store_true", help="JSON output")
+
+    bp = sub.add_parser("brief", help="Notification-friendly output (human readable, with URL)")
+    _add_filter_args(bp)
 
     sub.add_parser("stats", help="Database statistics")
 
@@ -855,6 +911,8 @@ def main():
 
     if args.cmd == "query":
         cmd_query(args)
+    elif args.cmd == "brief":
+        cmd_brief(args)
     elif args.cmd == "stats":
         cmd_stats(args)
     else:
