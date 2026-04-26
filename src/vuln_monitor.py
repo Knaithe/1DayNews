@@ -718,7 +718,19 @@ def _run():
         if key in seen_this_run:
             skipped_seen += 1
             continue
-        if conn.execute("SELECT 1 FROM vulns WHERE key=?", (key,)).fetchone():
+
+        row = conn.execute("SELECT source, link FROM vulns WHERE key=?", (key,)).fetchone()
+        if row:
+            # backfill NULL fields on existing records (fixes migrated data)
+            if row[0] is None or row[1] is None:
+                tag = _extract_id(it["text"], it["link"])
+                conn.execute(
+                    "UPDATE vulns SET cve_id=COALESCE(cve_id,?), source=COALESCE(source,?), "
+                    "title=COALESCE(title,?), link=COALESCE(link,?), summary=COALESCE(summary,?) "
+                    "WHERE key=?",
+                    (tag if tag != "N/A" else None, it["source"],
+                     it["title"][:300], it["link"], it["summary"][:500], key),
+                )
             skipped_seen += 1
             seen_this_run.add(key)
             continue
@@ -839,20 +851,36 @@ def cmd_query(args):
 
 # ================== CLI: brief ==================
 def cmd_brief(args):
-    """Notification-friendly output: one block per vuln, copy-paste ready."""
+    """Notification-friendly output: one block per vuln, copy-paste ready.
+
+    Quality gates — records must have:
+      - link (not NULL)
+      - source (not NULL)
+      - reason not in ("no hit", "excluded") unless --reason explicitly set
+    """
     rows = _query_rows(args)
-    if not rows:
-        print("(no results)")
+    # quality filter: only records worth forwarding to a human
+    clean = []
+    for r in rows:
+        cve, src, title, link, summary, reason, pushed, ts = r
+        if not link or not src:
+            continue
+        if not args.reason and reason in ("no hit", "excluded"):
+            continue
+        clean.append(r)
+    if not clean:
+        print("(no results matching quality threshold)")
         return
-    for i, (cve, src, title, link, summary, reason, pushed, ts) in enumerate(rows):
+    for i, (cve, src, title, link, summary, reason, pushed, ts) in enumerate(clean):
         dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else "-"
         tag = cve or "N/A"
-        print(f"{'─' * 60}" if i > 0 else "", end="\n" if i > 0 else "")
-        print(f"{tag}  [{src or '-'}]  {dt}")
+        if i > 0:
+            print(f"{'─' * 60}")
+        print(f"{tag}  [{src}]  {dt}")
         print(f"{title or '-'}")
-        print(f"{link or '(no url)'}")
+        print(f"{link}")
         print(f"match: {reason or '-'}")
-    print(f"\n({len(rows)} results)")
+    print(f"\n({len(clean)} results)")
 
 
 # ================== CLI: stats ==================
@@ -878,6 +906,45 @@ def cmd_stats(args):
     print("── By Reason (pushed only) ──")
     fmt_table(["Reason", "Count"], [[r, str(n)] for r, n in reasons])
     conn.close()
+
+
+# ================== CLI: rebuild ==================
+def cmd_rebuild(args):
+    """Re-fetch all sources and backfill NULL fields in existing records."""
+    conn = _get_conn()
+    init_db(conn)
+
+    items = []
+    for name, url in RSS_FEEDS:
+        items.extend(fetch_rss(name, url))
+    items.extend(fetch_kev_json())
+    items.extend(fetch_github_cve())
+    print(f"fetched {len(items)} items from sources")
+
+    updated = 0
+    for it in items:
+        key = item_key(it["title"], it["link"], it["text"])
+        row = conn.execute("SELECT source, link FROM vulns WHERE key=?", (key,)).fetchone()
+        if row and (row[0] is None or row[1] is None):
+            tag = _extract_id(it["text"], it["link"])
+            conn.execute(
+                "UPDATE vulns SET cve_id=COALESCE(cve_id,?), source=COALESCE(source,?), "
+                "title=COALESCE(title,?), link=COALESCE(link,?), summary=COALESCE(summary,?) "
+                "WHERE key=?",
+                (tag if tag != "N/A" else None, it["source"],
+                 it["title"][:300], it["link"], it["summary"][:500], key),
+            )
+            updated += 1
+
+    conn.commit()
+    # report remaining incomplete records
+    incomplete = conn.execute(
+        "SELECT COUNT(*) FROM vulns WHERE source IS NULL OR link IS NULL"
+    ).fetchone()[0]
+    conn.close()
+    print(f"backfilled {updated} records")
+    if incomplete:
+        print(f"note: {incomplete} records still have NULL fields (source no longer in feeds)")
 
 
 # ================== MAIN ==================
@@ -906,6 +973,7 @@ def main():
     _add_filter_args(bp)
 
     sub.add_parser("stats", help="Database statistics")
+    sub.add_parser("rebuild", help="Re-fetch sources and backfill NULL fields in existing records")
 
     args = parser.parse_args()
 
@@ -915,6 +983,8 @@ def main():
         cmd_brief(args)
     elif args.cmd == "stats":
         cmd_stats(args)
+    elif args.cmd == "rebuild":
+        cmd_rebuild(args)
     else:
         # default / "fetch": original behavior
         try:

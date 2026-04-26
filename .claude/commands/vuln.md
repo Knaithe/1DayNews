@@ -53,6 +53,12 @@ Each record shows: ID, source, date, title, URL, match reason. Designed for copy
 $PY $SCRIPT stats
 ```
 
+### rebuild — Backfill missing fields in historical records
+```bash
+$PY $SCRIPT rebuild
+```
+Re-fetches all sources and fills in NULL source/link/summary/cve_id on existing records. Run once after migration from JSON cache, or when records show `(no url)` / `-` for source.
+
 ## How to interpret user requests
 
 Map natural language to the right subcommand:
@@ -66,6 +72,7 @@ Map natural language to the right subcommand:
 | "CISA KEV 最近一周" | `brief --source CISA_KEV --days 7` |
 | "有没有 RCE" | `brief --reason RCE --days 7` |
 | "导出最近漏洞" / "export" | `query --json --pushed --days 7` |
+| "修复历史数据" / "rebuild" / "backfill" | `rebuild` |
 | "统计" / "status" / "overview" | `stats` |
 
 ## Available sources
