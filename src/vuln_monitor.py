@@ -486,6 +486,17 @@ def db_cleanup(conn):
     conn.execute("DELETE FROM vulns WHERE created_at < ?", (cutoff,))
     conn.commit()
 
+def _backfill_row(conn, key, it):
+    """UPDATE a record's NULL fields with fresh data from a source item."""
+    tag = _extract_id(it["text"], it["link"])
+    conn.execute(
+        "UPDATE vulns SET cve_id=COALESCE(cve_id,?), source=COALESCE(source,?), "
+        "title=COALESCE(title,?), link=COALESCE(link,?), summary=COALESCE(summary,?) "
+        "WHERE key=?",
+        (tag if tag != "N/A" else None, it["source"],
+         it["title"][:300], it["link"], it["summary"][:500], key),
+    )
+
 def item_key(title, link, text):
     cves = sorted(set(c.upper() for c in CVE_RE.findall(text)))
     if cves:
@@ -712,6 +723,7 @@ def _run():
     pushed = 0
     skipped_seen = 0
     skipped_filter = 0
+    backfilled = 0
 
     for it in items:
         key = item_key(it["title"], it["link"], it["text"])
@@ -721,16 +733,9 @@ def _run():
 
         row = conn.execute("SELECT source, link FROM vulns WHERE key=?", (key,)).fetchone()
         if row:
-            # backfill NULL fields on existing records (fixes migrated data)
             if row[0] is None or row[1] is None:
-                tag = _extract_id(it["text"], it["link"])
-                conn.execute(
-                    "UPDATE vulns SET cve_id=COALESCE(cve_id,?), source=COALESCE(source,?), "
-                    "title=COALESCE(title,?), link=COALESCE(link,?), summary=COALESCE(summary,?) "
-                    "WHERE key=?",
-                    (tag if tag != "N/A" else None, it["source"],
-                     it["title"][:300], it["link"], it["summary"][:500], key),
-                )
+                _backfill_row(conn, key, it)
+                backfilled += 1
             skipped_seen += 1
             seen_this_run.add(key)
             continue
@@ -760,7 +765,7 @@ def _run():
     conn.close()
     log.info(
         f"done: pushed={pushed}  filtered={skipped_filter}  already_seen={skipped_seen}  "
-        f"db_size={total}"
+        f"backfilled={backfilled}  db_size={total}"
     )
 
 
@@ -780,8 +785,12 @@ def fmt_table(headers, rows):
 
 
 # ================== CLI: query ==================
-def _query_rows(args):
-    """Shared query logic — returns (conn, rows) with all fields."""
+def _query_rows(args, quality_filter=False):
+    """Shared query logic — returns rows with all fields.
+
+    quality_filter=True adds SQL-level gates for notification views:
+      link IS NOT NULL, source IS NOT NULL, reason not in (no hit, excluded).
+    """
     conn = _get_conn()
     init_db(conn)
     where, params = [], []
@@ -799,6 +808,11 @@ def _query_rows(args):
         where.append("pushed = 1")
     if args.reason:
         where.append("reason LIKE ?"); params.append(f"%{args.reason}%")
+    if quality_filter:
+        where.append("link IS NOT NULL AND link != ''")
+        where.append("source IS NOT NULL AND source != ''")
+        if not args.reason:
+            where.append("reason NOT IN ('no hit','excluded')")
 
     sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
     if where:
@@ -853,25 +867,16 @@ def cmd_query(args):
 def cmd_brief(args):
     """Notification-friendly output: one block per vuln, copy-paste ready.
 
-    Quality gates — records must have:
-      - link (not NULL)
-      - source (not NULL)
-      - reason not in ("no hit", "excluded") unless --reason explicitly set
+    Quality gates (enforced at SQL level via quality_filter=True):
+      - link IS NOT NULL
+      - source IS NOT NULL
+      - reason NOT IN ('no hit', 'excluded') unless --reason explicitly set
     """
-    rows = _query_rows(args)
-    # quality filter: only records worth forwarding to a human
-    clean = []
-    for r in rows:
-        cve, src, title, link, summary, reason, pushed, ts = r
-        if not link or not src:
-            continue
-        if not args.reason and reason in ("no hit", "excluded"):
-            continue
-        clean.append(r)
-    if not clean:
+    rows = _query_rows(args, quality_filter=True)
+    if not rows:
         print("(no results matching quality threshold)")
         return
-    for i, (cve, src, title, link, summary, reason, pushed, ts) in enumerate(clean):
+    for i, (cve, src, title, link, summary, reason, pushed, ts) in enumerate(rows):
         dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts else "-"
         tag = cve or "N/A"
         if i > 0:
@@ -880,7 +885,7 @@ def cmd_brief(args):
         print(f"{title or '-'}")
         print(f"{link}")
         print(f"match: {reason or '-'}")
-    print(f"\n({len(clean)} results)")
+    print(f"\n({len(rows)} results)")
 
 
 # ================== CLI: stats ==================
@@ -926,14 +931,7 @@ def cmd_rebuild(args):
         key = item_key(it["title"], it["link"], it["text"])
         row = conn.execute("SELECT source, link FROM vulns WHERE key=?", (key,)).fetchone()
         if row and (row[0] is None or row[1] is None):
-            tag = _extract_id(it["text"], it["link"])
-            conn.execute(
-                "UPDATE vulns SET cve_id=COALESCE(cve_id,?), source=COALESCE(source,?), "
-                "title=COALESCE(title,?), link=COALESCE(link,?), summary=COALESCE(summary,?) "
-                "WHERE key=?",
-                (tag if tag != "N/A" else None, it["source"],
-                 it["title"][:300], it["link"], it["summary"][:500], key),
-            )
+            _backfill_row(conn, key, it)
             updated += 1
 
     conn.commit()
