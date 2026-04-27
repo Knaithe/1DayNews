@@ -43,7 +43,7 @@ python src/web.py                    # http://127.0.0.1:8001
 ssh -L 8001:127.0.0.1:8001 user@srv  # 远程 SSH 隧道访问
 ```
 
-暖色卡片布局，实时搜索，源/原因/时间筛选，严重性颜色编码。默认只显示精选（pushed），可切换全量。只读 SQLite + waitress 生产服务器，禁用缓存，只绑 127.0.0.1。部署时自动启用 systemd 服务。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
+Pluto Security 风格暖色卡片布局，实时搜索，药丸式源/原因/时间筛选，严重性颜色编码。默认只显示精选（pushed），可切换全量。安全加固（CSP/X-Frame-Options/nosniff），只读 SQLite + waitress，只绑 127.0.0.1。部署时自动启用 systemd 服务。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
 
 ## Telegram 推送
 
