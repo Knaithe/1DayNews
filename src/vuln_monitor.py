@@ -122,6 +122,7 @@ RSS_FEEDS = [
     ("Rapid7",      "https://www.rapid7.com/blog/rss/"),
     ("GreyNoise",   "https://www.greynoise.io/blog/rss.xml"),
     ("SentinelLabs","https://www.sentinelone.com/labs/feed/"),
+    ("XuanwuLab",   "https://xlab.tencent.com/en/atom.xml"),
 ]
 
 # CISA KEV uses a JSON endpoint (1500+ entries with structured fields, not RSS).
