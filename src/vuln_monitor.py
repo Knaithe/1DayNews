@@ -2,19 +2,20 @@
 """
 0day/1day RCE vulnerability intelligence aggregator.
 
+Sources (17):
+    Vendor PSIRT (Fortinet/PaloAlto/Cisco/MSRC) + Sploitus exploit feeds
+    + research teams (watchTowr/ZDI/Horizon3/Rapid7) + CISA KEV
+    + vuln databases (Chaitin/ThreatBook) + GitHub PoC search
+
 Flow:
-    RSS feeds + GitHub CVE repo search
-      -> dedup by CVE / content hash
-      -> keyword score (RCE pattern + asset/CVE hit, with exclude list)
-      -> Telegram push
+    fetch → dedup (SQLite, CVE/hash key) → RCE keyword score → Telegram push
 
-Run:
-    pip install -r requirements.txt
-    export TG_BOT_TOKEN=xxx TG_CHAT_ID=xxx
-    python vuln_monitor.py
-
-First run: leave TG_* unset to "dry run" and let the cache warm up, so you
-don't get spammed by historical items on the real run.
+CLI:
+    python vuln_monitor.py              # fetch (default)
+    python vuln_monitor.py query ...    # search DB
+    python vuln_monitor.py brief ...    # notification-friendly output
+    python vuln_monitor.py stats        # database overview
+    python vuln_monitor.py rebuild      # backfill incomplete records
 """
 import os
 import re
@@ -384,7 +385,7 @@ ADVISORY_RE = re.compile(
 # Sources whose advisories are high-value even when DB fields are incomplete.
 HIGH_PRIORITY_SOURCES = frozenset({
     "Fortinet", "PaloAlto", "Cisco", "CISA_KEV", "ZDI",
-    "watchTowr", "MSRC", "Horizon3", "ProjectDisc",
+    "watchTowr", "MSRC", "Horizon3", "Chaitin", "ThreatBook",
 })
 # Reasons that indicate a genuinely interesting finding.
 STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "RCE+exploit"})
@@ -400,10 +401,9 @@ VENDOR_URL_FALLBACK = {
     "ZDI":          "https://www.zerodayinitiative.com/advisories/published/",
     "watchTowr":    "https://labs.watchtowr.com",
     "Horizon3":     "https://www.horizon3.ai/attack-research/",
-    "ProjectDisc":  "https://blog.projectdiscovery.io",
     "Rapid7":       "https://www.rapid7.com/blog/",
-    "VMware":       "https://blogs.vmware.com/security/",
-    "GreyNoise":    "https://www.greynoise.io/blog",
+    "Chaitin":      "https://stack.chaitin.com/vuldb/index",
+    "ThreatBook":   "https://x.threatbook.com/nodev4/vul_intelligence/recentvuln",
     "GitHub":       "https://github.com",
 }
 
@@ -605,8 +605,8 @@ def _auto_enrich():
         new_cve, new_src, new_link = _enrich_record(cve_id, source, title, link)
         if new_link != link or new_src != source or new_cve != cve_id:
             conn.execute(
-                "UPDATE vulns SET cve_id=COALESCE(?,cve_id), source=COALESCE(?,source), "
-                "link=COALESCE(?,link) WHERE key=?",
+                "UPDATE vulns SET cve_id=COALESCE(cve_id,?), source=COALESCE(source,?), "
+                "link=COALESCE(link,?) WHERE key=?",
                 (new_cve, new_src, new_link, key),
             )
             updated += 1
@@ -710,8 +710,8 @@ def fetch_chaitin():
     Only fetches latest page (rate-limited to ~1 req per cycle).
     """
     out = []
+    s = requests.Session()
     try:
-        s = requests.Session()
         s.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://stack.chaitin.com/vuldb/index",
@@ -720,7 +720,6 @@ def fetch_chaitin():
         })
         r = s.get(CHAITIN_API_URL, params={"limit": ITEM_PER_FEED, "offset": 0},
                   timeout=REQUEST_TIMEOUT)
-        s.close()
         if r.status_code != 200:
             log.warning(f"Chaitin HTTP {r.status_code}")
             return out
@@ -743,17 +742,23 @@ def fetch_chaitin():
             })
     except Exception as ex:
         log.warning(f"Chaitin err: {ex}")
+    finally:
+        s.close()
     return out
 
 
 def fetch_threatbook():
     """微步在线 ThreatBook — premium + highrisk vuln listings."""
     out = []
+    s = requests.Session()
     try:
-        r = SESS.get(THREATBOOK_API_URL, timeout=REQUEST_TIMEOUT, headers={
+        s.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://x.threatbook.com/nodev4/vul_intelligence/recentvuln",
             "Origin": "https://x.threatbook.com",
+            "Accept": "application/json",
         })
+        r = s.get(THREATBOOK_API_URL, timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             log.warning(f"ThreatBook HTTP {r.status_code}")
             return out
@@ -780,6 +785,8 @@ def fetch_threatbook():
                 })
     except Exception as ex:
         log.warning(f"ThreatBook err: {ex}")
+    finally:
+        s.close()
     return out
 
 
@@ -814,6 +821,18 @@ def fetch_github_cve():
             log.warning(f"GitHub {q} err: {ex}")
         time.sleep(2)
     return out
+
+
+def _fetch_all_sources():
+    """Collect items from all configured sources. Used by _run() and cmd_rebuild()."""
+    items = []
+    for name, url in RSS_FEEDS:
+        items.extend(fetch_rss(name, url))
+    items.extend(fetch_kev_json())
+    items.extend(fetch_chaitin())
+    items.extend(fetch_threatbook())
+    items.extend(fetch_github_cve())
+    return items
 
 
 # ================== PUSH ==================
@@ -909,13 +928,7 @@ def _run():
     migrate_json_cache(conn)
     now = datetime.now(timezone.utc).timestamp()
 
-    items = []
-    for name, url in RSS_FEEDS:
-        items.extend(fetch_rss(name, url))
-    items.extend(fetch_kev_json())
-    items.extend(fetch_chaitin())
-    items.extend(fetch_threatbook())
-    items.extend(fetch_github_cve())
+    items = _fetch_all_sources()
     log.info(f"collected {len(items)} items")
 
     seen_this_run = set()
@@ -1016,8 +1029,8 @@ def _query_rows(args, quality_filter=False):
     sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at DESC"
-    sql += f" LIMIT {args.limit}"
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(args.limit)
 
     rows = conn.execute(sql, params).fetchall()
     conn.close()
@@ -1134,13 +1147,7 @@ def cmd_rebuild(args):
     conn = _get_conn()
     init_db(conn)
 
-    items = []
-    for name, url in RSS_FEEDS:
-        items.extend(fetch_rss(name, url))
-    items.extend(fetch_kev_json())
-    items.extend(fetch_chaitin())
-    items.extend(fetch_threatbook())
-    items.extend(fetch_github_cve())
+    items = _fetch_all_sources()
     print(f"fetched {len(items)} items from sources")
 
     updated = 0
