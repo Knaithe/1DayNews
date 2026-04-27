@@ -424,6 +424,22 @@ SESS.headers["User-Agent"] = "vuln-intel/1.0"
 if PROXY:
     SESS.proxies = {"http": PROXY, "https": PROXY}
 
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAY = 3
+
+def _get_with_retry(session, url, **kwargs):
+    """GET with retry on transient failures."""
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            r = session.get(url, **kwargs)
+            return r
+        except (requests.ConnectionError, requests.Timeout) as ex:
+            if attempt == _RETRY_ATTEMPTS:
+                raise
+            log.debug(f"retry {attempt}/{_RETRY_ATTEMPTS} for {url}: {ex}")
+            time.sleep(_RETRY_DELAY)
+    return None  # unreachable
+
 
 # ================== LOCK ==================
 class SingletonLock:
@@ -622,24 +638,23 @@ def item_key(title, link, text):
 
 
 # ================== FILTER ==================
-def any_match(text, patterns):
-    return any(re.search(p, text, re.I) for p in patterns)
-
-def any_contains(text, kws):
-    low = text.lower()
-    return any(k in low for k in kws)
+# Pre-compile patterns into single combined regexes for performance.
+_RCE_RE = re.compile("|".join(f"(?:{p})" for p in RCE_PATTERNS), re.I)
+_EXCLUDE_RE = re.compile("|".join(f"(?:{p})" for p in EXCLUDE_PATTERNS), re.I)
+_ASSET_KW_SET = frozenset(ASSET_KEYWORDS)
 
 def score(text):
-    if any_match(text, EXCLUDE_PATTERNS):
+    if _EXCLUDE_RE.search(text):
         return False, "excluded"
-    rce   = any_match(text, RCE_PATTERNS)
-    asset = any_contains(text, ASSET_KEYWORDS)
+    low = text.lower()
+    rce   = bool(_RCE_RE.search(text))
+    asset = any(k in low for k in _ASSET_KW_SET)
     cve   = bool(CVE_RE.search(text))
     if rce and (asset or cve):
         return True, "RCE+asset/CVE"
     if asset and cve:
         return True, "asset+CVE"
-    if rce and "exploit" in text.lower():
+    if rce and "exploit" in low:
         return True, "RCE+exploit"
     return False, "no hit"
 
@@ -649,7 +664,7 @@ def fetch_rss(name, url):
     """Fetch with our own timeout (feedparser.parse(url) has no timeout control)."""
     out = []
     try:
-        r = SESS.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        r = _get_with_retry(SESS, url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
         if r.status_code != 200:
             log.warning(f"RSS {name} HTTP {r.status_code}")
             return out
@@ -676,12 +691,15 @@ def fetch_kev_json():
     """CISA KEV: gold-standard in-the-wild exploited list. JSON with 1500+ entries."""
     out = []
     try:
-        r = SESS.get(KEV_JSON_URL, timeout=REQUEST_TIMEOUT)
+        r = _get_with_retry(SESS, KEV_JSON_URL, timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             log.warning(f"KEV HTTP {r.status_code}")
             return out
         data = r.json()
+        kev_cutoff = (datetime.now(timezone.utc) - timedelta(days=CACHE_TTL_DAYS)).strftime("%Y-%m-%d")
         for v in data.get("vulnerabilities", []):
+            if v.get("dateAdded", "") < kev_cutoff:
+                continue
             cve = v.get("cveID", "")
             vendor = v.get("vendorProject", "")
             product = v.get("product", "")
@@ -718,7 +736,7 @@ def fetch_chaitin():
             "Origin": "https://stack.chaitin.com",
             "Accept": "application/json",
         })
-        r = s.get(CHAITIN_API_URL, params={"limit": ITEM_PER_FEED, "offset": 0},
+        r = _get_with_retry(s, CHAITIN_API_URL, params={"limit": ITEM_PER_FEED, "offset": 0},
                   timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             log.warning(f"Chaitin HTTP {r.status_code}")
@@ -758,7 +776,7 @@ def fetch_threatbook():
             "Origin": "https://x.threatbook.com",
             "Accept": "application/json",
         })
-        r = s.get(THREATBOOK_API_URL, timeout=REQUEST_TIMEOUT)
+        r = _get_with_retry(s, THREATBOOK_API_URL, timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             log.warning(f"ThreatBook HTTP {r.status_code}")
             return out
@@ -798,7 +816,7 @@ def fetch_github_cve():
         headers["Authorization"] = f"Bearer {GH_TOKEN}"
     for q in (f"CVE-{year}-", f"CVE-{year - 1}-"):
         try:
-            r = SESS.get(
+            r = _get_with_retry(SESS,
                 "https://api.github.com/search/repositories",
                 params={"q": f"{q} in:name", "sort": "updated", "order": "desc", "per_page": 30},
                 headers=headers,
@@ -826,12 +844,17 @@ def fetch_github_cve():
 def _fetch_all_sources():
     """Collect items from all configured sources. Used by _run() and cmd_rebuild()."""
     items = []
+    counts = {}
     for name, url in RSS_FEEDS:
-        items.extend(fetch_rss(name, url))
-    items.extend(fetch_kev_json())
-    items.extend(fetch_chaitin())
-    items.extend(fetch_threatbook())
-    items.extend(fetch_github_cve())
+        batch = fetch_rss(name, url)
+        counts[name] = len(batch)
+        items.extend(batch)
+    for name, func in [("CISA_KEV", fetch_kev_json), ("Chaitin", fetch_chaitin),
+                        ("ThreatBook", fetch_threatbook), ("GitHub", fetch_github_cve)]:
+        batch = func()
+        counts[name] = len(batch)
+        items.extend(batch)
+    log.info("source counts: " + "  ".join(f"{k}={v}" for k, v in counts.items()))
     return items
 
 
