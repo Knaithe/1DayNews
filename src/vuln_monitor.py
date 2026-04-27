@@ -841,6 +841,55 @@ def fetch_github_cve():
     return out
 
 
+def fetch_poc_in_github():
+    """nomi-sec/PoC-in-GitHub: latest commit diff → new PoC repos for recent CVEs."""
+    out = []
+    year = datetime.now().year
+    headers = {"Accept": "application/vnd.github+json"}
+    if GH_TOKEN:
+        headers["Authorization"] = f"Bearer {GH_TOKEN}"
+    try:
+        r = _get_with_retry(SESS,
+            "https://api.github.com/repos/nomi-sec/PoC-in-GitHub/commits/master",
+            headers=headers, timeout=REQUEST_TIMEOUT)
+        if r.status_code != 200:
+            log.warning(f"PoC-in-GitHub HTTP {r.status_code}")
+            return out
+        files = r.json().get("files", [])
+        for f in files:
+            fname = f.get("filename", "")
+            # only current/previous year CVEs (path: "2026/CVE-2026-xxxx.json")
+            if not (fname.startswith(f"{year}/") or fname.startswith(f"{year-1}/")):
+                continue
+            cves = CVE_RE.findall(fname)
+            if not cves:
+                continue
+            cve = cves[0].upper()
+            raw_url = f.get("raw_url", "")
+            # fetch the JSON to get PoC repo URLs
+            if raw_url:
+                try:
+                    jr = SESS.get(raw_url, headers=headers, timeout=10)
+                    if jr.status_code == 200:
+                        repos = jr.json() if isinstance(jr.json(), list) else []
+                        for repo in repos[:3]:
+                            name = repo.get("full_name", "")
+                            desc = repo.get("description") or ""
+                            html_url = repo.get("html_url", "")
+                            out.append({
+                                "source": "PoC-GitHub",
+                                "title": f"{cve} PoC: {name}",
+                                "link": html_url,
+                                "summary": desc[:500],
+                                "text": f"{cve} {name}\n{desc}",
+                            })
+                except Exception:
+                    pass
+    except Exception as ex:
+        log.warning(f"PoC-in-GitHub err: {ex}")
+    return out
+
+
 def _fetch_all_sources():
     """Collect items from all configured sources. Used by _run() and cmd_rebuild()."""
     items = []
@@ -850,7 +899,8 @@ def _fetch_all_sources():
         counts[name] = len(batch)
         items.extend(batch)
     for name, func in [("CISA_KEV", fetch_kev_json), ("Chaitin", fetch_chaitin),
-                        ("ThreatBook", fetch_threatbook), ("GitHub", fetch_github_cve)]:
+                        ("ThreatBook", fetch_threatbook), ("GitHub", fetch_github_cve),
+                        ("PoC-GitHub", fetch_poc_in_github)]:
         batch = func()
         counts[name] = len(batch)
         items.extend(batch)
