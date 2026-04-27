@@ -10,7 +10,7 @@ Usage:
 import argparse
 import sqlite3
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -32,6 +32,21 @@ app = Flask(__name__)
 def no_cache(response):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "script-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'none'; "
+        "form-action 'self'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
 
 SOURCE_COLORS = {
@@ -53,6 +68,13 @@ def get_db():
     return conn
 
 
+def _int_arg(name, default, lo, hi):
+    try:
+        return max(lo, min(hi, int(request.args.get(name, default))))
+    except (ValueError, TypeError):
+        return default
+
+
 # ── API ──
 @app.route("/api/vulns")
 def api_vulns():
@@ -71,17 +93,16 @@ def api_vulns():
     pushed = request.args.get("pushed", "").strip()
     if pushed == "1":
         where.append("pushed = 1")
-    days = request.args.get("days", "").strip()
-    if days and days.isdigit():
-        from datetime import timedelta
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).timestamp()
+    days = _int_arg("days", 0, 0, 3650)
+    if days > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
         where.append("created_at > ?"); params.append(cutoff)
 
     sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at DESC LIMIT ?"
-    limit = min(int(request.args.get("limit", 100)), 500)
+    limit = _int_arg("limit", 100, 1, 500)
     params.append(limit)
 
     rows = conn.execute(sql, params).fetchall()
@@ -132,134 +153,177 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --cream: #FBF0DF; --peach: #F5D9B0; --sand: #EDE3D3;
-  --white: #FFFFFF; --card: #FFFEFA;
-  --ink: #111013; --body: #3a3636; --muted: #9a918a;
-  --yellow: #FFFF78; --coral: #FF6B6B; --mint: #39BF97;
-  --orange: #F4845F; --violet: #7C5CFC; --sky: #38BDF8;
-  --radius: 22px;
+  --cream: #FDF2D4; --sand: #E9DAAD; --peach: #FFB89F;
+  --white: #FFFFFF; --card: #FFFFFF;
+  --ink: #111013; --body: #2a2a2a; --muted: #6b6b6b;
+  --yellow: #FFFF78; --orange: #FA673A; --red: #EB2010;
+  --mint: #39BF97; --violet: #7C5CFC;
+  --radius: 20px; --pill: 100px;
+  --spring: cubic-bezier(.5, 2.5, .7, .7);
+  --shadow-hard: 4px 4px 0 var(--ink);
+  --shadow-soft: 2px 2px 0 var(--ink);
 }
 body {
   background: var(--cream);
   background-image:
-    radial-gradient(ellipse 80% 60% at 15% 10%, rgba(255,180,130,.22), transparent),
-    radial-gradient(ellipse 60% 50% at 85% 80%, rgba(255,255,120,.15), transparent);
-  color: var(--body); font-family: 'DM Sans', -apple-system, sans-serif;
-  line-height: 1.6; min-height: 100vh;
+    radial-gradient(ellipse 80% 60% at 15% 10%, rgba(250,103,58,.10), transparent),
+    radial-gradient(ellipse 60% 50% at 85% 80%, rgba(255,255,120,.18), transparent);
+  color: var(--body); font-family: 'Poppins', -apple-system, sans-serif;
+  font-weight: 400; line-height: 1.5; min-height: 100vh;
 }
 a { color: var(--violet); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* ── Navbar ── */
-.nav { background: var(--ink); padding: 0 40px; position: sticky; top: 0; z-index: 20; }
-.nav-inner { max-width: 1260px; margin: 0 auto; display: flex; align-items: center; height: 64px; gap: 28px; }
+/* ── Navbar (cream, slim: logo + search only) ── */
+.nav { background: var(--cream); padding: 0 40px; position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var(--ink); backdrop-filter: blur(6px); }
+.nav-inner { max-width: 1260px; margin: 0 auto; display: flex; align-items: center; height: 60px; gap: 18px; }
 .nav-logo {
-  font-family: 'Syne', sans-serif; font-weight: 800; font-size: 18px;
-  color: var(--ink); background: var(--yellow); padding: 5px 18px;
-  border-radius: 40px; letter-spacing: -.3px; white-space: nowrap;
-  box-shadow: 0 0 0 2px var(--ink), 0 0 0 4px var(--yellow);
+  font-family: 'Unbounded', sans-serif; font-weight: 800; font-size: 15px;
+  color: var(--ink); background: var(--yellow); padding: 6px 16px;
+  border-radius: var(--pill); letter-spacing: -.2px; white-space: nowrap;
+  border: 1px solid var(--ink); box-shadow: var(--shadow-soft);
 }
-.nav-search { flex: 1; position: relative; }
+.nav-search { flex: 1; max-width: 560px; position: relative; }
 .nav-search input {
-  width: 100%; padding: 9px 18px 9px 42px; background: rgba(255,255,255,.08);
-  border: 1.5px solid rgba(255,255,255,.12); border-radius: 40px;
-  color: #fff; font-family: inherit; font-size: 14px; outline: none; transition: all .25s;
+  width: 100%; padding: 8px 18px 8px 42px; background: var(--white);
+  border: 1px solid var(--ink); border-radius: var(--pill);
+  color: var(--ink); font-family: inherit; font-size: 14px; outline: none;
+  transition: box-shadow .25s var(--spring);
 }
-.nav-search input:focus { background: rgba(255,255,255,.14); border-color: var(--yellow); }
-.nav-search input::placeholder { color: rgba(255,255,255,.35); }
+.nav-search input:focus { box-shadow: var(--shadow-soft); }
+.nav-search input::placeholder { color: var(--muted); }
 .nav-search::before {
   content: "\1F50D"; position: absolute; left: 16px; top: 50%;
-  transform: translateY(-50%); font-size: 14px; opacity: .4;
+  transform: translateY(-50%); font-size: 14px; opacity: .5;
 }
-.nav-filters { display: flex; gap: 6px; align-items: center; }
-.pill-select {
-  padding: 7px 28px 7px 12px; background: rgba(255,255,255,.07);
-  border: 1.5px solid rgba(255,255,255,.12); border-radius: 40px;
-  color: rgba(255,255,255,.75); font-family: inherit; font-size: 12px;
-  cursor: pointer; appearance: none; -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='rgba(255,255,255,.4)'%3E%3Cpath d='M1 3l4 4 4-4'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 10px center;
-}
-.pill-select:focus { border-color: var(--yellow); outline: none; }
-.pill-select option { background: var(--ink); color: #fff; padding: 8px; }
+.nav-filters { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+
+/* ── Pill-row filters (each filter its own row) ── */
+.filter-row { max-width: 1260px; margin: 10px auto 0; padding: 0 40px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.filter-row:first-of-type { margin-top: 24px; }
+.group-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; min-width: 64px; }
 
 /* ── Hero / Stats ── */
-.hero { max-width: 1260px; margin: 0 auto; padding: 40px 40px 8px; }
+.hero { max-width: 1260px; margin: 0 auto; padding: 48px 40px 8px; }
 .hero-title {
-  font-family: 'Syne', sans-serif; font-weight: 800; font-size: 42px;
-  color: var(--ink); letter-spacing: -1.5px; line-height: 1.1;
+  font-family: 'Unbounded', sans-serif; font-weight: 800;
+  font-size: clamp(2rem, 4.5vw, 4.5rem);
+  color: var(--ink); letter-spacing: -.02em; line-height: 1.1;
 }
-.hero-title span { color: var(--coral); }
-.hero-sub { color: var(--muted); font-size: 15px; margin-top: 6px; }
+.hero-title span { color: var(--orange); }
+.hero-sub { color: var(--muted); font-size: 15px; margin-top: 10px; font-weight: 400; }
 
 .stats { max-width: 1260px; margin: 24px auto 0; padding: 0 40px; display: flex; gap: 14px; flex-wrap: wrap; }
 .stat-card {
-  background: var(--white); border: 2px solid var(--sand);
+  background: var(--white); border: 1px solid var(--ink);
   border-radius: var(--radius); padding: 18px 26px; min-width: 150px;
-  transition: transform .2s, border-color .2s, box-shadow .2s;
+  transition: transform .25s var(--spring), box-shadow .25s var(--spring);
 }
-.stat-card:hover { transform: translateY(-3px); border-color: var(--peach); box-shadow: 0 8px 20px rgba(0,0,0,.06); }
-.stat-num { font-family: 'Syne', sans-serif; font-size: 34px; font-weight: 800; color: var(--ink); line-height: 1; }
-.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; margin-top: 4px; font-weight: 600; }
+.stat-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-hard); }
+.stat-num { font-family: 'Unbounded', sans-serif; font-size: 34px; font-weight: 800; color: var(--ink); line-height: 1; letter-spacing: -.02em; }
+.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 6px; font-weight: 600; }
+
+/* ── Severity legend (inline at the right of hero subtitle) ── */
+.hero-sub-row { max-width: 1260px; margin: 10px auto 0; padding: 0 40px; display: flex; align-items: center; gap: 18px 24px; flex-wrap: wrap; }
+.hero-sub-row .hero-sub { margin: 0; }
+.legend-inline { margin-left: auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.legend-inline-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ink); }
+.legend-pill { width: 8px; height: 14px; border-radius: 0 var(--pill) var(--pill) 0; border: 1px solid var(--ink); border-left: none; flex-shrink: 0; }
+
+/* ── Pushed toggle (switch) ── */
+.pushed-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink); cursor: pointer; user-select: none; }
+.pushed-toggle input { display: none; }
+.pushed-toggle .switch {
+  width: 36px; height: 20px; background: var(--white); border: 1px solid var(--ink);
+  border-radius: var(--pill); position: relative; transition: background .25s var(--spring);
+}
+.pushed-toggle .switch::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 14px; height: 14px; background: var(--ink); border-radius: 50%;
+  transition: transform .25s var(--spring);
+}
+.pushed-toggle input:checked + .switch { background: var(--mint); }
+.pushed-toggle input:checked + .switch::after { transform: translateX(16px); }
 
 /* ── Category pills ── */
-.cat-row { max-width: 1260px; margin: 28px auto 0; padding: 0 40px; display: flex; gap: 8px; flex-wrap: wrap; }
+.cat-row { max-width: 1260px; margin: 10px auto 0; padding: 0 40px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .cat-pill {
-  padding: 6px 18px; border-radius: 40px; border: 2px solid var(--sand);
-  background: var(--white); font-size: 12px; font-weight: 600; color: var(--body);
-  cursor: pointer; transition: all .2s; user-select: none;
+  padding: 6px 18px; border-radius: var(--pill); border: 1px solid var(--ink);
+  background: var(--white); font-size: 12px; font-weight: 600; color: var(--ink);
+  cursor: pointer; transition: all .25s var(--spring); user-select: none;
 }
-.cat-pill:hover, .cat-pill.active { background: var(--ink); color: var(--yellow); border-color: var(--ink); }
+.cat-pill:hover { background: var(--yellow); transform: translateY(-2px); box-shadow: var(--shadow-soft); }
+.cat-pill.active { background: var(--ink); color: var(--yellow); }
 
 /* ── Vuln cards ── */
-.grid { max-width: 1260px; margin: 20px auto 0; padding: 0 40px 60px; display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; }
+.grid { max-width: 1260px; margin: 24px auto 0; padding: 0 40px 60px; display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 20px; }
 .vcard {
-  background: var(--card); border: 2px solid var(--sand); border-radius: var(--radius);
-  padding: 22px 24px; display: flex; flex-direction: column; gap: 10px;
-  transition: transform .2s, border-color .2s, box-shadow .2s;
-  position: relative; overflow: hidden;
+  background: var(--card); border: 1px solid var(--ink); border-radius: var(--radius);
+  padding: 22px 24px 20px; display: flex; flex-direction: column; gap: 10px;
+  transition: transform .25s var(--spring), box-shadow .25s var(--spring);
+  position: relative;
 }
 .vcard::before {
-  content: ''; position: absolute; top: 0; left: 0; width: 5px; height: 100%;
-  border-radius: var(--radius) 0 0 var(--radius);
+  content: ''; position: absolute; top: 18px; left: -1px;
+  width: 8px; height: 24px;
+  border-radius: 0 var(--pill) var(--pill) 0;
+  border: 1px solid var(--ink); border-left: none;
 }
-.vcard:hover { transform: translateY(-4px); border-color: var(--peach); box-shadow: 0 12px 32px rgba(0,0,0,.07); }
-.vcard-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vcard:hover { transform: translateY(-4px); box-shadow: var(--shadow-hard); }
+.vcard-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-left: 4px; }
 .vcard-date { margin-left: auto; font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; font-weight: 500; }
 .src-badge {
-  display: inline-flex; align-items: center; padding: 3px 12px; border-radius: 40px;
+  display: inline-flex; align-items: center; padding: 3px 12px; border-radius: var(--pill);
+  border: 1px solid var(--ink);
   font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
 }
 .reason-badge {
-  padding: 2px 10px; border-radius: 40px; font-size: 10px; font-weight: 700;
+  padding: 2px 10px; border-radius: var(--pill); border: 1px solid var(--ink);
+  font-size: 10px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .3px;
 }
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.pushed-dot.yes { background: var(--mint); box-shadow: 0 0 6px var(--mint); }
+.pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
 .vcard-id {
-  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600;
-  color: var(--violet); letter-spacing: .2px;
+  display: inline-block; align-self: flex-start;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
+  color: var(--ink); background: var(--sand);
+  padding: 3px 10px; border-radius: 8px; letter-spacing: .2px;
 }
-.vcard-title { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.45; }
-.vcard-summary { font-size: 13px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.vcard-title { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.4; letter-spacing: -.005em; }
+.vcard-summary { font-size: 13px; color: var(--muted); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .vcard-link { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vcard-link a { color: var(--mint); font-weight: 500; }
+.vcard-link a { color: var(--ink); font-weight: 500; border-bottom: 1px solid var(--ink); }
+.vcard-link a:hover { background: var(--yellow); text-decoration: none; }
 
-/* severity stripe colors */
-.sev-critical::before { background: var(--coral); }
-.sev-high::before { background: var(--orange); }
+/* severity pill colors */
+.sev-critical::before { background: var(--orange); }
+.sev-high::before { background: var(--red); }
 .sev-medium::before { background: var(--yellow); }
-.sev-low::before { background: var(--sand); }
+.sev-low::before { background: var(--mint); }
+
+/* ── Load more ── */
+.load-more-row { max-width: 1260px; margin: 8px auto 32px; padding: 0 40px; display: flex; justify-content: center; }
+.load-more-btn {
+  font-family: inherit; font-size: 13px; font-weight: 700; color: var(--ink);
+  background: var(--white); border: 1px solid var(--ink); border-radius: var(--pill);
+  padding: 10px 28px; cursor: pointer; text-transform: uppercase; letter-spacing: .5px;
+  transition: all .25s var(--spring);
+}
+.load-more-btn:hover { background: var(--yellow); transform: translateY(-2px); box-shadow: var(--shadow-hard); }
+.load-more-btn:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; background: var(--white); }
+.load-more-row.hidden { display: none; }
 
 /* ── Empty / Loading ── */
 .empty { grid-column: 1/-1; text-align: center; padding: 80px 20px; color: var(--muted); }
 .loading { grid-column: 1/-1; text-align: center; padding: 60px; color: var(--muted); }
-.spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid var(--sand); border-top-color: var(--coral); border-radius: 50%; animation: spin .7s linear infinite; }
+.spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid var(--sand); border-top-color: var(--orange); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── Footer ── */
-.footer { max-width: 1260px; margin: 0 auto; padding: 24px 40px; text-align: center; color: var(--muted); font-size: 12px; border-top: 2px solid var(--sand); }
+.footer { max-width: 1260px; margin: 0 auto; padding: 24px 40px; text-align: center; color: var(--muted); font-size: 12px; border-top: 1px solid var(--ink); }
 
 @media (max-width: 860px) {
   .nav-inner { flex-wrap: wrap; height: auto; padding: 12px 0; gap: 10px; }
@@ -270,7 +334,8 @@ a:hover { text-decoration: underline; }
 }
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Unbounded:wght@400;600;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
 
@@ -281,36 +346,50 @@ a:hover { text-decoration: underline; }
       <input type="text" id="searchInput" placeholder="Search CVE, title, keyword..." autofocus>
     </div>
     <div class="nav-filters">
-      <select class="pill-select" id="sourceFilter"><option value="">All Sources</option></select>
-      <select class="pill-select" id="reasonFilter">
-        <option value="">Reason</option>
-        <option value="RCE+asset/CVE">RCE+asset/CVE</option>
-        <option value="asset+CVE">asset+CVE</option>
-        <option value="RCE+exploit">RCE+exploit</option>
-      </select>
-      <select class="pill-select" id="daysFilter">
-        <option value="">All Time</option>
-        <option value="1">24h</option>
-        <option value="7" selected>7 days</option>
-        <option value="30">30 days</option>
-        <option value="60">60 days</option>
-      </select>
-      <select class="pill-select" id="pushedFilter">
-        <option value="1" selected>Pushed</option>
-        <option value="">All</option>
-      </select>
+      <label class="pushed-toggle" title="Show only items pushed to Telegram">
+        <input type="checkbox" id="pushedFilter" checked>
+        <span class="switch"></span>
+        <span>Telegram pushed</span>
+      </label>
     </div>
   </div>
 </nav>
 
 <div class="hero">
   <div class="hero-title">Vulnerability <span>Intelligence</span></div>
-  <div class="hero-sub">Real-time 1day/0day RCE tracking across 17 sources</div>
+</div>
+<div class="hero-sub-row">
+  <div class="hero-sub">Real-time 1day/0day RCE tracking across <span id="srcCount">—</span> sources</div>
+  <div class="legend-inline">
+    <span class="legend-item"><span class="legend-pill" style="background:var(--orange)"></span>Critical / KEV</span>
+    <span class="legend-item"><span class="legend-pill" style="background:var(--red)"></span>RCE / Pre-auth</span>
+    <span class="legend-item"><span class="legend-pill" style="background:var(--yellow)"></span>Overflow / Inject</span>
+    <span class="legend-item"><span class="legend-pill" style="background:var(--mint)"></span>Other</span>
+  </div>
 </div>
 
 <div class="stats" id="statsBar"></div>
-<div class="cat-row" id="catRow"></div>
+
+<div class="filter-row" id="timeRow">
+  <div class="cat-pill" data-days="">All Time</div>
+  <div class="cat-pill" data-days="1">24h</div>
+  <div class="cat-pill active" data-days="7">7 days</div>
+  <div class="cat-pill" data-days="30">30 days</div>
+  <div class="cat-pill" data-days="60">60 days</div>
+</div>
+
+<div class="filter-row" id="reasonRow">
+  <div class="cat-pill active" data-reason="">All</div>
+  <div class="cat-pill" data-reason="RCE+asset/CVE">RCE+asset/CVE</div>
+  <div class="cat-pill" data-reason="asset+CVE">asset+CVE</div>
+  <div class="cat-pill" data-reason="RCE+exploit">RCE+exploit</div>
+</div>
+
+<div class="filter-row cat-row" id="catRow"></div>
 <div class="grid" id="cardList"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
+<div class="load-more-row hidden" id="loadMoreRow">
+  <button class="load-more-btn" id="loadMoreBtn" type="button">Load more</button>
+</div>
 <div class="footer">vuln-monitor &middot; read-only &middot; bound to 127.0.0.1</div>
 
 <script>
@@ -330,28 +409,38 @@ const REASON_STYLE = {
   "RCE+exploit":   {bg:"#FCE7F3",fg:"#9d174d"},
 };
 
-let debounceTimer, activeCat = '';
+let debounceTimer, activeCat = '', activeReason = '', activeDays = '7';
+let currentLimit = 100;
+const MAX_LIMIT = 500;
+document.getElementById('loadMoreBtn').addEventListener('click', () => {
+  currentLimit = Math.min(currentLimit + 100, MAX_LIMIT);
+  loadVulns(true);
+});
 document.getElementById('searchInput').addEventListener('input', () => {
   clearTimeout(debounceTimer); debounceTimer = setTimeout(loadVulns, 300);
 });
-['sourceFilter','reasonFilter','daysFilter','pushedFilter'].forEach(id =>
-  document.getElementById(id).addEventListener('change', () => { activeCat=''; updateCatPills(); loadVulns(); }));
+document.getElementById('pushedFilter').addEventListener('change', () => loadVulns());
 
-function updateCatPills() {
-  document.querySelectorAll('.cat-pill').forEach(p => p.classList.toggle('active', p.dataset.src === activeCat));
+function setActive(rowSelector, attr, val) {
+  document.querySelectorAll(rowSelector + ' .cat-pill').forEach(p => p.classList.toggle('active', p.dataset[attr] === val));
 }
+function updateCatPills() { setActive('#catRow', 'src', activeCat); }
+
+document.querySelectorAll('#timeRow .cat-pill').forEach(p => p.addEventListener('click', () => {
+  activeDays = p.dataset.days; setActive('#timeRow', 'days', activeDays); loadVulns();
+}));
+document.querySelectorAll('#reasonRow .cat-pill').forEach(p => p.addEventListener('click', () => {
+  activeReason = p.dataset.reason; setActive('#reasonRow', 'reason', activeReason); loadVulns();
+}));
 
 async function loadSources() {
   try {
     const sources = await (await fetch('/api/sources')).json();
-    const sel = document.getElementById('sourceFilter');
-    sources.forEach(s => { const o = document.createElement('option'); o.value=s; o.textContent=s; sel.appendChild(o); });
     const row = document.getElementById('catRow');
     row.innerHTML = `<div class="cat-pill active" data-src="">All</div>` +
-      sources.map(s => `<div class="cat-pill" data-src="${s}">${s}</div>`).join('');
-    row.querySelectorAll('.cat-pill').forEach(p => p.addEventListener('click', () => {
+      sources.map(s => `<div class="cat-pill" data-src="${esc(s)}">${esc(s)}</div>`).join('');
+    row.querySelectorAll('.cat-pill[data-src]').forEach(p => p.addEventListener('click', () => {
       activeCat = p.dataset.src;
-      document.getElementById('sourceFilter').value = activeCat;
       updateCatPills(); loadVulns();
     }));
   } catch(e) {}
@@ -360,15 +449,28 @@ async function loadSources() {
 async function loadStats() {
   try {
     const d = await (await fetch('/api/stats')).json();
+    const srcCount = Object.keys(d.sources).length;
     document.getElementById('statsBar').innerHTML = `
       <div class="stat-card"><div class="stat-num">${d.total}</div><div class="stat-label">Total Vulns</div></div>
       <div class="stat-card"><div class="stat-num">${d.pushed}</div><div class="stat-label">Pushed</div></div>
-      <div class="stat-card"><div class="stat-num">${Object.keys(d.sources).length}</div><div class="stat-label">Active Sources</div></div>
+      <div class="stat-card"><div class="stat-num">${srcCount}</div><div class="stat-label">Active Sources</div></div>
     `;
+    document.getElementById('srcCount').textContent = srcCount;
   } catch(e) {}
 }
 
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function safeUrl(u) {
+  if (!u) return '#';
+  try {
+    const p = new URL(u, 'http://x/');
+    if (p.protocol !== 'http:' && p.protocol !== 'https:') return '#';
+    return u.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+  } catch(e) { return '#'; }
+}
 function sevClass(title) {
   const t = (title||'').toLowerCase();
   if (t.includes('critical') || t.includes('[kev]')) return 'sev-critical';
@@ -377,23 +479,31 @@ function sevClass(title) {
   return 'sev-low';
 }
 
-async function loadVulns() {
+async function loadVulns(append=false) {
+  if (!append) currentLimit = 100;
   const params = new URLSearchParams();
   const q = document.getElementById('searchInput').value.trim();
   if (q) params.set('q', q);
-  const source = document.getElementById('sourceFilter').value;
-  if (source) params.set('source', source);
-  const reason = document.getElementById('reasonFilter').value;
-  if (reason) params.set('reason', reason);
-  const days = document.getElementById('daysFilter').value;
-  if (days) params.set('days', days);
-  const pushed = document.getElementById('pushedFilter').value;
-  if (pushed) params.set('pushed', pushed);
+  if (activeCat) params.set('source', activeCat);
+  if (activeReason) params.set('reason', activeReason);
+  if (activeDays) params.set('days', activeDays);
+  if (document.getElementById('pushedFilter').checked) params.set('pushed', '1');
+  params.set('limit', String(currentLimit));
 
   const container = document.getElementById('cardList');
+  const moreRow = document.getElementById('loadMoreRow');
+  const moreBtn = document.getElementById('loadMoreBtn');
+  if (append) { moreBtn.disabled = true; moreBtn.textContent = 'Loading…'; }
   try {
     const vulns = await (await fetch('/api/vulns?' + params)).json();
-    if (!vulns.length) { container.innerHTML = '<div class="empty"><p style="font-size:32px">&#128270;</p><p>No vulnerabilities found</p></div>'; return; }
+    if (!vulns.length) {
+      container.innerHTML = '<div class="empty"><p style="font-size:32px">&#128270;</p><p>No vulnerabilities found</p></div>';
+      moreRow.classList.add('hidden');
+      return;
+    }
+    moreRow.classList.toggle('hidden', vulns.length < currentLimit || currentLimit >= MAX_LIMIT);
+    moreBtn.disabled = false;
+    moreBtn.textContent = currentLimit >= MAX_LIMIT ? 'Reached display cap (500)' : 'Load more';
     container.innerHTML = vulns.map((v,i) => {
       const ss = SRC_STYLE[v.source] || {bg:'#F3F4F6',fg:'#374151'};
       const rs = REASON_STYLE[v.reason] || {bg:'#F3F4F6',fg:'#6B7280'};
@@ -402,20 +512,27 @@ async function loadVulns() {
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
           <span class="reason-badge" style="background:${rs.bg};color:${rs.fg}">${esc(v.reason||'-')}</span>
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?'Pushed to Telegram':'Filtered'}"></span>
-          <span class="vcard-date">${v.date||'-'}</span>
+          <span class="vcard-date">${esc(v.date||'-')}</span>
         </div>
         <div class="vcard-id">${esc(v.id||'N/A')}</div>
         <div class="vcard-title">${esc(v.title)}</div>
         ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
-        ${v.url?`<div class="vcard-link"><a href="${v.url}" target="_blank" rel="noopener">${esc(v.url)}</a></div>`:''}
+        ${v.url?`<div class="vcard-link"><a href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
       </div>`;
     }).join('');
-  } catch(e) { container.innerHTML = '<div class="empty"><p>Failed to load</p></div>'; }
+  } catch(e) {
+    container.innerHTML = '<div class="empty"><p>Failed to load</p></div>';
+    moreRow.classList.add('hidden');
+    moreBtn.disabled = false; moreBtn.textContent = 'Load more';
+  }
 }
 
 loadSources(); loadStats(); loadVulns();
 </script>
-<style>@keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }</style>
+<style>
+@keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+::selection { background: var(--peach); color: var(--ink); }
+</style>
 </body>
 </html>"""
 
