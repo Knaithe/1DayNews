@@ -125,6 +125,7 @@ chmod 600 "$APP_DIR/.env"
 echo ">>> [6/7] installing systemd units ..."
 install -m 644 "$APP_DIR/systemd/vuln-monitor.service" "$SYSTEMD_DIR/vuln-monitor.service"
 install -m 644 "$APP_DIR/systemd/vuln-monitor.timer"   "$SYSTEMD_DIR/vuln-monitor.timer"
+install -m 644 "$APP_DIR/systemd/vuln-web.service"     "$SYSTEMD_DIR/vuln-web.service"
 systemctl daemon-reload
 
 # ---------- 7. warm cache (dry) then enable timer ----------
@@ -140,13 +141,16 @@ sudo -u "$APP_USER" env -i \
     }
 
 systemctl enable --now vuln-monitor.timer
+systemctl enable --now vuln-web.service
 
 echo
 echo "============================================================"
 echo "  deployed."
-echo "  status:     systemctl status vuln-monitor.timer"
-echo "  next fire:  systemctl list-timers vuln-monitor.timer"
+echo "  fetch:      systemctl status vuln-monitor.timer"
+echo "  web:        systemctl status vuln-web.service"
+echo "  dashboard:  http://127.0.0.1:8001 (SSH tunnel for remote)"
 echo "  live logs:  journalctl -u vuln-monitor.service -f"
+echo "  web logs:   journalctl -u vuln-web.service -f"
 echo "  file logs:  tail -f $APP_DIR/vuln_monitor.log"
 echo "  run now:    sudo systemctl start vuln-monitor.service"
 echo "============================================================"

@@ -1,0 +1,21 @@
+[Unit]
+Description=vuln-monitor web dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=vuln
+ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/web.py
+Restart=on-failure
+RestartSec=5
+Environment=VULN_DATA_DIR=/opt/vuln-monitor
+
+# Sandbox (same as vuln-monitor.service)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/vuln-monitor
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
