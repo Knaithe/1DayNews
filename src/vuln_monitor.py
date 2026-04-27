@@ -109,20 +109,20 @@ RSS_FEEDS = [
     ("PaloAlto",    "https://security.paloaltonetworks.com/rss.xml"),
     ("Cisco",       "https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml"),
     ("MSRC",        "https://api.msrc.microsoft.com/update-guide/rss"),
-    ("VMware",      "https://blogs.vmware.com/security/feed"),
     # ---- Sploitus keyword feeds (fill PSIRT gaps with exploit/PoC signal) ----
     ("Sploitus_Citrix",   "https://sploitus.com/rss?query=citrix"),
     ("Sploitus_Ivanti",   "https://sploitus.com/rss?query=ivanti"),
     ("Sploitus_F5",       "https://sploitus.com/rss?query=f5+big-ip"),
-    # ---- research teams ----
+    # ---- research teams (vuln-focused, not blogs/marketing) ----
     ("watchTowr",   "https://labs.watchtowr.com/rss/"),
     ("ZDI",         "https://www.zerodayinitiative.com/rss/published/"),
-    ("ProjectDisc", "https://blog.projectdiscovery.io/rss/"),
     ("Horizon3",    "https://www.horizon3.ai/feed/"),
     ("Rapid7",      "https://www.rapid7.com/blog/rss/"),
-    ("GreyNoise",   "https://www.greynoise.io/blog/rss.xml"),
-    ("SentinelLabs","https://www.sentinelone.com/labs/feed/"),
-    ("XuanwuLab",   "https://xlab.tencent.com/en/atom.xml"),
+    # VMware (blog/marketing, 0% CVE) — removed
+    # ProjectDisc (product marketing, 0% CVE) — removed
+    # GreyNoise (trend analysis, 10% CVE) — removed
+    # SentinelLabs (research blog, 0% CVE) — removed
+    # XuanwuLab (academic/research, low CVE density) — removed
 ]
 
 # CISA KEV uses a JSON endpoint (1500+ entries with structured fields, not RSS).
