@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request
+from waitress import serve
 
 # ── Locate database ──
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -434,5 +435,4 @@ if __name__ == "__main__":
     print(f"database: {DB_FILE}")
     print(f"WARNING: only accessible from localhost (use SSH tunnel for remote access)")
 
-    from waitress import serve
     serve(app, host=args.host, port=args.port)
