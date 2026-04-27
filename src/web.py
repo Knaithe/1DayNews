@@ -27,6 +27,12 @@ DB_FILE = DATA_DIR / "vuln_cache.db"
 
 app = Flask(__name__)
 
+@app.after_request
+def no_cache(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
 SOURCE_COLORS = {
     "CISA_KEV": "#ef4444", "Fortinet": "#f97316", "PaloAlto": "#f59e0b",
     "Cisco": "#3b82f6", "MSRC": "#6366f1", "ZDI": "#8b5cf6",
@@ -175,12 +181,6 @@ a:hover { text-decoration: underline; }
 }
 .pill-select:focus { border-color: var(--yellow); outline: none; }
 .pill-select option { background: var(--ink); color: #fff; padding: 8px; }
-.btn-refresh {
-  padding: 7px 18px; background: var(--yellow); color: var(--ink);
-  border: none; border-radius: 40px; font-family: inherit; font-size: 12px;
-  font-weight: 700; cursor: pointer; transition: transform .1s;
-}
-.btn-refresh:hover { transform: scale(1.05); }
 
 /* ── Hero / Stats ── */
 .hero { max-width: 1260px; margin: 0 auto; padding: 40px 40px 8px; }
@@ -298,7 +298,6 @@ a:hover { text-decoration: underline; }
         <option value="">All</option>
         <option value="1">Pushed</option>
       </select>
-      <button class="btn-refresh" onclick="loadVulns()">Refresh</button>
     </div>
   </div>
 </nav>
