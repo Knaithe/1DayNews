@@ -128,6 +128,10 @@ RSS_FEEDS = [
 # CISA KEV uses a JSON endpoint (1500+ entries with structured fields, not RSS).
 KEV_JSON_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
+# Chaitin Stack vuldb — hidden JSON API behind SafeLine WAF.
+# Requires Referer/Origin headers; rate-limited (one call per fetch cycle is fine).
+CHAITIN_API_URL = "https://stack.chaitin.com/api/v2/vuln/list/"
+
 
 # ================== RCE PATTERNS ==================
 RCE_PATTERNS = [
@@ -696,6 +700,49 @@ def fetch_kev_json():
     return out
 
 
+def fetch_chaitin():
+    """Chaitin Stack vuldb — Chinese vuln database with 350k+ entries.
+
+    Uses a hidden JSON API; fresh session + Referer header to pass SafeLine WAF.
+    Only fetches latest page (rate-limited to ~1 req per cycle).
+    """
+    out = []
+    try:
+        s = requests.Session()
+        s.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://stack.chaitin.com/vuldb/index",
+            "Origin": "https://stack.chaitin.com",
+            "Accept": "application/json",
+        })
+        r = s.get(CHAITIN_API_URL, params={"limit": ITEM_PER_FEED, "offset": 0},
+                  timeout=REQUEST_TIMEOUT)
+        s.close()
+        if r.status_code != 200:
+            log.warning(f"Chaitin HTTP {r.status_code}")
+            return out
+        data = r.json()
+        for v in data.get("data", {}).get("list", []):
+            ct_id = v.get("ct_id", "")
+            cve = v.get("cve_id", "")
+            title = v.get("title", "")
+            severity = v.get("severity", "")
+            summary = v.get("summary", "")
+            refs = v.get("references", "")
+            link = f"https://stack.chaitin.com/vuldb/detail/{v['id']}" if v.get("id") else ""
+            full_title = f"[{severity.upper()}] {cve or ct_id} {title}"
+            out.append({
+                "source": "Chaitin",
+                "title": full_title[:300],
+                "link": link,
+                "summary": summary[:500],
+                "text": f"{full_title}\n{summary}\n{refs}",
+            })
+    except Exception as ex:
+        log.warning(f"Chaitin err: {ex}")
+    return out
+
+
 def fetch_github_cve():
     out = []
     year = datetime.now().year
@@ -826,6 +873,7 @@ def _run():
     for name, url in RSS_FEEDS:
         items.extend(fetch_rss(name, url))
     items.extend(fetch_kev_json())
+    items.extend(fetch_chaitin())
     items.extend(fetch_github_cve())
     log.info(f"collected {len(items)} items")
 
@@ -1049,6 +1097,7 @@ def cmd_rebuild(args):
     for name, url in RSS_FEEDS:
         items.extend(fetch_rss(name, url))
     items.extend(fetch_kev_json())
+    items.extend(fetch_chaitin())
     items.extend(fetch_github_cve())
     print(f"fetched {len(items)} items from sources")
 
