@@ -79,10 +79,9 @@ Map natural language to the right subcommand:
 ## Available sources
 
 S-tier: CISA_KEV, watchTowr, Fortinet, PaloAlto
-A-tier: ZDI, MSRC, ProjectDisc, Horizon3, Cisco
-B-tier: Sploitus_Citrix, Sploitus_Ivanti, Sploitus_F5, Rapid7, VMware
-C-tier: GreyNoise
-Other: GitHub
+A-tier: ZDI, MSRC, Cisco, Chaitin, ThreatBook
+B-tier: Sploitus_Citrix, Sploitus_Ivanti, Sploitus_F5, Horizon3, Rapid7, DailyCVE
+PoC: GitHub, PoC-GitHub
 
 ## Data location
 

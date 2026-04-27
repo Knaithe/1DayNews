@@ -1,6 +1,6 @@
 # 信息源
 
-## 当前源清单（18 个通道）
+## 当前源清单（19 个通道）
 
 | 类别 | 源 | 采集方式 | CVE 覆盖率 | 说明 |
 |---|---|---|---|---|
@@ -10,6 +10,7 @@
 | | MSRC | RSS | 100% | 微软安全更新 |
 | **漏洞披露** | ZDI | RSS | 85% | Zero Day Initiative 公告 |
 | | watchTowr | RSS | 73% | 高质量 1day 分析 + PoC |
+| **漏洞披露** | DailyCVE | RSS | 42% | 每日 CVE 汇总，标题含产品+类型+严重等级 |
 | **漏洞研究** | Horizon3 | RSS | 40% | 攻击面分析 |
 | | Rapid7 | RSS | 35% | Metasploit 周报 + 研究 |
 | **Exploit/PoC** | Sploitus (Citrix) | RSS | 20% | exploit 聚合 |
@@ -87,7 +88,8 @@ React SPA + Contentstack CMS，API 需认证（401）。
 | S（必推） | CISA KEV, watchTowr, Fortinet, PaloAlto | > 80% |
 | A（高质量） | ZDI, MSRC, Cisco, Chaitin, ThreatBook | 50-100% |
 | B（有噪声） | Sploitus×3, Horizon3, Rapid7 | 20-40% |
-| PoC | GitHub CVE Search, PoC-in-GitHub | 100%（纯 CVE PoC） |
+| B+ | DailyCVE | 42%（标题自带严重等级，覆盖面广） |
+| PoC | GitHub CVE Search, PoC-in-GitHub | 100%（纯 CVE PoC，GitHub+CVE 特判不漏推） |
 
 ## 添加新源
 

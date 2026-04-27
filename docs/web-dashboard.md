@@ -21,7 +21,7 @@ ssh -L 8001:127.0.0.1:8001 user@server
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Flask，单文件 `src/web.py` |
+| 后端 | Flask + waitress（多线程生产服务器），单文件 `src/web.py` |
 | 前端 | 内嵌 HTML/CSS/JS，无构建步骤 |
 | 数据库 | 只读打开 SQLite（`?mode=ro`） |
 | 字体 | Syne（标题）+ DM Sans（正文）+ JetBrains Mono（CVE ID） |
@@ -37,6 +37,7 @@ ssh -L 8001:127.0.0.1:8001 user@server
 - 柔和 badge 配色（浅底深字，如 CISA_KEV = 浅红底 `#FFE0E0` + 深红字 `#b91c1c`）
 - 药丸形源分类标签栏（可点击过滤）
 - 入场 fadeUp 动画
+- 默认只显示精选（pushed），可切换全量（All）
 
 ## API 端点
 
@@ -92,7 +93,7 @@ ssh -L 8001:127.0.0.1:8001 user@server
 
 ## 生产部署
 
-可选：加一个 systemd unit 让仪表盘常驻后台。
+`deploy.sh` 已自动安装并启用 `vuln-web.service`。手动管理：
 
 ```ini
 # /etc/systemd/system/vuln-web.service
@@ -112,5 +113,7 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable --now vuln-web.service
+sudo systemctl status vuln-web.service   # 查看状态
+sudo systemctl restart vuln-web.service  # 重启
+journalctl -u vuln-web.service -f        # 查看日志
 ```

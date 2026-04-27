@@ -4,7 +4,7 @@
 
 ## 核心特性
 
-- **18 个数据通道**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr）、Exploit/PoC（Sploitus/GitHub/PoC-in-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）
+- **19 个数据通道**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus/GitHub/PoC-in-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）
 - **聚焦 RCE**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声
 - **增量去重**：SQLite WAL 模式，CVE 为主键，60 天 TTL，同一 CVE 跨源只推一次
 - **多视图查询**：简表 / 详细 / 通知友好 / JSON，支持 CVE/厂商/关键词/时间过滤
@@ -43,7 +43,7 @@ python src/web.py                    # http://127.0.0.1:8001
 ssh -L 8001:127.0.0.1:8001 user@srv  # 远程 SSH 隧道访问
 ```
 
-暖色卡片布局，实时搜索，源/原因/时间筛选，严重性颜色编码。只读 SQLite，禁用缓存，只绑 127.0.0.1。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
+暖色卡片布局，实时搜索，源/原因/时间筛选，严重性颜色编码。默认只显示精选（pushed），可切换全量。只读 SQLite + waitress 生产服务器，禁用缓存，只绑 127.0.0.1。部署时自动启用 systemd 服务。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
 
 ## Telegram 推送
 
