@@ -119,6 +119,7 @@ RSS_FEEDS = [
     ("ZDI",         "https://www.zerodayinitiative.com/rss/published/"),
     ("Horizon3",    "https://www.horizon3.ai/feed/"),
     ("Rapid7",      "https://www.rapid7.com/blog/rss/"),
+    ("DailyCVE",    "https://dailycve.com/feed"),
     # VMware (blog/marketing, 0% CVE) — removed
     # ProjectDisc (product marketing, 0% CVE) — removed
     # GreyNoise (trend analysis, 10% CVE) — removed
