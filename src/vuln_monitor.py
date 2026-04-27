@@ -389,7 +389,7 @@ HIGH_PRIORITY_SOURCES = frozenset({
     "watchTowr", "MSRC", "Horizon3", "Chaitin", "ThreatBook",
 })
 # Reasons that indicate a genuinely interesting finding.
-STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "RCE+exploit"})
+STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "RCE+exploit", "GitHub+CVE"})
 
 # Fallback advisory page per vendor (used when we know the source but have no
 # item-level URL).
@@ -1028,6 +1028,10 @@ def _run():
         seen_this_run.add(key)
 
         hit, reason = score(it["text"])
+        # GitHub/PoC-GitHub repos with a CVE in the name are inherently valuable
+        # even without RCE/asset keywords in the (often empty) description.
+        if not hit and it["source"] in ("GitHub", "PoC-GitHub") and CVE_RE.search(it["text"]):
+            hit, reason = True, "GitHub+CVE"
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
         conn.execute(
