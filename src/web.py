@@ -174,6 +174,7 @@ a:hover { text-decoration: underline; }
   background-repeat: no-repeat; background-position: right 10px center;
 }
 .pill-select:focus { border-color: var(--yellow); outline: none; }
+.pill-select option { background: var(--ink); color: #fff; padding: 8px; }
 .btn-refresh {
   padding: 7px 18px; background: var(--yellow); color: var(--ink);
   border: none; border-radius: 40px; font-family: inherit; font-size: 12px;
