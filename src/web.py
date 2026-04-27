@@ -125,79 +125,82 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg: #0a0a0f; --surface: #13131a; --surface2: #1a1a24;
-  --border: #2a2a3a; --text: #e4e4e7; --muted: #71717a;
-  --accent: #39bf97; --danger: #ef4444; --warn: #f59e0b;
+  --bg: #111013; --surface: #1c1b22; --surface2: #26252d;
+  --border: #33323a; --text: #f0efe8; --muted: #8e8d96;
+  --yellow: #FFFF78; --cream: #FDF2D4; --green: #39bf97;
+  --red: #ff6b6b; --orange: #ffad5c;
 }
-body { background: var(--bg); color: var(--text); font-family: 'Inter', -apple-system, sans-serif; line-height: 1.5; min-height: 100vh; }
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+body { background: var(--bg); color: var(--text); font-family: 'Poppins', -apple-system, sans-serif; line-height: 1.6; min-height: 100vh; }
+a { color: var(--yellow); text-decoration: none; transition: opacity .2s; }
+a:hover { opacity: .8; }
 
 /* Header */
-.header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; position: sticky; top: 0; z-index: 10; }
-.header-inner { max-width: 1400px; margin: 0 auto; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
-.logo { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; white-space: nowrap; }
-.logo span { color: var(--accent); }
+.header { background: #000; padding: 18px 32px; position: sticky; top: 0; z-index: 10; border-bottom: 2px solid var(--yellow); }
+.header-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.logo { font-family: 'Unbounded', sans-serif; font-size: 22px; font-weight: 700; color: #000; background: var(--yellow); padding: 4px 16px; border-radius: 24px; white-space: nowrap; }
 .search { flex: 1; min-width: 200px; }
-.search input { width: 100%; padding: 8px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; outline: none; transition: border 0.2s; }
-.search input:focus { border-color: var(--accent); }
+.search input { width: 100%; padding: 10px 18px; background: var(--surface); border: 2px solid var(--border); border-radius: 24px; color: var(--text); font-family: inherit; font-size: 14px; outline: none; transition: border .2s; }
+.search input:focus { border-color: var(--yellow); }
+.search input::placeholder { color: var(--muted); }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
-.filters select, .filters button { padding: 7px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; cursor: pointer; }
-.filters button { background: var(--accent); color: #000; border: none; font-weight: 600; }
-.filters button:hover { opacity: 0.9; }
+.filters select { padding: 9px 14px; background: var(--surface); border: 2px solid var(--border); border-radius: 20px; color: var(--text); font-family: inherit; font-size: 13px; cursor: pointer; appearance: none; -webkit-appearance: none; padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238e8d96'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
+.filters select:focus { border-color: var(--yellow); outline: none; }
+.btn { padding: 9px 20px; background: var(--yellow); color: #000; border: none; border-radius: 20px; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: transform .1s, opacity .2s; }
+.btn:hover { opacity: .9; transform: scale(1.02); }
 
 /* Stats bar */
-.stats-bar { max-width: 1400px; margin: 16px auto; padding: 0 24px; display: flex; gap: 16px; flex-wrap: wrap; }
-.stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; min-width: 120px; }
-.stat-value { font-size: 24px; font-weight: 700; color: var(--accent); }
-.stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.stats-bar { max-width: 1200px; margin: 28px auto 20px; padding: 0 32px; display: flex; gap: 16px; flex-wrap: wrap; }
+.stat { background: var(--surface); border: 2px solid var(--border); border-radius: 20px; padding: 16px 24px; min-width: 140px; transition: border-color .2s; }
+.stat:hover { border-color: var(--yellow); }
+.stat-value { font-family: 'Unbounded', sans-serif; font-size: 28px; font-weight: 700; color: var(--yellow); }
+.stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
 
 /* Cards */
-.cards { max-width: 1400px; margin: 8px auto; padding: 0 24px 40px; display: grid; grid-template-columns: 1fr; gap: 8px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; transition: border-color 0.2s, transform 0.1s; display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; }
-.card:hover { border-color: var(--accent); transform: translateY(-1px); }
-.card-left { display: flex; flex-direction: column; gap: 6px; min-width: 90px; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
-.badge-source { color: #fff; }
-.badge-reason { background: var(--surface2); color: var(--muted); font-size: 10px; }
+.cards { max-width: 1200px; margin: 0 auto; padding: 0 32px 48px; display: grid; grid-template-columns: 1fr; gap: 12px; }
+.card { background: var(--surface); border: 2px solid var(--border); border-radius: 20px; padding: 20px 24px; transition: border-color .2s, transform .15s, box-shadow .2s; display: grid; grid-template-columns: auto 1fr auto; gap: 16px; align-items: start; }
+.card:hover { border-color: var(--yellow); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(255,255,120,.06); }
+.card-left { display: flex; flex-direction: column; gap: 8px; min-width: 100px; }
+.badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
+.badge-source { color: #000; }
+.badge-reason { background: var(--surface2); border: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .card-body { min-width: 0; }
-.card-id { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--accent); margin-bottom: 2px; }
-.card-title { font-size: 15px; font-weight: 500; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-summary { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-url { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-url a { color: #5eead4; }
-.card-right { text-align: right; white-space: nowrap; }
-.card-date { font-size: 12px; color: var(--muted); }
-.card-pushed { font-size: 11px; }
-.pushed-yes { color: var(--accent); }
+.card-id { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--yellow); margin-bottom: 4px; letter-spacing: .3px; }
+.card-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; line-height: 1.4; }
+.card-summary { font-size: 13px; color: var(--muted); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-url { font-size: 12px; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-url a { color: var(--green); }
+.card-right { text-align: right; white-space: nowrap; padding-top: 2px; }
+.card-date { font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+.card-pushed { font-size: 11px; margin-top: 4px; font-weight: 600; }
+.pushed-yes { color: var(--green); }
 .pushed-no { color: var(--muted); }
 
-/* Empty state */
+/* Empty / Loading */
 .empty { text-align: center; padding: 80px 20px; color: var(--muted); }
 .empty-icon { font-size: 48px; margin-bottom: 12px; }
-
-/* Loading */
-.loading { text-align: center; padding: 40px; color: var(--muted); }
-.spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.loading { text-align: center; padding: 60px; color: var(--muted); }
+.spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--yellow); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Footer */
-.footer { text-align: center; padding: 20px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }
+.footer { text-align: center; padding: 24px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); letter-spacing: .5px; }
 
 @media (max-width: 768px) {
-  .card { grid-template-columns: 1fr; }
-  .card-left { flex-direction: row; }
+  .header-inner { gap: 12px; }
+  .card { grid-template-columns: 1fr; gap: 10px; }
+  .card-left { flex-direction: row; flex-wrap: wrap; }
   .card-right { text-align: left; }
+  .stats-bar, .cards { padding: 0 16px; }
 }
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
 
 <div class="header">
   <div class="header-inner">
-    <div class="logo">vuln<span>-monitor</span></div>
+    <div class="logo">VULN-MONITOR</div>
     <div class="search">
       <input type="text" id="searchInput" placeholder="Search CVE, title, keyword..." autofocus>
     </div>
@@ -220,18 +223,27 @@ a:hover { text-decoration: underline; }
         <option value="">All</option>
         <option value="1">Pushed only</option>
       </select>
-      <button onclick="loadVulns()">Refresh</button>
+      <button class="btn" onclick="loadVulns()">Refresh</button>
     </div>
   </div>
 </div>
 
 <div class="stats-bar" id="statsBar"></div>
-<div class="cards" id="cardList"><div class="loading"><div class="spinner"></div><p>Loading...</p></div></div>
-<div class="footer">vuln-monitor dashboard &middot; read-only &middot; bound to 127.0.0.1</div>
+<div class="cards" id="cardList"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
+<div class="footer">vuln-monitor &middot; read-only &middot; 127.0.0.1</div>
 
 <script>
-const SOURCE_COLORS = """ + str(SOURCE_COLORS).replace("'", '"') + """;
-const REASON_COLORS = """ + str(REASON_COLORS).replace("'", '"') + """;
+const SOURCE_COLORS = {
+  "CISA_KEV":"#ff6b6b","Fortinet":"#ffad5c","PaloAlto":"#FFFF78","Cisco":"#7dd3fc",
+  "MSRC":"#c4b5fd","ZDI":"#d8b4fe","watchTowr":"#f9a8d4","Horizon3":"#5eead4",
+  "Rapid7":"#67e8f9","Chaitin":"#6ee7b7","ThreatBook":"#a5f3fc","GitHub":"#c4b5fd",
+  "Sploitus_Citrix":"#fdba74","Sploitus_Ivanti":"#fdba74","Sploitus_F5":"#fdba74",
+};
+const REASON_STYLES = {
+  "RCE+asset/CVE":"background:var(--red);color:#fff",
+  "asset+CVE":"background:var(--orange);color:#000",
+  "RCE+exploit":"background:#f472b6;color:#000",
+};
 
 let debounceTimer;
 document.getElementById('searchInput').addEventListener('input', () => {
@@ -253,12 +265,14 @@ async function loadStats() {
   try {
     const d = await (await fetch('/api/stats')).json();
     document.getElementById('statsBar').innerHTML = `
-      <div class="stat"><div class="stat-value">${d.total}</div><div class="stat-label">Total</div></div>
+      <div class="stat"><div class="stat-value">${d.total}</div><div class="stat-label">Total Vulns</div></div>
       <div class="stat"><div class="stat-value">${d.pushed}</div><div class="stat-label">Pushed</div></div>
       <div class="stat"><div class="stat-value">${Object.keys(d.sources).length}</div><div class="stat-label">Sources</div></div>
     `;
   } catch(e) {}
 }
+
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 async function loadVulns() {
   const params = new URLSearchParams();
@@ -281,29 +295,27 @@ async function loadVulns() {
       return;
     }
     container.innerHTML = vulns.map(v => {
-      const srcColor = SOURCE_COLORS[v.source] || '#6b7280';
-      const reasonColor = REASON_COLORS[v.reason] || '#374151';
-      const escapedTitle = (v.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const escapedSummary = (v.summary || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const srcColor = SOURCE_COLORS[v.source] || '#a1a1aa';
+      const reasonStyle = REASON_STYLES[v.reason] || '';
       return `<div class="card">
         <div class="card-left">
-          <span class="badge badge-source" style="background:${srcColor}">${v.source || '?'}</span>
-          <span class="badge badge-reason" style="background:${reasonColor};color:#fff">${v.reason || '-'}</span>
+          <span class="badge badge-source" style="background:${srcColor}">${esc(v.source||'?')}</span>
+          <span class="badge badge-reason" ${reasonStyle?`style="${reasonStyle}"`:``}>${esc(v.reason||'-')}</span>
         </div>
         <div class="card-body">
-          <div class="card-id">${v.id || 'N/A'}</div>
-          <div class="card-title">${escapedTitle}</div>
-          ${v.summary ? `<div class="card-summary">${escapedSummary}</div>` : ''}
-          ${v.url ? `<div class="card-url"><a href="${v.url}" target="_blank" rel="noopener">${v.url}</a></div>` : ''}
+          <div class="card-id">${esc(v.id||'N/A')}</div>
+          <div class="card-title">${esc(v.title)}</div>
+          ${v.summary?`<div class="card-summary">${esc(v.summary)}</div>`:''}
+          ${v.url?`<div class="card-url"><a href="${v.url}" target="_blank" rel="noopener">${esc(v.url)}</a></div>`:''}
         </div>
         <div class="card-right">
-          <div class="card-date">${v.date || '-'}</div>
-          <div class="card-pushed ${v.pushed ? 'pushed-yes' : 'pushed-no'}">${v.pushed ? 'PUSHED' : 'filtered'}</div>
+          <div class="card-date">${v.date||'-'}</div>
+          <div class="card-pushed ${v.pushed?'pushed-yes':'pushed-no'}">${v.pushed?'PUSHED':'filtered'}</div>
         </div>
       </div>`;
     }).join('');
   } catch(e) {
-    container.innerHTML = '<div class="empty"><div class="empty-icon">&#9888;</div><p>Failed to load data</p></div>';
+    container.innerHTML = '<div class="empty"><div class="empty-icon">&#9888;</div><p>Failed to load</p></div>';
   }
 }
 
