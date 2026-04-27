@@ -125,139 +125,234 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg: #111013; --surface: #1c1b22; --surface2: #26252d;
-  --border: #33323a; --text: #f0efe8; --muted: #8e8d96;
-  --yellow: #FFFF78; --cream: #FDF2D4; --green: #39bf97;
-  --red: #ff6b6b; --orange: #ffad5c;
+  --cream: #FBF0DF; --peach: #F5D9B0; --sand: #EDE3D3;
+  --white: #FFFFFF; --card: #FFFEFA;
+  --ink: #111013; --body: #3a3636; --muted: #9a918a;
+  --yellow: #FFFF78; --coral: #FF6B6B; --mint: #39BF97;
+  --orange: #F4845F; --violet: #7C5CFC; --sky: #38BDF8;
+  --radius: 22px;
 }
-body { background: var(--bg); color: var(--text); font-family: 'Poppins', -apple-system, sans-serif; line-height: 1.6; min-height: 100vh; }
-a { color: var(--yellow); text-decoration: none; transition: opacity .2s; }
-a:hover { opacity: .8; }
+body {
+  background: var(--cream);
+  background-image:
+    radial-gradient(ellipse 80% 60% at 15% 10%, rgba(255,180,130,.22), transparent),
+    radial-gradient(ellipse 60% 50% at 85% 80%, rgba(255,255,120,.15), transparent);
+  color: var(--body); font-family: 'DM Sans', -apple-system, sans-serif;
+  line-height: 1.6; min-height: 100vh;
+}
+a { color: var(--violet); text-decoration: none; }
+a:hover { text-decoration: underline; }
 
-/* Header */
-.header { background: #000; padding: 18px 32px; position: sticky; top: 0; z-index: 10; border-bottom: 2px solid var(--yellow); }
-.header-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-.logo { font-family: 'Unbounded', sans-serif; font-size: 22px; font-weight: 700; color: #000; background: var(--yellow); padding: 4px 16px; border-radius: 24px; white-space: nowrap; }
-.search { flex: 1; min-width: 200px; }
-.search input { width: 100%; padding: 10px 18px; background: var(--surface); border: 2px solid var(--border); border-radius: 24px; color: var(--text); font-family: inherit; font-size: 14px; outline: none; transition: border .2s; }
-.search input:focus { border-color: var(--yellow); }
-.search input::placeholder { color: var(--muted); }
-.filters { display: flex; gap: 8px; flex-wrap: wrap; }
-.filters select { padding: 9px 14px; background: var(--surface); border: 2px solid var(--border); border-radius: 20px; color: var(--text); font-family: inherit; font-size: 13px; cursor: pointer; appearance: none; -webkit-appearance: none; padding-right: 28px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238e8d96'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
-.filters select:focus { border-color: var(--yellow); outline: none; }
-.btn { padding: 9px 20px; background: var(--yellow); color: #000; border: none; border-radius: 20px; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: transform .1s, opacity .2s; }
-.btn:hover { opacity: .9; transform: scale(1.02); }
+/* ── Navbar ── */
+.nav { background: var(--ink); padding: 0 40px; position: sticky; top: 0; z-index: 20; }
+.nav-inner { max-width: 1260px; margin: 0 auto; display: flex; align-items: center; height: 64px; gap: 28px; }
+.nav-logo {
+  font-family: 'Syne', sans-serif; font-weight: 800; font-size: 18px;
+  color: var(--ink); background: var(--yellow); padding: 5px 18px;
+  border-radius: 40px; letter-spacing: -.3px; white-space: nowrap;
+  box-shadow: 0 0 0 2px var(--ink), 0 0 0 4px var(--yellow);
+}
+.nav-search { flex: 1; position: relative; }
+.nav-search input {
+  width: 100%; padding: 9px 18px 9px 42px; background: rgba(255,255,255,.08);
+  border: 1.5px solid rgba(255,255,255,.12); border-radius: 40px;
+  color: #fff; font-family: inherit; font-size: 14px; outline: none; transition: all .25s;
+}
+.nav-search input:focus { background: rgba(255,255,255,.14); border-color: var(--yellow); }
+.nav-search input::placeholder { color: rgba(255,255,255,.35); }
+.nav-search::before {
+  content: "\1F50D"; position: absolute; left: 16px; top: 50%;
+  transform: translateY(-50%); font-size: 14px; opacity: .4;
+}
+.nav-filters { display: flex; gap: 6px; align-items: center; }
+.pill-select {
+  padding: 7px 28px 7px 12px; background: rgba(255,255,255,.07);
+  border: 1.5px solid rgba(255,255,255,.12); border-radius: 40px;
+  color: rgba(255,255,255,.75); font-family: inherit; font-size: 12px;
+  cursor: pointer; appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='rgba(255,255,255,.4)'%3E%3Cpath d='M1 3l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+}
+.pill-select:focus { border-color: var(--yellow); outline: none; }
+.btn-refresh {
+  padding: 7px 18px; background: var(--yellow); color: var(--ink);
+  border: none; border-radius: 40px; font-family: inherit; font-size: 12px;
+  font-weight: 700; cursor: pointer; transition: transform .1s;
+}
+.btn-refresh:hover { transform: scale(1.05); }
 
-/* Stats bar */
-.stats-bar { max-width: 1200px; margin: 28px auto 20px; padding: 0 32px; display: flex; gap: 16px; flex-wrap: wrap; }
-.stat { background: var(--surface); border: 2px solid var(--border); border-radius: 20px; padding: 16px 24px; min-width: 140px; transition: border-color .2s; }
-.stat:hover { border-color: var(--yellow); }
-.stat-value { font-family: 'Unbounded', sans-serif; font-size: 28px; font-weight: 700; color: var(--yellow); }
-.stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
+/* ── Hero / Stats ── */
+.hero { max-width: 1260px; margin: 0 auto; padding: 40px 40px 8px; }
+.hero-title {
+  font-family: 'Syne', sans-serif; font-weight: 800; font-size: 42px;
+  color: var(--ink); letter-spacing: -1.5px; line-height: 1.1;
+}
+.hero-title span { color: var(--coral); }
+.hero-sub { color: var(--muted); font-size: 15px; margin-top: 6px; }
 
-/* Cards */
-.cards { max-width: 1200px; margin: 0 auto; padding: 0 32px 48px; display: grid; grid-template-columns: 1fr; gap: 12px; }
-.card { background: var(--surface); border: 2px solid var(--border); border-radius: 20px; padding: 20px 24px; transition: border-color .2s, transform .15s, box-shadow .2s; display: grid; grid-template-columns: auto 1fr auto; gap: 16px; align-items: start; }
-.card:hover { border-color: var(--yellow); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(255,255,120,.06); }
-.card-left { display: flex; flex-direction: column; gap: 8px; min-width: 100px; }
-.badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
-.badge-source { color: #000; }
-.badge-reason { background: var(--surface2); border: 1px solid var(--border); color: var(--muted); font-size: 10px; }
-.card-body { min-width: 0; }
-.card-id { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--yellow); margin-bottom: 4px; letter-spacing: .3px; }
-.card-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; line-height: 1.4; }
-.card-summary { font-size: 13px; color: var(--muted); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-url { font-size: 12px; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-url a { color: var(--green); }
-.card-right { text-align: right; white-space: nowrap; padding-top: 2px; }
-.card-date { font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
-.card-pushed { font-size: 11px; margin-top: 4px; font-weight: 600; }
-.pushed-yes { color: var(--green); }
-.pushed-no { color: var(--muted); }
+.stats { max-width: 1260px; margin: 24px auto 0; padding: 0 40px; display: flex; gap: 14px; flex-wrap: wrap; }
+.stat-card {
+  background: var(--white); border: 2px solid var(--sand);
+  border-radius: var(--radius); padding: 18px 26px; min-width: 150px;
+  transition: transform .2s, border-color .2s, box-shadow .2s;
+}
+.stat-card:hover { transform: translateY(-3px); border-color: var(--peach); box-shadow: 0 8px 20px rgba(0,0,0,.06); }
+.stat-num { font-family: 'Syne', sans-serif; font-size: 34px; font-weight: 800; color: var(--ink); line-height: 1; }
+.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; margin-top: 4px; font-weight: 600; }
 
-/* Empty / Loading */
-.empty { text-align: center; padding: 80px 20px; color: var(--muted); }
-.empty-icon { font-size: 48px; margin-bottom: 12px; }
-.loading { text-align: center; padding: 60px; color: var(--muted); }
-.spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--yellow); border-radius: 50%; animation: spin .7s linear infinite; }
+/* ── Category pills ── */
+.cat-row { max-width: 1260px; margin: 28px auto 0; padding: 0 40px; display: flex; gap: 8px; flex-wrap: wrap; }
+.cat-pill {
+  padding: 6px 18px; border-radius: 40px; border: 2px solid var(--sand);
+  background: var(--white); font-size: 12px; font-weight: 600; color: var(--body);
+  cursor: pointer; transition: all .2s; user-select: none;
+}
+.cat-pill:hover, .cat-pill.active { background: var(--ink); color: var(--yellow); border-color: var(--ink); }
+
+/* ── Vuln cards ── */
+.grid { max-width: 1260px; margin: 20px auto 0; padding: 0 40px 60px; display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; }
+.vcard {
+  background: var(--card); border: 2px solid var(--sand); border-radius: var(--radius);
+  padding: 22px 24px; display: flex; flex-direction: column; gap: 10px;
+  transition: transform .2s, border-color .2s, box-shadow .2s;
+  position: relative; overflow: hidden;
+}
+.vcard::before {
+  content: ''; position: absolute; top: 0; left: 0; width: 5px; height: 100%;
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+.vcard:hover { transform: translateY(-4px); border-color: var(--peach); box-shadow: 0 12px 32px rgba(0,0,0,.07); }
+.vcard-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vcard-date { margin-left: auto; font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; font-weight: 500; }
+.src-badge {
+  display: inline-flex; align-items: center; padding: 3px 12px; border-radius: 40px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+}
+.reason-badge {
+  padding: 2px 10px; border-radius: 40px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .3px;
+}
+.pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.pushed-dot.yes { background: var(--mint); box-shadow: 0 0 6px var(--mint); }
+.pushed-dot.no { background: var(--muted); }
+.vcard-id {
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600;
+  color: var(--violet); letter-spacing: .2px;
+}
+.vcard-title { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.45; }
+.vcard-summary { font-size: 13px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.vcard-link { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vcard-link a { color: var(--mint); font-weight: 500; }
+
+/* severity stripe colors */
+.sev-critical::before { background: var(--coral); }
+.sev-high::before { background: var(--orange); }
+.sev-medium::before { background: var(--yellow); }
+.sev-low::before { background: var(--sand); }
+
+/* ── Empty / Loading ── */
+.empty { grid-column: 1/-1; text-align: center; padding: 80px 20px; color: var(--muted); }
+.loading { grid-column: 1/-1; text-align: center; padding: 60px; color: var(--muted); }
+.spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid var(--sand); border-top-color: var(--coral); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Footer */
-.footer { text-align: center; padding: 24px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); letter-spacing: .5px; }
+/* ── Footer ── */
+.footer { max-width: 1260px; margin: 0 auto; padding: 24px 40px; text-align: center; color: var(--muted); font-size: 12px; border-top: 2px solid var(--sand); }
 
-@media (max-width: 768px) {
-  .header-inner { gap: 12px; }
-  .card { grid-template-columns: 1fr; gap: 10px; }
-  .card-left { flex-direction: row; flex-wrap: wrap; }
-  .card-right { text-align: left; }
-  .stats-bar, .cards { padding: 0 16px; }
+@media (max-width: 860px) {
+  .nav-inner { flex-wrap: wrap; height: auto; padding: 12px 0; gap: 10px; }
+  .hero-title { font-size: 28px; }
+  .grid { grid-template-columns: 1fr; }
+  .hero, .stats, .cat-row, .grid, .footer { padding-left: 16px; padding-right: 16px; }
+  .nav { padding: 0 16px; }
 }
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
 
-<div class="header">
-  <div class="header-inner">
-    <div class="logo">VULN-MONITOR</div>
-    <div class="search">
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="nav-logo">VULN-MONITOR</div>
+    <div class="nav-search">
       <input type="text" id="searchInput" placeholder="Search CVE, title, keyword..." autofocus>
     </div>
-    <div class="filters">
-      <select id="sourceFilter"><option value="">All Sources</option></select>
-      <select id="reasonFilter">
-        <option value="">All Reasons</option>
+    <div class="nav-filters">
+      <select class="pill-select" id="sourceFilter"><option value="">All Sources</option></select>
+      <select class="pill-select" id="reasonFilter">
+        <option value="">Reason</option>
         <option value="RCE+asset/CVE">RCE+asset/CVE</option>
         <option value="asset+CVE">asset+CVE</option>
         <option value="RCE+exploit">RCE+exploit</option>
       </select>
-      <select id="daysFilter">
+      <select class="pill-select" id="daysFilter">
         <option value="">All Time</option>
-        <option value="1">Last 24h</option>
-        <option value="7" selected>Last 7 days</option>
-        <option value="30">Last 30 days</option>
-        <option value="60">Last 60 days</option>
+        <option value="1">24h</option>
+        <option value="7" selected>7 days</option>
+        <option value="30">30 days</option>
+        <option value="60">60 days</option>
       </select>
-      <select id="pushedFilter">
+      <select class="pill-select" id="pushedFilter">
         <option value="">All</option>
-        <option value="1">Pushed only</option>
+        <option value="1">Pushed</option>
       </select>
-      <button class="btn" onclick="loadVulns()">Refresh</button>
+      <button class="btn-refresh" onclick="loadVulns()">Refresh</button>
     </div>
   </div>
+</nav>
+
+<div class="hero">
+  <div class="hero-title">Vulnerability <span>Intelligence</span></div>
+  <div class="hero-sub">Real-time 1day/0day RCE tracking across 17 sources</div>
 </div>
 
-<div class="stats-bar" id="statsBar"></div>
-<div class="cards" id="cardList"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
-<div class="footer">vuln-monitor &middot; read-only &middot; 127.0.0.1</div>
+<div class="stats" id="statsBar"></div>
+<div class="cat-row" id="catRow"></div>
+<div class="grid" id="cardList"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
+<div class="footer">vuln-monitor &middot; read-only &middot; bound to 127.0.0.1</div>
 
 <script>
-const SOURCE_COLORS = {
-  "CISA_KEV":"#ff6b6b","Fortinet":"#ffad5c","PaloAlto":"#FFFF78","Cisco":"#7dd3fc",
-  "MSRC":"#c4b5fd","ZDI":"#d8b4fe","watchTowr":"#f9a8d4","Horizon3":"#5eead4",
-  "Rapid7":"#67e8f9","Chaitin":"#6ee7b7","ThreatBook":"#a5f3fc","GitHub":"#c4b5fd",
-  "Sploitus_Citrix":"#fdba74","Sploitus_Ivanti":"#fdba74","Sploitus_F5":"#fdba74",
+const SRC_STYLE = {
+  CISA_KEV:  {bg:"#FFE0E0",fg:"#b91c1c"}, Fortinet: {bg:"#FFF3E0",fg:"#c2410c"},
+  PaloAlto:  {bg:"#FFFDE7",fg:"#92400e"}, Cisco:    {bg:"#E0F2FE",fg:"#0369a1"},
+  MSRC:      {bg:"#EDE9FE",fg:"#6d28d9"}, ZDI:      {bg:"#F3E8FF",fg:"#7c3aed"},
+  watchTowr: {bg:"#FCE7F3",fg:"#be185d"}, Horizon3: {bg:"#D1FAE5",fg:"#047857"},
+  Rapid7:    {bg:"#CFFAFE",fg:"#0e7490"}, Chaitin:  {bg:"#D1FAE5",fg:"#065f46"},
+  ThreatBook:{bg:"#E0F2FE",fg:"#0c4a6e"}, GitHub:   {bg:"#EDE9FE",fg:"#5b21b6"},
+  Sploitus_Citrix:{bg:"#FED7AA",fg:"#9a3412"}, Sploitus_Ivanti:{bg:"#FED7AA",fg:"#9a3412"},
+  Sploitus_F5:{bg:"#FED7AA",fg:"#9a3412"},
 };
-const REASON_STYLES = {
-  "RCE+asset/CVE":"background:var(--red);color:#fff",
-  "asset+CVE":"background:var(--orange);color:#000",
-  "RCE+exploit":"background:#f472b6;color:#000",
+const REASON_STYLE = {
+  "RCE+asset/CVE": {bg:"#FEE2E2",fg:"#991b1b"},
+  "asset+CVE":     {bg:"#FEF3C7",fg:"#92400e"},
+  "RCE+exploit":   {bg:"#FCE7F3",fg:"#9d174d"},
 };
 
-let debounceTimer;
+let debounceTimer, activeCat = '';
 document.getElementById('searchInput').addEventListener('input', () => {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(loadVulns, 300);
+  clearTimeout(debounceTimer); debounceTimer = setTimeout(loadVulns, 300);
 });
 ['sourceFilter','reasonFilter','daysFilter','pushedFilter'].forEach(id =>
-  document.getElementById(id).addEventListener('change', loadVulns));
+  document.getElementById(id).addEventListener('change', () => { activeCat=''; updateCatPills(); loadVulns(); }));
+
+function updateCatPills() {
+  document.querySelectorAll('.cat-pill').forEach(p => p.classList.toggle('active', p.dataset.src === activeCat));
+}
 
 async function loadSources() {
   try {
     const sources = await (await fetch('/api/sources')).json();
     const sel = document.getElementById('sourceFilter');
-    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); });
+    sources.forEach(s => { const o = document.createElement('option'); o.value=s; o.textContent=s; sel.appendChild(o); });
+    const row = document.getElementById('catRow');
+    row.innerHTML = `<div class="cat-pill active" data-src="">All</div>` +
+      sources.map(s => `<div class="cat-pill" data-src="${s}">${s}</div>`).join('');
+    row.querySelectorAll('.cat-pill').forEach(p => p.addEventListener('click', () => {
+      activeCat = p.dataset.src;
+      document.getElementById('sourceFilter').value = activeCat;
+      updateCatPills(); loadVulns();
+    }));
   } catch(e) {}
 }
 
@@ -265,14 +360,21 @@ async function loadStats() {
   try {
     const d = await (await fetch('/api/stats')).json();
     document.getElementById('statsBar').innerHTML = `
-      <div class="stat"><div class="stat-value">${d.total}</div><div class="stat-label">Total Vulns</div></div>
-      <div class="stat"><div class="stat-value">${d.pushed}</div><div class="stat-label">Pushed</div></div>
-      <div class="stat"><div class="stat-value">${Object.keys(d.sources).length}</div><div class="stat-label">Sources</div></div>
+      <div class="stat-card"><div class="stat-num">${d.total}</div><div class="stat-label">Total Vulns</div></div>
+      <div class="stat-card"><div class="stat-num">${d.pushed}</div><div class="stat-label">Pushed</div></div>
+      <div class="stat-card"><div class="stat-num">${Object.keys(d.sources).length}</div><div class="stat-label">Active Sources</div></div>
     `;
   } catch(e) {}
 }
 
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function sevClass(title) {
+  const t = (title||'').toLowerCase();
+  if (t.includes('critical') || t.includes('[kev]')) return 'sev-critical';
+  if (t.includes('rce') || t.includes('pre-auth') || t.includes('remote code')) return 'sev-high';
+  if (t.includes('overflow') || t.includes('injection')) return 'sev-medium';
+  return 'sev-low';
+}
 
 async function loadVulns() {
   const params = new URLSearchParams();
@@ -290,39 +392,29 @@ async function loadVulns() {
   const container = document.getElementById('cardList');
   try {
     const vulns = await (await fetch('/api/vulns?' + params)).json();
-    if (!vulns.length) {
-      container.innerHTML = '<div class="empty"><div class="empty-icon">&#128270;</div><p>No vulnerabilities found</p></div>';
-      return;
-    }
-    container.innerHTML = vulns.map(v => {
-      const srcColor = SOURCE_COLORS[v.source] || '#a1a1aa';
-      const reasonStyle = REASON_STYLES[v.reason] || '';
-      return `<div class="card">
-        <div class="card-left">
-          <span class="badge badge-source" style="background:${srcColor}">${esc(v.source||'?')}</span>
-          <span class="badge badge-reason" ${reasonStyle?`style="${reasonStyle}"`:``}>${esc(v.reason||'-')}</span>
+    if (!vulns.length) { container.innerHTML = '<div class="empty"><p style="font-size:32px">&#128270;</p><p>No vulnerabilities found</p></div>'; return; }
+    container.innerHTML = vulns.map((v,i) => {
+      const ss = SRC_STYLE[v.source] || {bg:'#F3F4F6',fg:'#374151'};
+      const rs = REASON_STYLE[v.reason] || {bg:'#F3F4F6',fg:'#6B7280'};
+      return `<div class="vcard ${sevClass(v.title)}" style="animation:fadeUp .4s ${i*.03}s both">
+        <div class="vcard-top">
+          <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
+          <span class="reason-badge" style="background:${rs.bg};color:${rs.fg}">${esc(v.reason||'-')}</span>
+          <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?'Pushed to Telegram':'Filtered'}"></span>
+          <span class="vcard-date">${v.date||'-'}</span>
         </div>
-        <div class="card-body">
-          <div class="card-id">${esc(v.id||'N/A')}</div>
-          <div class="card-title">${esc(v.title)}</div>
-          ${v.summary?`<div class="card-summary">${esc(v.summary)}</div>`:''}
-          ${v.url?`<div class="card-url"><a href="${v.url}" target="_blank" rel="noopener">${esc(v.url)}</a></div>`:''}
-        </div>
-        <div class="card-right">
-          <div class="card-date">${v.date||'-'}</div>
-          <div class="card-pushed ${v.pushed?'pushed-yes':'pushed-no'}">${v.pushed?'PUSHED':'filtered'}</div>
-        </div>
+        <div class="vcard-id">${esc(v.id||'N/A')}</div>
+        <div class="vcard-title">${esc(v.title)}</div>
+        ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
+        ${v.url?`<div class="vcard-link"><a href="${v.url}" target="_blank" rel="noopener">${esc(v.url)}</a></div>`:''}
       </div>`;
     }).join('');
-  } catch(e) {
-    container.innerHTML = '<div class="empty"><div class="empty-icon">&#9888;</div><p>Failed to load</p></div>';
-  }
+  } catch(e) { container.innerHTML = '<div class="empty"><p>Failed to load</p></div>'; }
 }
 
-loadSources();
-loadStats();
-loadVulns();
+loadSources(); loadStats(); loadVulns();
 </script>
+<style>@keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }</style>
 </body>
 </html>"""
 
