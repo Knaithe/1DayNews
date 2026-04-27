@@ -132,6 +132,9 @@ KEV_JSON_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_v
 # Requires Referer/Origin headers; rate-limited (one call per fetch cycle is fine).
 CHAITIN_API_URL = "https://stack.chaitin.com/api/v2/vuln/list/"
 
+# ThreatBook (微步在线) — public homePage endpoint, returns premium + highrisk vulns.
+THREATBOOK_API_URL = "https://x.threatbook.com/v5/node/vul_module/homePage"
+
 
 # ================== RCE PATTERNS ==================
 RCE_PATTERNS = [
@@ -743,6 +746,43 @@ def fetch_chaitin():
     return out
 
 
+def fetch_threatbook():
+    """微步在线 ThreatBook — premium + highrisk vuln listings."""
+    out = []
+    try:
+        r = SESS.get(THREATBOOK_API_URL, timeout=REQUEST_TIMEOUT, headers={
+            "Referer": "https://x.threatbook.com/nodev4/vul_intelligence/recentvuln",
+            "Origin": "https://x.threatbook.com",
+        })
+        if r.status_code != 200:
+            log.warning(f"ThreatBook HTTP {r.status_code}")
+            return out
+        data = r.json().get("data", {})
+        for section in ("premium", "highrisk"):
+            for v in data.get(section, []):
+                xve = v.get("id", "")
+                name = v.get("vuln_name_zh", "")
+                risk = v.get("riskLevel", "")
+                poc = v.get("pocExist", False)
+                affects = ", ".join(v.get("affects", []))
+                pub_date = v.get("vuln_publish_time", "")
+                link = f"https://x.threatbook.com/nodev4/vul_intelligence/{xve}" if xve else ""
+                title = f"[{risk}] {xve} {name}"
+                summary = f"affects: {affects}" if affects else ""
+                if poc:
+                    summary = f"PoC available. {summary}"
+                out.append({
+                    "source": "ThreatBook",
+                    "title": title[:300],
+                    "link": link,
+                    "summary": summary[:500],
+                    "text": f"{title}\n{summary}\n{affects}",
+                })
+    except Exception as ex:
+        log.warning(f"ThreatBook err: {ex}")
+    return out
+
+
 def fetch_github_cve():
     out = []
     year = datetime.now().year
@@ -874,6 +914,7 @@ def _run():
         items.extend(fetch_rss(name, url))
     items.extend(fetch_kev_json())
     items.extend(fetch_chaitin())
+    items.extend(fetch_threatbook())
     items.extend(fetch_github_cve())
     log.info(f"collected {len(items)} items")
 
@@ -1098,6 +1139,7 @@ def cmd_rebuild(args):
         items.extend(fetch_rss(name, url))
     items.extend(fetch_kev_json())
     items.extend(fetch_chaitin())
+    items.extend(fetch_threatbook())
     items.extend(fetch_github_cve())
     print(f"fetched {len(items)} items from sources")
 
