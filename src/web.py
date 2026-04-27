@@ -295,8 +295,8 @@ a:hover { text-decoration: underline; }
         <option value="60">60 days</option>
       </select>
       <select class="pill-select" id="pushedFilter">
+        <option value="1" selected>Pushed</option>
         <option value="">All</option>
-        <option value="1">Pushed</option>
       </select>
     </div>
   </div>
