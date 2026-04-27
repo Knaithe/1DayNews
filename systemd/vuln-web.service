@@ -1,6 +1,6 @@
 [Unit]
 Description=vuln-monitor web dashboard
-After=network.target
+After=network.target vuln-monitor.service
 
 [Service]
 Type=simple
@@ -10,11 +10,11 @@ Restart=on-failure
 RestartSec=5
 Environment=VULN_DATA_DIR=/opt/vuln-monitor
 
-# Sandbox (same as vuln-monitor.service)
+# Sandbox — web is read-only, stricter than fetch service
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/vuln-monitor
+ReadOnlyPaths=/opt/vuln-monitor
 PrivateTmp=yes
 
 [Install]

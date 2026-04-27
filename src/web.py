@@ -433,4 +433,6 @@ if __name__ == "__main__":
     print(f"vuln-monitor dashboard: http://{args.host}:{args.port}")
     print(f"database: {DB_FILE}")
     print(f"WARNING: only accessible from localhost (use SSH tunnel for remote access)")
-    app.run(host=args.host, port=args.port, debug=False)
+
+    from waitress import serve
+    serve(app, host=args.host, port=args.port)
