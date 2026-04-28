@@ -9,6 +9,7 @@ Usage:
     ssh -L 8001:127.0.0.1:8001 user@srv       # SSH tunnel (no token needed)
 """
 import argparse
+import hmac
 import secrets
 import sqlite3
 import os
@@ -33,6 +34,15 @@ DB_FILE = DATA_DIR / "vuln_cache.db"
 TOKEN_FILE = DATA_DIR / ".web_token"
 
 
+def _save_token(token):
+    """Persist token to file with restricted permissions."""
+    TOKEN_FILE.write_text(token, encoding="utf-8")
+    try:
+        os.chmod(TOKEN_FILE, 0o600)
+    except OSError:
+        pass
+
+
 def _load_or_create_token():
     """Load token from file, or generate and persist a new one."""
     if TOKEN_FILE.exists():
@@ -40,9 +50,15 @@ def _load_or_create_token():
         if token:
             return token
     token = secrets.token_hex(8)
-    TOKEN_FILE.write_text(token, encoding="utf-8")
-    os.chmod(TOKEN_FILE, 0o600)
+    _save_token(token)
     return token
+
+
+def _token_match(candidate):
+    """Constant-time token comparison to prevent timing attacks."""
+    if not _MAGIC_TOKEN or not candidate:
+        return False
+    return hmac.compare_digest(candidate, _MAGIC_TOKEN)
 
 app = Flask(__name__)
 
@@ -52,17 +68,18 @@ def check_token():
         return  # localhost mode, no auth
     # Allow token via: /TOKEN/path, ?token=TOKEN, or cookie
     path_parts = request.path.strip("/").split("/", 1)
-    if path_parts[0] == _MAGIC_TOKEN:
-        # Strip token prefix from path, set cookie for subsequent requests
-        real_path = "/" + (path_parts[1] if len(path_parts) > 1 else "")
+    if _token_match(path_parts[0]):
+        # Strip token prefix, redirect to real path + set cookie
+        tail = path_parts[1] if len(path_parts) > 1 else ""
+        real_path = "/" + tail.lstrip("/")  # prevent //evil.com open redirect
         from flask import redirect, make_response
         resp = make_response(redirect(real_path))
         resp.set_cookie("_vmt", _MAGIC_TOKEN, httponly=True, samesite="Strict", max_age=86400*30)
         return resp
-    if request.args.get("token") == _MAGIC_TOKEN:
-        return  # query param auth OK
-    if request.cookies.get("_vmt") == _MAGIC_TOKEN:
-        return  # cookie auth OK
+    if _token_match(request.args.get("token", "")):
+        return
+    if _token_match(request.cookies.get("_vmt", "")):
+        return
     abort(403)
 
 @app.after_request
@@ -609,12 +626,28 @@ if __name__ == "__main__":
                    help="Print current token and exit")
     args = p.parse_args()
 
+    # Token management commands (work without --public)
     if args.show_token:
         if TOKEN_FILE.exists():
             print(TOKEN_FILE.read_text(encoding="utf-8").strip())
         else:
             print("(no token file, run with --public to generate)")
         raise SystemExit(0)
+
+    if args.rotate_token:
+        new_token = secrets.token_hex(8)
+        _save_token(new_token)
+        print(f"new token: {new_token}")
+        print(f"saved to:  {TOKEN_FILE}")
+        if not args.public:
+            print("restart vuln-web.service to apply")
+            raise SystemExit(0)
+
+    if args.token:
+        _save_token(args.token)
+        if not args.public:
+            print(f"token saved to {TOKEN_FILE}, restart vuln-web.service to apply")
+            raise SystemExit(0)
 
     if not DB_FILE.exists():
         print(f"ERROR: database not found at {DB_FILE}")
@@ -623,24 +656,7 @@ if __name__ == "__main__":
 
     if args.public:
         args.host = "0.0.0.0"
-        if args.token:
-            # manually set → persist
-            TOKEN_FILE.write_text(args.token, encoding="utf-8")
-            try:
-                os.chmod(TOKEN_FILE, 0o600)
-            except OSError:
-                pass
-            _MAGIC_TOKEN = args.token
-        elif args.rotate_token:
-            _MAGIC_TOKEN = secrets.token_hex(8)
-            TOKEN_FILE.write_text(_MAGIC_TOKEN, encoding="utf-8")
-            try:
-                os.chmod(TOKEN_FILE, 0o600)
-            except OSError:
-                pass
-            print(f"  rotated:    old token invalidated")
-        else:
-            _MAGIC_TOKEN = _load_or_create_token()
+        _MAGIC_TOKEN = args.token or (new_token if args.rotate_token else _load_or_create_token())
         print(f"vuln-monitor dashboard (PUBLIC mode)")
         print(f"  magic URL:  http://<your-ip>:{args.port}/{_MAGIC_TOKEN}/")
         print(f"  token:      {_MAGIC_TOKEN}")
