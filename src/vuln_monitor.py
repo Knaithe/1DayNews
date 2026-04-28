@@ -859,11 +859,11 @@ def fetch_kev_json():
 
 
 def fetch_chaitin():
-    """Chaitin Stack vuldb — Chinese vuln database with 350k+ entries.
+    """Chaitin Stack vuldb — Chinese vuln database (350k+ total, ~184 curated).
 
     Uses a hidden JSON API; fresh session + Referer header to pass SafeLine WAF.
-    Searches by current year CVE prefix to get recent entries from full database
-    (default list only returns ~184 curated items, not the full 350k+).
+    Default list returns curated high-risk items (~184), not the full database.
+    API limited to ~15 results per call; used as supplementary source.
     """
     out = []
     s = requests.Session()
@@ -957,7 +957,7 @@ def fetch_nvd_recent():
         hdrs = {"User-Agent": "vuln-monitor/1.0 (security research)"}
         if NVD_API_KEY:
             hdrs["apiKey"] = NVD_API_KEY
-        r = requests.get(_NVD_API, params={
+        r = _get_with_retry(SESS, _NVD_API, params={
             "pubStartDate": start, "pubEndDate": end,
             "resultsPerPage": ITEM_PER_FEED,
         }, headers=hdrs, timeout=REQUEST_TIMEOUT)
