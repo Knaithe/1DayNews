@@ -69,7 +69,8 @@ def _load_user_config() -> dict:
 #   3. empty string           (TG_* empty -> dry mode, no push)
 _user_cfg = _load_user_config()
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or _user_cfg.get("tg_bot_token", "")
-TG_CHAT_ID   = os.getenv("TG_CHAT_ID")   or _user_cfg.get("tg_chat_id", "")
+_raw_chat_id = os.getenv("TG_CHAT_ID")   or _user_cfg.get("tg_chat_id", "")
+TG_CHAT_IDS  = [c.strip() for c in _raw_chat_id.split(",") if c.strip()]
 GH_TOKEN     = os.getenv("GH_TOKEN")     or _user_cfg.get("gh_token", "")
 PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
 
@@ -981,27 +982,29 @@ def format_msg(it, reason):
     )[:4000]
 
 def send_telegram(msg):
-    if not (TG_BOT_TOKEN and TG_CHAT_ID):
+    if not (TG_BOT_TOKEN and TG_CHAT_IDS):
         log.info(f"[DRY] {msg[:500]}")
         return True
-    try:
-        r = SESS.post(
-            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TG_CHAT_ID,
-                "text": msg,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-        if r.status_code != 200:
-            log.warning(f"TG push {r.status_code}: {r.text[:200]}")
-            return False
-        return True
-    except Exception as ex:
-        log.warning(f"TG err: {ex}")
-        return False
+    ok = True
+    for chat_id in TG_CHAT_IDS:
+        try:
+            r = SESS.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": msg,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if r.status_code != 200:
+                log.warning(f"TG push {chat_id} {r.status_code}: {r.text[:200]}")
+                ok = False
+        except Exception as ex:
+            log.warning(f"TG err {chat_id}: {ex}")
+            ok = False
+    return ok
 
 
 def send_failure_alert(msg):
@@ -1016,21 +1019,22 @@ def send_failure_alert(msg):
     if now - state.get("last_alert_ts", 0) < ALERT_COOLDOWN_SEC:
         log.warning(f"alert suppressed (cooldown): {msg[:150]}")
         return
-    if not (TG_BOT_TOKEN and TG_CHAT_ID):
+    if not (TG_BOT_TOKEN and TG_CHAT_IDS):
         log.error(f"[ALERT-DRY] {msg[:500]}")
     else:
-        try:
-            SESS.post(
-                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": TG_CHAT_ID,
-                    "text": f"vuln-monitor error\n\n{msg[:3800]}",
-                    "disable_web_page_preview": True,
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-        except Exception as ex:
-            log.error(f"alert push failed: {ex}")
+        for chat_id in TG_CHAT_IDS:
+            try:
+                SESS.post(
+                    f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": f"vuln-monitor error\n\n{msg[:3800]}",
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=REQUEST_TIMEOUT,
+                )
+            except Exception as ex:
+                log.error(f"alert push {chat_id} failed: {ex}")
     state["last_alert_ts"] = now
     try:
         tmp = ALERT_STATE.with_suffix(".tmp")
