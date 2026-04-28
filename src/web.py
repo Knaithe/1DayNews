@@ -176,14 +176,16 @@ a:hover { text-decoration: underline; }
 
 /* ── Navbar (cream, slim: logo + search only) ── */
 .nav { background: var(--cream); padding: 0 40px; position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var(--ink); backdrop-filter: blur(6px); }
-.nav-inner { max-width: 1260px; margin: 0 auto; display: flex; align-items: center; height: 60px; gap: 18px; }
+.nav-inner { max-width: 1260px; margin: 0 auto; display: grid; grid-template-columns: auto 1fr auto; align-items: center; height: 60px; gap: 18px; }
+.nav-left { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.nav-tagline { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nav-logo {
   font-family: 'Unbounded', sans-serif; font-weight: 800; font-size: 15px;
   color: var(--ink); background: var(--yellow); padding: 6px 16px;
   border-radius: var(--pill); letter-spacing: -.2px; white-space: nowrap;
   border: 1px solid var(--ink); box-shadow: var(--shadow-soft);
 }
-.nav-search { flex: 1; max-width: 560px; position: relative; }
+.nav-search { width: 100%; max-width: 560px; justify-self: center; position: relative; }
 .nav-search input {
   width: 100%; padding: 8px 18px 8px 42px; background: var(--white);
   border: 1px solid var(--ink); border-radius: var(--pill);
@@ -196,11 +198,11 @@ a:hover { text-decoration: underline; }
   content: "\1F50D"; position: absolute; left: 16px; top: 50%;
   transform: translateY(-50%); font-size: 14px; opacity: .5;
 }
-.nav-filters { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.nav-filters { display: flex; gap: 6px; align-items: center; }
 
 /* ── Pill-row filters (each filter its own row) ── */
 .filter-row { max-width: 1260px; margin: 10px auto 0; padding: 0 40px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.filter-row:first-of-type { margin-top: 24px; }
+#timeRow { margin-top: 36px; }
 .group-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; min-width: 64px; }
 
 /* ── Hero / Stats ── */
@@ -210,34 +212,32 @@ a:hover { text-decoration: underline; }
   font-size: clamp(2rem, 4.5vw, 4.5rem);
   color: var(--ink); letter-spacing: -.02em; line-height: 1.1;
 }
-.hero-title span { color: var(--orange); }
+.hero-title span { color: var(--red); }
 .hero-sub { color: var(--muted); font-size: 15px; margin-top: 10px; font-weight: 400; }
 
-.stats { max-width: 1260px; margin: 24px auto 0; padding: 0 40px; display: flex; gap: 14px; flex-wrap: wrap; }
-.stat-card {
-  background: var(--white); border: 1px solid var(--ink);
-  border-radius: var(--radius); padding: 18px 26px; min-width: 150px;
-  transition: transform .25s var(--spring), box-shadow .25s var(--spring);
-}
-.stat-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-hard); }
-.stat-num { font-family: 'Unbounded', sans-serif; font-size: 34px; font-weight: 800; color: var(--ink); line-height: 1; letter-spacing: -.02em; }
-.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 6px; font-weight: 600; }
+.meta-row { max-width: 1260px; margin: 18px auto 0; padding: 0 40px; display: flex; align-items: baseline; justify-content: center; gap: 18px 28px; flex-wrap: wrap; }
+.stats { display: flex; gap: 28px; align-items: baseline; flex-wrap: wrap; }
+.stat-item { display: inline-flex; align-items: baseline; gap: 8px; }
+.stat-item + .stat-item { padding-left: 28px; border-left: 1px solid var(--ink); }
+.stat-num { font-family: 'Unbounded', sans-serif; font-size: 28px; font-weight: 800; color: var(--ink); line-height: 1; letter-spacing: -.02em; }
+.stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; white-space: nowrap; }
+@media (max-width: 900px) { .nav-tagline { display: none; } }
 
-/* ── Severity legend (inline at the right of hero subtitle) ── */
-.hero-sub-row { max-width: 1260px; margin: 10px auto 0; padding: 0 40px; display: flex; align-items: center; gap: 18px 24px; flex-wrap: wrap; }
-.hero-sub-row .hero-sub { margin: 0; }
-.legend-inline { margin-left: auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* ── Severity legend (sits below filter rows, above grid) ── */
+.legend-row { max-width: 1260px; margin: 14px auto 0; padding: 0 40px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+.legend-inline { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .legend-inline-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ink); }
 .legend-pill { width: 8px; height: 14px; border-radius: 0 var(--pill) var(--pill) 0; border: 1px solid var(--ink); border-left: none; flex-shrink: 0; }
 
 /* ── Pushed toggle (switch) ── */
 .pushed-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink); cursor: pointer; user-select: none; }
-.pushed-toggle input { display: none; }
+.pushed-toggle input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
 .pushed-toggle .switch {
   width: 36px; height: 20px; background: var(--white); border: 1px solid var(--ink);
   border-radius: var(--pill); position: relative; transition: background .25s var(--spring);
 }
+.pushed-toggle input:focus-visible + .switch { outline: 2px solid var(--ink); outline-offset: 3px; }
 .pushed-toggle .switch::after {
   content: ''; position: absolute; top: 2px; left: 2px;
   width: 14px; height: 14px; background: var(--ink); border-radius: 50%;
@@ -249,11 +249,13 @@ a:hover { text-decoration: underline; }
 /* ── Category pills ── */
 .cat-row { max-width: 1260px; margin: 10px auto 0; padding: 0 40px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .cat-pill {
+  font-family: inherit; line-height: 1.5;
   padding: 6px 18px; border-radius: var(--pill); border: 1px solid var(--ink);
   background: var(--white); font-size: 12px; font-weight: 600; color: var(--ink);
   cursor: pointer; transition: all .25s var(--spring); user-select: none;
 }
 .cat-pill:hover { background: var(--yellow); transform: translateY(-2px); box-shadow: var(--shadow-soft); }
+.cat-pill:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 .cat-pill.active { background: var(--ink); color: var(--yellow); }
 
 /* ── Vuln cards ── */
@@ -316,6 +318,16 @@ a:hover { text-decoration: underline; }
 .load-more-btn:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; background: var(--white); }
 .load-more-row.hidden { display: none; }
 
+/* ── Skip link (a11y) ── */
+.skip-link {
+  position: absolute; top: -50px; left: 8px;
+  background: var(--ink); color: var(--yellow);
+  padding: 8px 18px; border-radius: var(--pill);
+  font-weight: 700; font-size: 13px; z-index: 100;
+  text-decoration: none; transition: top .15s;
+}
+.skip-link:focus { top: 8px; outline: 2px solid var(--yellow); outline-offset: 2px; }
+
 /* ── Empty / Loading ── */
 .empty { grid-column: 1/-1; text-align: center; padding: 80px 20px; color: var(--muted); }
 .loading { grid-column: 1/-1; text-align: center; padding: 60px; color: var(--muted); }
@@ -338,12 +350,16 @@ a:hover { text-decoration: underline; }
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Unbounded:wght@400;600;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
+<a class="skip-link" href="#cardList">Skip to results</a>
 
 <nav class="nav">
   <div class="nav-inner">
-    <div class="nav-logo">VULN-MONITOR</div>
+    <div class="nav-left">
+      <div class="nav-logo">VULN-MONITOR</div>
+      <div class="nav-tagline">Real-time 1day/0day RCE tracking across <span id="srcCount">—</span> sources</div>
+    </div>
     <div class="nav-search">
-      <input type="text" id="searchInput" placeholder="Search CVE, title, keyword..." autofocus>
+      <input type="text" id="searchInput" placeholder="Search CVE, title, keyword..." aria-label="Search vulnerabilities by CVE, title, or keyword" autofocus>
     </div>
     <div class="nav-filters">
       <label class="pushed-toggle" title="Show only items pushed to Telegram">
@@ -355,41 +371,44 @@ a:hover { text-decoration: underline; }
   </div>
 </nav>
 
+<main id="main">
 <div class="hero">
-  <div class="hero-title">Vulnerability <span>Intelligence</span></div>
-</div>
-<div class="hero-sub-row">
-  <div class="hero-sub">Real-time 1day/0day RCE tracking across <span id="srcCount">—</span> sources</div>
-  <div class="legend-inline">
-    <span class="legend-item"><span class="legend-pill" style="background:var(--orange)"></span>Critical / KEV</span>
-    <span class="legend-item"><span class="legend-pill" style="background:var(--red)"></span>RCE / Pre-auth</span>
-    <span class="legend-item"><span class="legend-pill" style="background:var(--yellow)"></span>Overflow / Inject</span>
-    <span class="legend-item"><span class="legend-pill" style="background:var(--mint)"></span>Other</span>
-  </div>
+  <h1 class="hero-title">Vulnerability <span>Intelligence</span></h1>
 </div>
 
-<div class="stats" id="statsBar"></div>
-
-<div class="filter-row" id="timeRow">
-  <div class="cat-pill" data-days="">All Time</div>
-  <div class="cat-pill" data-days="1">24h</div>
-  <div class="cat-pill active" data-days="7">7 days</div>
-  <div class="cat-pill" data-days="30">30 days</div>
-  <div class="cat-pill" data-days="60">60 days</div>
+<div class="meta-row">
+  <div class="stats" id="statsBar"></div>
 </div>
 
-<div class="filter-row" id="reasonRow">
-  <div class="cat-pill active" data-reason="">All</div>
-  <div class="cat-pill" data-reason="RCE+asset/CVE">RCE+asset/CVE</div>
-  <div class="cat-pill" data-reason="asset+CVE">asset+CVE</div>
-  <div class="cat-pill" data-reason="RCE+exploit">RCE+exploit</div>
+<div class="filter-row" id="timeRow" role="group" aria-label="Filter by time range">
+  <button type="button" class="cat-pill" data-days="">All Time</button>
+  <button type="button" class="cat-pill" data-days="1">24h</button>
+  <button type="button" class="cat-pill active" data-days="7">7 days</button>
+  <button type="button" class="cat-pill" data-days="30">30 days</button>
+  <button type="button" class="cat-pill" data-days="60">60 days</button>
 </div>
 
-<div class="filter-row cat-row" id="catRow"></div>
+<div class="filter-row" id="reasonRow" role="group" aria-label="Filter by reason">
+  <button type="button" class="cat-pill active" data-reason="">All</button>
+  <button type="button" class="cat-pill" data-reason="RCE+asset/CVE">RCE+asset/CVE</button>
+  <button type="button" class="cat-pill" data-reason="asset+CVE">asset+CVE</button>
+  <button type="button" class="cat-pill" data-reason="RCE+exploit">RCE+exploit</button>
+</div>
+
+<div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
+
+<div class="legend-row" aria-label="Severity legend">
+  <span class="legend-item"><span class="legend-pill" style="background:var(--orange)"></span>Critical / KEV</span>
+  <span class="legend-item"><span class="legend-pill" style="background:var(--red)"></span>RCE / Pre-auth</span>
+  <span class="legend-item"><span class="legend-pill" style="background:var(--yellow)"></span>Overflow / Inject</span>
+  <span class="legend-item"><span class="legend-pill" style="background:var(--mint)"></span>Other</span>
+</div>
+
 <div class="grid" id="cardList"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
 <div class="load-more-row hidden" id="loadMoreRow">
   <button class="load-more-btn" id="loadMoreBtn" type="button">Load more</button>
 </div>
+</main>
 <div class="footer">vuln-monitor &middot; read-only &middot; bound to 127.0.0.1</div>
 
 <script>
@@ -437,8 +456,8 @@ async function loadSources() {
   try {
     const sources = await (await fetch('/api/sources')).json();
     const row = document.getElementById('catRow');
-    row.innerHTML = `<div class="cat-pill active" data-src="">All</div>` +
-      sources.map(s => `<div class="cat-pill" data-src="${esc(s)}">${esc(s)}</div>`).join('');
+    row.innerHTML = `<button type="button" class="cat-pill active" data-src="">All</button>` +
+      sources.map(s => `<button type="button" class="cat-pill" data-src="${esc(s)}">${esc(s)}</button>`).join('');
     row.querySelectorAll('.cat-pill[data-src]').forEach(p => p.addEventListener('click', () => {
       activeCat = p.dataset.src;
       updateCatPills(); loadVulns();
@@ -451,9 +470,9 @@ async function loadStats() {
     const d = await (await fetch('/api/stats')).json();
     const srcCount = Object.keys(d.sources).length;
     document.getElementById('statsBar').innerHTML = `
-      <div class="stat-card"><div class="stat-num">${d.total}</div><div class="stat-label">Total Vulns</div></div>
-      <div class="stat-card"><div class="stat-num">${d.pushed}</div><div class="stat-label">Pushed</div></div>
-      <div class="stat-card"><div class="stat-num">${srcCount}</div><div class="stat-label">Active Sources</div></div>
+      <span class="stat-item"><span class="stat-num">${d.total}</span><span class="stat-label">Total Vulns</span></span>
+      <span class="stat-item"><span class="stat-num">${d.pushed}</span><span class="stat-label">Pushed</span></span>
+      <span class="stat-item"><span class="stat-num">${srcCount}</span><span class="stat-label">Active Sources</span></span>
     `;
     document.getElementById('srcCount').textContent = srcCount;
   } catch(e) {}
