@@ -403,6 +403,7 @@ FRESH_SOURCES = frozenset({
     "ZDI", "watchTowr", "Horizon3", "Rapid7",        # Research teams
     "Chaitin", "ThreatBook",                           # Curated vuln databases
     "DailyCVE",                                        # Aggregator, but entries are day-of CVEs (not old rehash)
+    "NVD",                                             # Official CVE registry, pubStartDate filtered
 })
 # Sources that aggregate/republish old vulns — need CVE year validation.
 # Sploitus_*, GitHub, PoC-GitHub are implicitly NOT in FRESH_SOURCES.
@@ -860,7 +861,8 @@ def fetch_chaitin():
     """Chaitin Stack vuldb — Chinese vuln database with 350k+ entries.
 
     Uses a hidden JSON API; fresh session + Referer header to pass SafeLine WAF.
-    Only fetches latest page (rate-limited to ~1 req per cycle).
+    Searches by current year CVE prefix to get recent entries from full database
+    (default list only returns ~184 curated items, not the full 350k+).
     """
     out = []
     s = requests.Session()
@@ -871,7 +873,8 @@ def fetch_chaitin():
             "Origin": "https://stack.chaitin.com",
             "Accept": "application/json",
         })
-        r = _get_with_retry(s, CHAITIN_API_URL, params={"limit": ITEM_PER_FEED, "offset": 0},
+        r = _get_with_retry(s, CHAITIN_API_URL,
+                  params={"limit": ITEM_PER_FEED, "offset": 0},
                   timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             log.warning(f"Chaitin HTTP {r.status_code}")
@@ -940,6 +943,42 @@ def fetch_threatbook():
         log.warning(f"ThreatBook err: {ex}")
     finally:
         s.close()
+    return out
+
+
+def fetch_nvd_recent():
+    """NVD CVE 2.0 API — fetch CVEs published in the last 3 days as a catch-all source."""
+    out = []
+    try:
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(days=3)).strftime("%Y-%m-%dT00:00:00.000")
+        end = now.strftime("%Y-%m-%dT23:59:59.999")
+        hdrs = {"User-Agent": "vuln-monitor/1.0 (security research)"}
+        if NVD_API_KEY:
+            hdrs["apiKey"] = NVD_API_KEY
+        r = requests.get(_NVD_API, params={
+            "pubStartDate": start, "pubEndDate": end,
+            "resultsPerPage": ITEM_PER_FEED,
+        }, headers=hdrs, timeout=REQUEST_TIMEOUT)
+        if r.status_code != 200:
+            log.warning(f"NVD HTTP {r.status_code}")
+            return out
+        for v in r.json().get("vulnerabilities", []):
+            cve_data = v.get("cve", {})
+            cve_id = cve_data.get("id", "")
+            descs = cve_data.get("descriptions", [])
+            desc_en = next((d["value"] for d in descs if d.get("lang") == "en"), "")
+            published = (cve_data.get("published") or "")[:10]
+            link = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+            out.append({
+                "source": "NVD",
+                "title": f"{cve_id} {desc_en[:200]}",
+                "link": link,
+                "summary": desc_en[:500],
+                "text": f"{cve_id}\n{desc_en}",
+            })
+    except Exception as ex:
+        log.warning(f"NVD err: {ex}")
     return out
 
 
@@ -1034,8 +1073,8 @@ def _fetch_all_sources():
         counts[name] = len(batch)
         items.extend(batch)
     for name, func in [("CISA_KEV", fetch_kev_json), ("Chaitin", fetch_chaitin),
-                        ("ThreatBook", fetch_threatbook), ("GitHub", fetch_github_cve),
-                        ("PoC-GitHub", fetch_poc_in_github)]:
+                        ("ThreatBook", fetch_threatbook), ("NVD", fetch_nvd_recent),
+                        ("GitHub", fetch_github_cve), ("PoC-GitHub", fetch_poc_in_github)]:
         batch = func()
         counts[name] = len(batch)
         items.extend(batch)
