@@ -90,30 +90,39 @@ score() 命中的 1day 候选还要过 freshness 检查：
 
 ```python
 def _is_fresh(source, text):
-    if source in FRESH_SOURCES:
-        return True, None          # 高信任源发布 = 漏洞本体新
-    # 低信任源：查 NVD 实际发布日期
-    for cve in CVE_RE.findall(text):
-        pub_date = _nvd_published_date(cve)   # 三级缓存：内存 → DB → NVD API
-        if pub_date and pub_date >= now - 60天:
-            return True, "YYYY-MM-DD"
+    cves = CVE_RE.findall(text)
+    # 所有源都查 NVD 拿 cve_published（cve_published 是时间标准）
+    for cve in cves:
+        pub_dt, pub_str = _nvd_published_date(cve)  # 缓存：内存 → NVD API
+        if pub_dt and pub_dt >= now - 60天:
+            has_recent_cve = True
         # NVD 不可用时回退 CVE 年份
-    return False, latest_pub
+    if source in FRESH_SOURCES:
+        return True, latest_pub_str    # 高信任源：始终 fresh，但仍返回日期
+    if not cves:
+        return False, None             # 低信任源 + 无 CVE：无法验证 = nday
+    return has_recent_cve, latest_pub_str
 ```
 
-NVD 查询三级缓存，同一 CVE 只查一次远程：
-1. `_nvd_cache`（内存 dict）
-2. DB 的 `cve_published` 列
-3. NVD API（支持 `NVD_API_KEY`，限频 5→50 次/30 秒）
+NVD 查询两级缓存（启动时 `_warm_nvd_cache` 从 DB 预热内存）：
+1. `_nvd_cache`（内存 dict，区分"查到日期" / "确认不存在" / "限频待重试"）
+2. NVD API（支持 `NVD_API_KEY`，限频 5→50 次/30 秒）
 
 不通过 → reason 加 `nday:` 前缀，降级到 nday 档。发布日期存入 `cve_published` 字段。
 
 ### 源信任分层
 
-| 信任级别 | 源 | freshness 判定 |
+| 信任级别 | 源 | 说明 |
 |---|---|---|
-| **高信任** | Fortinet, PaloAlto, Cisco, MSRC, CISA_KEV, ZDI, watchTowr, Horizon3, Rapid7, Chaitin, ThreatBook, DailyCVE | 发布 = 新漏洞，无需额外验证 |
-| **低信任** | Sploitus_*, GitHub, PoC-GitHub | 检查 CVE 年份 ≥ 当前年份-1 |
+| **高信任** | Fortinet, PaloAlto, Cisco, MSRC, CISA_KEV, ZDI, watchTowr, Horizon3, Rapid7, Chaitin, ThreatBook, DailyCVE, NVD | 发布 = 新漏洞，无 CVE 也放行 |
+| **低信任** | Sploitus_Citrix, Sploitus_Ivanti, Sploitus_F5, GitHub, PoC-GitHub | 需 CVE + 60 天内发布才放行 |
+
+### freshness 判定矩阵
+
+| 源信任 | 有 CVE ≤60 天 | 有 CVE >60 天 | 无 CVE |
+|---|---|---|---|
+| **高信任** | fresh | fresh | **fresh** |
+| **低信任** | fresh | **nday** | **nday** |
 
 ### reason 完整对照
 
@@ -138,6 +147,7 @@ NVD 查询三级缓存，同一 CVE 只查一次远程：
 | GitHub 搜到 CVE-2026-* 仓库 | 特判 | 通过（近期 CVE） | **1day** | `GitHub+CVE` |
 | Sploitus 收录老洞 CVE-2021-* | 命中 | 不通过（老 CVE） | **nday** | `nday:RCE+asset/CVE` |
 | Sploitus 标题含 exploit | RCE+exploit | — | **nday** | `nday:RCE+exploit` |
+| Sploitus 无 CVE 的老固件 exploit | 命中 | 不通过（无 CVE） | **nday** | `nday:RCE+asset/CVE` |
 | PoC-GitHub 新仓库无 RCE 关键词 | 未命中 | — | **noise** | `no hit` |
 | XSS 漏洞公告 | excluded | — | **noise** | `excluded` |
 
