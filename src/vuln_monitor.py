@@ -144,6 +144,7 @@ THREATBOOK_API_URL = "https://x.threatbook.com/v5/node/vul_module/homePage"
 RCE_PATTERNS = [
     # naming
     r"\bRCE\b", r"remote code execution", r"arbitrary (code|command) execution",
+    r"execute arbitrary (code|command)", r"execution of arbitrary (code|command)",
     r"code injection", r"command injection", r"OS command injection",
     # auth prerequisite
     r"unauthenticated", r"pre[- ]?auth(entication)?", r"\bunauth\b",
@@ -196,7 +197,7 @@ ASSET_KEYWORDS = [
     "watchguard","firebox","stormshield","kemp loadmaster","a10","array networks",
     "mikrotik","routeros","pfsense","opnsense",
     "aruba","clearpass","aruba controller","arubaos","arubaos-switch",
-    "hp procurve","aruba cx","d-link","tp-link","tp link","netgear","asus router","draytek","vigor","tenda","linksys","ubiquiti","unifi","edgerouter",
+    "hp procurve","aruba cx","d-link","tp-link","tp link","totolink","netgear","asus router","draytek","vigor","tenda","linksys","ubiquiti","unifi","edgerouter",
     "rdp","remote desktop","terminal server","rds","rdweb","rdgateway","rdp client",
     "smb","smbv1","smbv2","smbv3","cifs","netbios",
     "openssh","ssh","vnc","telnet","winrm","rpc","dcom","rras",
