@@ -47,7 +47,7 @@ ssh -L 8001:127.0.0.1:8001 user@server
 
 | 头 | 值 | 作用 |
 |---|---|---|
-| `Content-Security-Policy` | `default-src 'self'; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` | 防 XSS/点击劫持/数据外泄 |
+| `Content-Security-Policy` | `default-src 'self'; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` | 防 XSS/点击劫持/数据外泄 |
 | `X-Content-Type-Options` | `nosniff` | 防 MIME 嗅探 |
 | `X-Frame-Options` | `DENY` | 防 iframe 嵌入 |
 | `Referrer-Policy` | `no-referrer` | 不泄露来源 |

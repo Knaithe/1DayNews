@@ -48,28 +48,40 @@
 
 ## `score()` 判定
 
-伪代码：
+返回 `(hit: bool, reason: str)`，`hit=True` 进推送队列。
 
 ```python
-def score(title, summary):
-    text = (title + " " + summary).lower()
+def score(text):
+    if _EXCLUDE_RE.search(text):
+        return False, "excluded"         # 黑名单直接丢
 
-    if any(p.search(text) for p in EXCLUDE_PATTERNS):
-        return 0                                  # 黑名单直接丢
+    rce   = bool(_RCE_RE.search(text))
+    asset = any(k in text.lower() for k in ASSET_KEYWORDS)
+    cve   = bool(CVE_RE.search(text))
 
-    rce_hit = any(p.search(text) for p in RCE_PATTERNS)
-    cve_hit = CVE_RE.search(text) is not None
-    asset_hit = any(kw in text for kw in ASSET_KEYWORDS)
-
-    if rce_hit and (asset_hit or cve_hit):
-        return 2    # 核心场景：RCE + 我关心的资产（或已分配 CVE）
-    if rce_hit and "exploit" in text:
-        return 1    # 宽放：有 RCE 关键词 + 有 exploit 字样，即使资产不在名单里
-    return 0
+    if rce and (asset or cve):
+        return True, "RCE+asset/CVE"     # RCE + 关心的资产或有 CVE
+    if asset and cve:
+        return True, "asset+CVE"         # 非 RCE 但涉及重要资产的 CVE
+    if rce and "exploit" in text.lower():
+        return True, "RCE+exploit"       # RCE + exploit 字样
+    return False, "no hit"
 ```
 
-- score > 0 → 进推送队列
-- 当前把 score 1 和 2 一视同仁（都推）——想分级改 `send_telegram` 调用处
+`_run()` 中还有一条特判：GitHub/PoC-GitHub 源如果有 CVE 但 score 未命中，标为 `"GitHub+CVE"` 仍推送（因为 PoC 仓库描述常为空）。
+
+### reason 汇总
+
+| reason | 推送 | 含义 |
+|---|---|---|
+| `RCE+asset/CVE` | 是 | RCE + 资产关键词或 CVE |
+| `asset+CVE` | 是 | 重要资产 + CVE（非 RCE） |
+| `RCE+exploit` | 是 | RCE + exploit 字样 |
+| `GitHub+CVE` | 是 | GitHub PoC 仓库 + CVE（特判） |
+| `excluded` | 否 | 命中黑名单 |
+| `no hit` | 否 | 未命中任何规则 |
+
+性能：`RCE_PATTERNS` 和 `EXCLUDE_PATTERNS` 预编译为联合正则（`_RCE_RE` / `_EXCLUDE_RE`），`ASSET_KEYWORDS` 转 `frozenset`。
 
 ## 调优方法
 

@@ -27,14 +27,19 @@
 
 ```
 /opt/vuln-monitor/
-├── src/vuln_monitor.py        # code（跟仓库结构一致）
+├── src/
+│   ├── vuln_monitor.py        # 采集/去重/推送
+│   └── web.py                 # Web 仪表盘（Flask + waitress）
 ├── scripts/
 │   ├── probe_feeds.py
 │   └── configure.py
-├── systemd/*.{service,timer}
+├── systemd/
+│   ├── vuln-monitor.service   # fetch 服务
+│   ├── vuln-monitor.timer     # 5 分钟定时触发
+│   └── vuln-web.service       # Web 仪表盘常驻服务
 ├── venv/                      # Python 虚拟环境（deploy.sh 创建）
 ├── .env                       # 敏感变量，600
-├── vuln_cache.json            # ←│
+├── vuln_cache.db              # ←│ SQLite WAL 模式
 ├── vuln_monitor.lock          # ←│ runtime state（DATA_DIR，跟代码分离）
 ├── vuln_monitor.log[.1-.5]    # ←│
 └── vuln_alert_state.json      # ←│

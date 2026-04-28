@@ -131,7 +131,15 @@ systemctl status vuln-monitor.service
 sudo systemctl disable --now vuln-monitor.timer
 
 # 看 cache 有多少条（诊断）
-jq '.seen | keys | length' /opt/vuln-monitor/vuln_cache.json
+sqlite3 /opt/vuln-monitor/vuln_cache.db "SELECT COUNT(*) FROM vulns;"
+
+# 数据库统计（CLI）
+python /opt/vuln-monitor/src/vuln_monitor.py stats
+
+# Web 仪表盘管理
+sudo systemctl status vuln-web.service
+sudo systemctl restart vuln-web.service
+journalctl -u vuln-web.service -f
 ```
 
 ## 常见故障定位
@@ -140,7 +148,7 @@ jq '.seen | keys | length' /opt/vuln-monitor/vuln_cache.json
 |---|---|---|
 | 服务器 timer 跑了但没推送 | dry mode（`.env` 没加载或字段为空） | `systemctl cat vuln-monitor.service` 看 `EnvironmentFile` 路径；`cat /opt/vuln-monitor/.env` 确认 `TG_BOT_TOKEN/TG_CHAT_ID` 有值 |
 | 本地跑了但没推送 | 配置文件缺失或字段为空 | `python scripts/configure.py --show` 看当前配置；`--path` 查文件位置 |
-| 每次都推一堆历史 CVE | cache 丢了或权限错 | `ls -la /opt/vuln-monitor/vuln_cache.json`，应当 `vuln:vuln` 可写 |
+| 每次都推一堆历史 CVE | cache 丢了或权限错 | `ls -la /opt/vuln-monitor/vuln_cache.db`，应当 `vuln:vuln` 可写 |
 | 抓源一直 timeout | 出口到源站网络问题 | 部署地不在海外时，`HTTPS_PROXY` 走代理；或换美国 VPS |
 | 某源 404 | 源 URL 变了 | `python scripts/probe_feeds.py` 找新 URL |
 | Telegram 推送失败 | token 错 / chat\_id 错 / bot 未加入频道 | 手动 `curl "https://api.telegram.org/bot$TOKEN/getMe"` 验 token；bot 要被**拉进频道并设为 admin** 才能发 |
