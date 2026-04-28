@@ -1078,7 +1078,7 @@ def _run():
 
         # ── Exploitability (severity) ──
         hit, reason = score(it["text"])
-        if not hit and it["source"] in ("GitHub", "PoC-GitHub") and CVE_RE.search(it["text"]):
+        if not hit and it["source"] == "GitHub" and CVE_RE.search(it["text"]):
             hit, reason = True, "GitHub+CVE"
 
         # ── Freshness (1day vs nday) ──
