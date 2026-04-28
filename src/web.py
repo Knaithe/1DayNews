@@ -152,7 +152,7 @@ def api_vulns():
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
         where.append("created_at > ?"); params.append(cutoff)
 
-    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
+    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at,cve_published FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at DESC LIMIT ?"
@@ -165,6 +165,7 @@ def api_vulns():
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
         "pushed": bool(r["pushed"]),
+        "cve_published": r["cve_published"],
         "date": datetime.fromtimestamp(r["created_at"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if r["created_at"] else None,
     } for r in rows])
 

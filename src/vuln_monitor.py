@@ -517,9 +517,15 @@ def init_db(conn):
             summary    TEXT,
             reason     TEXT,
             pushed     INTEGER DEFAULT 0,
-            created_at REAL NOT NULL
+            created_at REAL NOT NULL,
+            cve_published TEXT
         )
     """)
+    # migrate: add cve_published column if missing (existing databases)
+    try:
+        conn.execute("ALTER TABLE vulns ADD COLUMN cve_published TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON vulns(created_at)")
@@ -709,6 +715,9 @@ def _nvd_published_date(cve_id):
 def _is_fresh(source, text):
     """Is this a fresh vulnerability disclosure (1day), not an nday rehash?
 
+    Returns (fresh: bool, pub_date_str: str or None).
+    pub_date_str is ISO date from NVD if available (e.g. "2026-04-23").
+
     High-trust sources (FRESH_SOURCES): publication = fresh disclosure. Trust them.
     Low-trust sources (Sploitus/GitHub/PoC-GitHub):
       1. Query NVD for actual published date → older than 60 days = nday
@@ -716,28 +725,30 @@ def _is_fresh(source, text):
       3. No CVE at all → benefit of doubt, treat as fresh
     """
     if source in FRESH_SOURCES:
-        return True
+        return True, None
     cves = CVE_RE.findall(text)
     if not cves:
-        return True
+        return True, None
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=_FRESHNESS_DAYS)
     year = now.year
+    latest_pub = None
     for c in cves:
-        # Try NVD first for precise date
         pub_date = _nvd_published_date(c.upper())
         if pub_date:
+            pub_str = pub_date.strftime("%Y-%m-%d")
+            if latest_pub is None or pub_str > latest_pub:
+                latest_pub = pub_str
             if pub_date >= cutoff:
-                return True
-            continue  # this CVE is old, check next
-        # Fallback: CVE year
+                return True, pub_str
+            continue
         try:
             cve_year = int(c.split("-")[1])
             if cve_year >= year - 1:
-                return True
+                return True, None
         except (IndexError, ValueError):
             continue
-    return False
+    return False, latest_pub
 
 
 # ================== SOURCES ==================
@@ -1116,17 +1127,20 @@ def _run():
             hit, reason = True, "GitHub+CVE"
 
         # ── Freshness (1day vs nday) ──
-        if hit and not _is_fresh(it["source"], it["text"]):
-            reason = f"nday:{reason}"
-            hit = False
+        cve_pub = None
+        if hit:
+            fresh, cve_pub = _is_fresh(it["source"], it["text"])
+            if not fresh:
+                reason = f"nday:{reason}"
+                hit = False
 
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
         conn.execute(
-            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,pushed,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,pushed,created_at,cve_published) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (key, cve_id, it["source"], it["title"][:300], it["link"],
-             it["summary"][:500], reason, 1 if hit else 0, now),
+             it["summary"][:500], reason, 1 if hit else 0, now, cve_pub),
         )
         if not hit:
             skipped_filter += 1
@@ -1320,13 +1334,17 @@ def cmd_rescore(args):
         hit, reason = score(text)
         if not hit and source == "GitHub" and CVE_RE.search(text):
             hit, reason = True, "GitHub+CVE"
-        if hit and not _is_fresh(source or "", text):
-            reason = f"nday:{reason}"
-            hit = False
+        cve_pub = None
+        if hit:
+            fresh, cve_pub = _is_fresh(source or "", text)
+            if not fresh:
+                reason = f"nday:{reason}"
+                hit = False
 
         new_pushed = 1 if hit else 0
-        if reason != old_reason or new_pushed != old_pushed:
-            conn.execute("UPDATE vulns SET reason=?, pushed=? WHERE key=?", (reason, new_pushed, key))
+        if reason != old_reason or new_pushed != old_pushed or cve_pub:
+            conn.execute("UPDATE vulns SET reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
+                        (reason, new_pushed, cve_pub, key))
             if new_pushed > old_pushed:
                 upgraded += 1
             elif new_pushed < old_pushed:
