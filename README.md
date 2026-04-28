@@ -53,7 +53,16 @@ python scripts/configure.py          # 交互式配置 TG_BOT_TOKEN / TG_CHAT_ID
 python src/vuln_monitor.py fetch     # 配置后自动推送
 ```
 
+支持多频道/群/个人同时推送：`TG_CHAT_ID=-100xxx,-100yyy,123456`
+
 优先级：环境变量 > 配置文件 > 空（dry mode）。
+
+### 可选凭证
+
+| 变量 | 用途 | 获取 |
+|---|---|---|
+| `GH_TOKEN` | GitHub API 限频 60→5000 次/小时 | GitHub → Settings → Developer settings → PAT |
+| `NVD_API_KEY` | NVD API 限频 5→50 次/30 秒 | https://nvd.nist.gov/developers/request-an-api-key |
 
 ## 一键部署
 

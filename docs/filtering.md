@@ -91,15 +91,22 @@ score() 命中的 1day 候选还要过 freshness 检查：
 ```python
 def _is_fresh(source, text):
     if source in FRESH_SOURCES:
-        return True            # 高信任源发布 = 漏洞本体新
-    # 低信任源：检查 CVE 年份
-    cves = CVE_RE.findall(text)
-    if not cves:
-        return True            # 无 CVE，无法判定，放行
-    return any(cve_year >= current_year - 1 for cve in cves)
+        return True, None          # 高信任源发布 = 漏洞本体新
+    # 低信任源：查 NVD 实际发布日期
+    for cve in CVE_RE.findall(text):
+        pub_date = _nvd_published_date(cve)   # 三级缓存：内存 → DB → NVD API
+        if pub_date and pub_date >= now - 60天:
+            return True, "YYYY-MM-DD"
+        # NVD 不可用时回退 CVE 年份
+    return False, latest_pub
 ```
 
-不通过 → reason 加 `nday:` 前缀，降级到 nday 档。
+NVD 查询三级缓存，同一 CVE 只查一次远程：
+1. `_nvd_cache`（内存 dict）
+2. DB 的 `cve_published` 列
+3. NVD API（支持 `NVD_API_KEY`，限频 5→50 次/30 秒）
+
+不通过 → reason 加 `nday:` 前缀，降级到 nday 档。发布日期存入 `cve_published` 字段。
 
 ### 源信任分层
 

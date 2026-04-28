@@ -150,6 +150,7 @@ journalctl -u vuln-web.service -f
 | 本地跑了但没推送 | 配置文件缺失或字段为空 | `python scripts/configure.py --show` 看当前配置；`--path` 查文件位置 |
 | 每次都推一堆历史 CVE | cache 丢了或权限错 | `ls -la /opt/vuln-monitor/vuln_cache.db`，应当 `vuln:vuln` 可写 |
 | 抓源一直 timeout | 出口到源站网络问题 | 部署地不在海外时，`HTTPS_PROXY` 走代理；或换美国 VPS |
+| NVD 查询 403 | API 限频 | 配置 `NVD_API_KEY`（免费申请，限频 5→50 次/30 秒） |
 | 某源 404 | 源 URL 变了 | `python scripts/probe_feeds.py` 找新 URL |
 | Telegram 推送失败 | token 错 / chat\_id 错 / bot 未加入频道 | 手动 `curl "https://api.telegram.org/bot$TOKEN/getMe"` 验 token；bot 要被**拉进频道并设为 admin** 才能发 |
 | journal 里报 "Operation not permitted" | 沙盒指令误伤 | 临时注释 `SystemCallFilter=@system-service`，重跑看具体失败行，再定位 |
