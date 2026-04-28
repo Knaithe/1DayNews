@@ -399,7 +399,8 @@ FRESH_SOURCES = frozenset({
     "Fortinet", "PaloAlto", "Cisco", "MSRC",        # Vendor PSIRT
     "CISA_KEV",                                       # In-the-wild confirmation
     "ZDI", "watchTowr", "Horizon3", "Rapid7",        # Research teams
-    "Chaitin", "ThreatBook", "DailyCVE",             # Curated vuln databases
+    "Chaitin", "ThreatBook",                           # Curated vuln databases
+    "DailyCVE",                                        # Aggregator, but entries are day-of CVEs (not old rehash)
 })
 # Sources that aggregate/republish old vulns — need CVE year validation.
 # Sploitus_*, GitHub, PoC-GitHub are implicitly NOT in FRESH_SOURCES.
@@ -624,11 +625,17 @@ def _auto_enrich():
     """
     conn = _get_conn()
     init_db(conn)
-    placeholders = ",".join("?" for _ in STRONG_REASONS)
+    # Match both strong reasons and their nday: variants (e.g. "nday:RCE+asset/CVE")
+    reason_clauses = []
+    reason_params = []
+    for r in STRONG_REASONS:
+        reason_clauses.append("reason = ?")
+        reason_clauses.append("reason = ?")
+        reason_params.extend([r, f"nday:{r}"])
     candidates = conn.execute(
         f"SELECT key, cve_id, source, title, link FROM vulns "
-        f"WHERE (link IS NULL OR link = '') AND reason IN ({placeholders})",
-        tuple(STRONG_REASONS),
+        f"WHERE (link IS NULL OR link = '') AND ({' OR '.join(reason_clauses)})",
+        reason_params,
     ).fetchall()
     updated = 0
     for key, cve_id, source, title, link in candidates:
@@ -688,7 +695,14 @@ def _is_fresh(source, text):
     if not cves:
         return True
     year = datetime.now().year
-    return any(int(c.split("-")[1]) >= year - 1 for c in cves)
+    for c in cves:
+        try:
+            cve_year = int(c.split("-")[1])
+            if cve_year >= year - 1:
+                return True
+        except (IndexError, ValueError):
+            continue
+    return False
 
 
 # ================== SOURCES ==================
