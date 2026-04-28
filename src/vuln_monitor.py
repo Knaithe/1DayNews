@@ -693,7 +693,7 @@ def score(text):
 
 _NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _FRESHNESS_DAYS = 60
-_nvd_cache = {}  # in-memory cache: cve_id → "YYYY-MM-DD" or ""
+_nvd_cache = {}  # in-memory cache: cve_id → "YYYY-MM-DD" or "" (not found) or None (rate-limited)
 
 def _nvd_published_date(cve_id):
     """Query NVD for CVE published date. Returns (datetime, "YYYY-MM-DD") or (None, None).
@@ -705,22 +705,28 @@ def _nvd_published_date(cve_id):
     # check in-memory cache
     if cve_upper in _nvd_cache:
         cached = _nvd_cache[cve_upper]
-        if cached:
-            dt = datetime.fromisoformat(cached).replace(tzinfo=timezone.utc)
-            return dt, cached
-        return None, None
+        if cached is None:
+            return None, None  # rate-limited last time, retry on next run
+        if cached == "":
+            return None, None  # confirmed not in NVD
+        dt = datetime.fromisoformat(cached).replace(tzinfo=timezone.utc)
+        return dt, cached
     # query NVD
     try:
         hdrs = {"User-Agent": "vuln-monitor/1.0 (security research)"}
         if NVD_API_KEY:
             hdrs["apiKey"] = NVD_API_KEY
         r = requests.get(_NVD_API, params={"cveId": cve_upper}, timeout=10, headers=hdrs)
+        if r.status_code in (403, 429):
+            # rate-limited — don't cache permanently, retry next run
+            _nvd_cache[cve_upper] = None
+            return None, None
         if r.status_code != 200:
-            _nvd_cache[cve_upper] = ""
+            _nvd_cache[cve_upper] = ""  # permanent miss
             return None, None
         vulns = r.json().get("vulnerabilities", [])
         if not vulns:
-            _nvd_cache[cve_upper] = ""
+            _nvd_cache[cve_upper] = ""  # CVE not in NVD
             return None, None
         pub = vulns[0]["cve"].get("published", "")
         if pub:
@@ -731,13 +737,13 @@ def _nvd_published_date(cve_id):
             _nvd_cache[cve_upper] = pub_str
             return dt, pub_str
     except Exception:
-        pass
-    _nvd_cache[cve_upper] = ""
+        _nvd_cache[cve_upper] = None  # network error, retry next run
     return None, None
 
 
 def _warm_nvd_cache(conn):
     """Pre-load DB cve_published values into in-memory cache at startup."""
+    _nvd_cache.clear()
     try:
         rows = conn.execute("SELECT cve_id, cve_published FROM vulns WHERE cve_published IS NOT NULL").fetchall()
         for cve_id, pub in rows:
