@@ -392,8 +392,9 @@ HIGH_PRIORITY_SOURCES = frozenset({
 STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "RCE+exploit", "GitHub+CVE"})
 
 # ── Freshness (1day vs nday) ──
+# 1day = 漏洞本体新近公开且处于可利用窗口期，值得立刻关注和防御的新鲜攻击面。
+# 不是"任意新内容"：老洞新 PoC / 聚合站重新收录 / 老洞重炒 都不算 1day。
 # Sources where publication inherently means the vulnerability is fresh.
-# If Fortinet/CISA/ZDI publishes it, the vuln itself is newly disclosed.
 FRESH_SOURCES = frozenset({
     "Fortinet", "PaloAlto", "Cisco", "MSRC",        # Vendor PSIRT
     "CISA_KEV",                                       # In-the-wild confirmation

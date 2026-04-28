@@ -83,6 +83,47 @@ def score(text):
 
 性能：`RCE_PATTERNS` 和 `EXCLUDE_PATTERNS` 预编译为联合正则（`_RCE_RE` / `_EXCLUDE_RE`），`ASSET_KEYWORDS` 转 `frozenset`。
 
+## 1day 判定（Freshness）
+
+> **1day = 漏洞本体新近公开且处于可利用窗口期，值得立刻关注和防御的新鲜攻击面。**
+
+不是"任意新内容"。老洞新 PoC、老洞被聚合站重新收录、老洞今天又有人写了 exploit 文章 — 都不算 1day。
+
+推送的最终条件是 **exploitability（高危）+ freshness（1day）** 两个维度同时通过。
+
+### Freshness 判定逻辑
+
+```python
+def _is_fresh(source, text):
+    if source in FRESH_SOURCES:
+        return True            # 这些源发布即代表漏洞本体是新的
+    # 低信任源：检查 CVE 年份
+    cves = CVE_RE.findall(text)
+    if not cves:
+        return True            # 无 CVE，无法判定，放行
+    return any(cve_year >= current_year - 1 for cve in cves)
+```
+
+### 源信任分层
+
+| 信任级别 | 源 | freshness 判定 |
+|---|---|---|
+| **高信任** | Fortinet, PaloAlto, Cisco, MSRC, CISA_KEV, ZDI, watchTowr, Horizon3, Rapid7, Chaitin, ThreatBook, DailyCVE | 发布 = 新漏洞，无需额外验证 |
+| **低信任** | Sploitus_*, GitHub, PoC-GitHub | 检查 CVE 年份 ≥ 当前年份-1 |
+
+### 判定结果
+
+| 场景 | exploitability | freshness | 推送？ | reason |
+|---|---|---|---|---|
+| Fortinet RCE 公告 | 通过 | 通过（高信任源） | 推 | `RCE+asset/CVE` |
+| CISA KEV 老 CVE 新入列 | 通过 | 通过（高信任源） | 推 | `RCE+asset/CVE` |
+| Sploitus CVE-2026-* exploit | 通过 | 通过（近期 CVE） | 推 | `RCE+exploit` |
+| Sploitus CVE-2021-* exploit | 通过 | **不通过**（老 CVE） | 不推 | `nday:RCE+exploit` |
+| GitHub CVE-2026-* PoC 仓库 | 通过 | 通过（近期 CVE） | 推 | `GitHub+CVE` |
+| GitHub CVE-2019-* PoC 仓库 | 通过 | **不通过**（老 CVE） | 不推 | `nday:GitHub+CVE` |
+
+nday 条目仍入库（`pushed=0`，reason 带 `nday:` 前缀），`query` 可查但 `brief` 和 Telegram 不推。
+
 ## 调优方法
 
 **跑一周 DRY，再看日志**。不要凭空猜黑白名单。
