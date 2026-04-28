@@ -338,10 +338,12 @@ a:hover { text-decoration: underline; }
 .footer { max-width: 1260px; margin: 0 auto; padding: 24px 40px; text-align: center; color: var(--muted); font-size: 12px; border-top: 1px solid var(--ink); }
 
 @media (max-width: 860px) {
-  .nav-inner { flex-wrap: wrap; height: auto; padding: 12px 0; gap: 10px; }
+  .nav-inner { display: flex; flex-direction: column; align-items: stretch; height: auto; padding: 12px 0; gap: 10px; }
+  .nav-search { max-width: none; width: 100%; }
+  .nav-filters { align-self: flex-end; margin-left: 0; }
   .hero-title { font-size: 28px; }
   .grid { grid-template-columns: 1fr; }
-  .hero, .stats, .cat-row, .grid, .footer { padding-left: 16px; padding-right: 16px; }
+  .hero, .meta-row, .filter-row, .legend-row, .grid, .footer { padding-left: 16px; padding-right: 16px; }
   .nav { padding: 0 16px; }
 }
 </style>
