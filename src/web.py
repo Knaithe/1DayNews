@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """
-vuln-monitor web dashboard. Read-only SQLite viewer, binds 127.0.0.1 only.
+vuln-monitor web dashboard. Read-only SQLite viewer.
 
 Usage:
-    python src/web.py                     # http://127.0.0.1:8001
-    python src/web.py --port 9000         # custom port
-    ssh -L 8001:127.0.0.1:8001 user@srv  # remote access via SSH tunnel
+    python src/web.py                          # localhost only
+    python src/web.py --public                 # 0.0.0.0 + magic token
+    python src/web.py --public --token MY_SEC  # custom token
+    ssh -L 8001:127.0.0.1:8001 user@srv       # SSH tunnel (no token needed)
 """
 import argparse
+import secrets
 import sqlite3
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, abort
 from waitress import serve
+
+# ── Magic token auth ──
+_MAGIC_TOKEN = None  # set at startup if --public
 
 # ── Locate database ──
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -27,6 +32,25 @@ else:
 DB_FILE = DATA_DIR / "vuln_cache.db"
 
 app = Flask(__name__)
+
+@app.before_request
+def check_token():
+    if _MAGIC_TOKEN is None:
+        return  # localhost mode, no auth
+    # Allow token via: /TOKEN/path, ?token=TOKEN, or cookie
+    path_parts = request.path.strip("/").split("/", 1)
+    if path_parts[0] == _MAGIC_TOKEN:
+        # Strip token prefix from path, set cookie for subsequent requests
+        real_path = "/" + (path_parts[1] if len(path_parts) > 1 else "")
+        from flask import redirect, make_response
+        resp = make_response(redirect(real_path))
+        resp.set_cookie("_vmt", _MAGIC_TOKEN, httponly=True, samesite="Strict", max_age=86400*30)
+        return resp
+    if request.args.get("token") == _MAGIC_TOKEN:
+        return  # query param auth OK
+    if request.cookies.get("_vmt") == _MAGIC_TOKEN:
+        return  # cookie auth OK
+    abort(403)
 
 @app.after_request
 def no_cache(response):
@@ -562,6 +586,10 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="vuln-monitor web dashboard")
     p.add_argument("--port", type=int, default=8001)
     p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1 only)")
+    p.add_argument("--public", action="store_true",
+                   help="Bind 0.0.0.0 and require magic token for access")
+    p.add_argument("--token", default=None,
+                   help="Set magic token (default: auto-generated 16-char hex)")
     args = p.parse_args()
 
     if not DB_FILE.exists():
@@ -569,8 +597,18 @@ if __name__ == "__main__":
         print("Run 'python src/vuln_monitor.py fetch' first to create it.")
         raise SystemExit(1)
 
-    print(f"vuln-monitor dashboard: http://{args.host}:{args.port}")
-    print(f"database: {DB_FILE}")
-    print(f"WARNING: only accessible from localhost (use SSH tunnel for remote access)")
+    if args.public:
+        args.host = "0.0.0.0"
+        _MAGIC_TOKEN = args.token or secrets.token_hex(8)  # 16 hex chars
+        print(f"vuln-monitor dashboard (PUBLIC mode)")
+        print(f"  magic URL:  http://<your-ip>:{args.port}/{_MAGIC_TOKEN}/")
+        print(f"  token:      {_MAGIC_TOKEN}")
+        print(f"  cookie:     first visit via magic URL sets a 30-day cookie")
+        print(f"  database:   {DB_FILE}")
+    else:
+        print(f"vuln-monitor dashboard: http://{args.host}:{args.port}")
+        print(f"database: {DB_FILE}")
+        if args.host == "127.0.0.1":
+            print(f"localhost only (use --public for external access, or SSH tunnel)")
 
     serve(app, host=args.host, port=args.port)
