@@ -696,29 +696,19 @@ _FRESHNESS_DAYS = 60
 _nvd_cache = {}  # in-memory cache: cve_id → "YYYY-MM-DD" or ""
 
 def _nvd_published_date(cve_id):
-    """Query NVD for CVE published date. Returns datetime or None.
+    """Query NVD for CVE published date. Returns (datetime, "YYYY-MM-DD") or (None, None).
 
-    Results are cached in-memory (_nvd_cache) AND in the DB (cve_published column)
-    to avoid hitting NVD rate limits (5 req/30s without API key).
+    Two-level cache: in-memory dict → NVD API.
+    DB cache is handled by the caller (cve_published column written on INSERT/UPDATE).
     """
     cve_upper = cve_id.upper()
     # check in-memory cache
     if cve_upper in _nvd_cache:
         cached = _nvd_cache[cve_upper]
         if cached:
-            return datetime.fromisoformat(cached).replace(tzinfo=timezone.utc)
-        return None
-    # check DB cache
-    try:
-        conn = _get_conn()
-        row = conn.execute("SELECT cve_published FROM vulns WHERE cve_id=? AND cve_published IS NOT NULL",
-                           (cve_upper,)).fetchone()
-        conn.close()
-        if row:
-            _nvd_cache[cve_upper] = row[0]
-            return datetime.fromisoformat(row[0]).replace(tzinfo=timezone.utc)
-    except Exception:
-        pass
+            dt = datetime.fromisoformat(cached).replace(tzinfo=timezone.utc)
+            return dt, cached
+        return None, None
     # query NVD
     try:
         hdrs = {"User-Agent": "vuln-monitor/1.0 (security research)"}
@@ -727,60 +717,75 @@ def _nvd_published_date(cve_id):
         r = requests.get(_NVD_API, params={"cveId": cve_upper}, timeout=10, headers=hdrs)
         if r.status_code != 200:
             _nvd_cache[cve_upper] = ""
-            return None
+            return None, None
         vulns = r.json().get("vulnerabilities", [])
         if not vulns:
             _nvd_cache[cve_upper] = ""
-            return None
+            return None, None
         pub = vulns[0]["cve"].get("published", "")
         if pub:
             dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            _nvd_cache[cve_upper] = dt.strftime("%Y-%m-%d")
-            return dt
+            pub_str = dt.strftime("%Y-%m-%d")
+            _nvd_cache[cve_upper] = pub_str
+            return dt, pub_str
     except Exception:
         pass
     _nvd_cache[cve_upper] = ""
-    return None
+    return None, None
+
+
+def _warm_nvd_cache(conn):
+    """Pre-load DB cve_published values into in-memory cache at startup."""
+    try:
+        rows = conn.execute("SELECT cve_id, cve_published FROM vulns WHERE cve_published IS NOT NULL").fetchall()
+        for cve_id, pub in rows:
+            if cve_id and pub:
+                _nvd_cache[cve_id] = pub
+    except Exception:
+        pass
 
 def _is_fresh(source, text):
     """Is this a fresh vulnerability disclosure (1day), not an nday rehash?
 
     Returns (fresh: bool, pub_date_str: str or None).
-    pub_date_str is ISO date from NVD if available (e.g. "2026-04-23").
+    pub_date_str is ISO date from NVD if available — always populated when possible,
+    regardless of source trust level (cve_published is the time standard).
 
-    High-trust sources (FRESH_SOURCES): publication = fresh disclosure. Trust them.
-    Low-trust sources (Sploitus/GitHub/PoC-GitHub):
-      1. Query NVD for actual published date → older than 60 days = nday
-      2. Fallback: check CVE year (if NVD unavailable)
-      3. No CVE at all → benefit of doubt, treat as fresh
+    Freshness logic:
+      High-trust sources: always fresh (but still query NVD for pub date).
+      Low-trust sources: NVD published > 60 days = nday.
     """
-    if source in FRESH_SOURCES:
-        return True, None
     cves = CVE_RE.findall(text)
-    if not cves:
-        return True, None
+    # query NVD for all CVEs to populate cve_published
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=_FRESHNESS_DAYS)
     year = now.year
-    latest_pub = None
+    latest_pub_str = None
+    has_recent_cve = False
     for c in cves:
-        pub_date = _nvd_published_date(c.upper())
-        if pub_date:
-            pub_str = pub_date.strftime("%Y-%m-%d")
-            if latest_pub is None or pub_str > latest_pub:
-                latest_pub = pub_str
-            if pub_date >= cutoff:
-                return True, pub_str
-            continue
-        try:
-            cve_year = int(c.split("-")[1])
-            if cve_year >= year - 1:
-                return True, None
-        except (IndexError, ValueError):
-            continue
-    return False, latest_pub
+        pub_dt, pub_str = _nvd_published_date(c.upper())
+        if pub_str:
+            if latest_pub_str is None or pub_str > latest_pub_str:
+                latest_pub_str = pub_str
+            if pub_dt and pub_dt >= cutoff:
+                has_recent_cve = True
+        else:
+            # NVD unavailable — fallback to CVE year
+            try:
+                cve_year = int(c.split("-")[1])
+                if cve_year >= year - 1:
+                    has_recent_cve = True
+            except (IndexError, ValueError):
+                pass
+    # high-trust sources: always fresh
+    if source in FRESH_SOURCES:
+        return True, latest_pub_str
+    # low-trust sources: need recent CVE
+    if not cves:
+        return True, None
+    return has_recent_cve, latest_pub_str
 
 
 # ================== SOURCES ==================
@@ -1126,6 +1131,7 @@ def _run():
     conn = _get_conn()
     init_db(conn)
     migrate_json_cache(conn)
+    _warm_nvd_cache(conn)
     now = datetime.now(timezone.utc).timestamp()
 
     items = _fetch_all_sources()
@@ -1358,6 +1364,7 @@ def cmd_rescore(args):
     """Re-evaluate all records with current score() + _is_fresh() rules."""
     conn = _get_conn()
     init_db(conn)
+    _warm_nvd_cache(conn)
     rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed FROM vulns").fetchall()
     upgraded = downgraded = unchanged = 0
     for key, cve_id, source, title, link, summary, old_reason, old_pushed in rows:
