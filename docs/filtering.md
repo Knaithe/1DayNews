@@ -46,63 +46,60 @@
   - `chromium`、`chrome release` — MSRC 的 Edge/Chromium 镜像公告
 - 调黑名单前先看一周日志里的 `[FILTER]` / `[DRY]` 输出，归因到底是哪条正则没挡住
 
-## `score()` 判定
+## 三档分类
 
-返回 `(hit: bool, reason: str)`，`hit=True` 进推送队列。
+> **1day = 漏洞本体新近公开且处于可利用窗口期，值得立刻关注和防御的新鲜攻击面。**
+
+所有条目按两步判定分入三档：
+
+| 档位 | 推送 Telegram | brief 显示 | 含义 |
+|---|---|---|---|
+| **1day** | 推 | 显示 | 新鲜漏洞，值得立刻关注 |
+| **nday** | 不推 | 不显示 | 已知漏洞/老洞，仅入库 |
+| **noise** | 不推 | 不显示 | 噪声，不匹配任何规则 |
+
+### 第一步：score() — 高危判定
 
 ```python
 def score(text):
     if _EXCLUDE_RE.search(text):
-        return False, "excluded"         # 黑名单直接丢
+        return False, "excluded"              # → noise
 
     rce   = bool(_RCE_RE.search(text))
     asset = any(k in text.lower() for k in ASSET_KEYWORDS)
     cve   = bool(CVE_RE.search(text))
 
+    # ── 1day 候选 ──
     if rce and (asset or cve):
-        return True, "RCE+asset/CVE"     # RCE + 关心的资产或有 CVE
+        return True, "RCE+asset/CVE"          # → 1day 候选
     if asset and cve:
-        return True, "asset+CVE"         # 非 RCE 但涉及重要资产的 CVE
+        return True, "asset+CVE"              # → 1day 候选
+
+    # ── 直接 nday ──
     if rce and "exploit" in text.lower():
-        return True, "RCE+exploit"       # RCE + exploit 字样
-    return False, "no hit"
+        return False, "nday:RCE+exploit"      # 有 exploit = 不是新鲜窗口期
+
+    return False, "no hit"                    # → noise
 ```
 
-`_run()` 中还有一条特判：GitHub/PoC-GitHub 源如果有 CVE 但 score 未命中，标为 `"GitHub+CVE"` 仍推送（因为 PoC 仓库描述常为空）。
+`_run()` 中还有一条特判：**GitHub 源**（仅 GitHub 搜索，不含 PoC-GitHub）如果有 CVE 但 score 未命中 → `GitHub+CVE`（1day 候选）。PoC-GitHub 不走此特判，必须命中 score() 才推。
 
-### reason 汇总
+### 第二步：_is_fresh() — 1day 确认
 
-| reason | 推送 | 含义 |
-|---|---|---|
-| `RCE+asset/CVE` | 是 | RCE + 资产关键词或 CVE |
-| `asset+CVE` | 是 | 重要资产 + CVE（非 RCE） |
-| `RCE+exploit` | 是 | RCE + exploit 字样 |
-| `GitHub+CVE` | 是 | GitHub PoC 仓库 + CVE（特判） |
-| `excluded` | 否 | 命中黑名单 |
-| `no hit` | 否 | 未命中任何规则 |
-
-性能：`RCE_PATTERNS` 和 `EXCLUDE_PATTERNS` 预编译为联合正则（`_RCE_RE` / `_EXCLUDE_RE`），`ASSET_KEYWORDS` 转 `frozenset`。
-
-## 1day 判定（Freshness）
-
-> **1day = 漏洞本体新近公开且处于可利用窗口期，值得立刻关注和防御的新鲜攻击面。**
-
-不是"任意新内容"。老洞新 PoC、老洞被聚合站重新收录、老洞今天又有人写了 exploit 文章 — 都不算 1day。
-
-推送的最终条件是 **exploitability（高危）+ freshness（1day）** 两个维度同时通过。
-
-### Freshness 判定逻辑
+score() 命中的 1day 候选还要过 freshness 检查：
 
 ```python
 def _is_fresh(source, text):
     if source in FRESH_SOURCES:
-        return True            # 这些源发布即代表漏洞本体是新的
+        return True            # 高信任源发布 = 漏洞本体新
     # 低信任源：检查 CVE 年份
     cves = CVE_RE.findall(text)
     if not cves:
         return True            # 无 CVE，无法判定，放行
     return any(cve_year >= current_year - 1 for cve in cves)
 ```
+
+不通过 → reason 加 `nday:` 前缀，降级到 nday 档。
 
 ### 源信任分层
 
@@ -111,18 +108,33 @@ def _is_fresh(source, text):
 | **高信任** | Fortinet, PaloAlto, Cisco, MSRC, CISA_KEV, ZDI, watchTowr, Horizon3, Rapid7, Chaitin, ThreatBook, DailyCVE | 发布 = 新漏洞，无需额外验证 |
 | **低信任** | Sploitus_*, GitHub, PoC-GitHub | 检查 CVE 年份 ≥ 当前年份-1 |
 
-### 判定结果
+### reason 完整对照
 
-| 场景 | exploitability | freshness | 推送？ | reason |
+| reason | 档位 | 推送 | 判定路径 |
+|---|---|---|---|
+| `RCE+asset/CVE` | 1day | 推 | RCE 关键词 + 资产或 CVE + freshness 通过 |
+| `asset+CVE` | 1day | 推 | 资产关键词 + CVE + freshness 通过 |
+| `GitHub+CVE` | 1day | 推 | GitHub 搜索源 + 有 CVE（特判） + freshness 通过 |
+| `nday:RCE+exploit` | nday | 不推 | 有 RCE + exploit 字样（score 直接判 nday） |
+| `nday:RCE+asset/CVE` | nday | 不推 | 高危但 CVE 太老（低信任源 freshness 不通过） |
+| `nday:asset+CVE` | nday | 不推 | 同上 |
+| `nday:GitHub+CVE` | nday | 不推 | 同上 |
+| `excluded` | noise | 不推 | 命中排除规则（XSS/CSRF/DoS 等） |
+| `no hit` | noise | 不推 | 未命中任何规则 |
+
+### 判定场景示例
+
+| 场景 | score | fresh | 最终 | reason |
 |---|---|---|---|---|
-| Fortinet RCE 公告 | 通过 | 通过（高信任源） | 推 | `RCE+asset/CVE` |
-| CISA KEV 老 CVE 新入列 | 通过 | 通过（高信任源） | 推 | `RCE+asset/CVE` |
-| Sploitus CVE-2026-* exploit | 通过 | 通过（近期 CVE） | 推 | `RCE+exploit` |
-| Sploitus CVE-2021-* exploit | 通过 | **不通过**（老 CVE） | 不推 | `nday:RCE+exploit` |
-| GitHub CVE-2026-* PoC 仓库 | 通过 | 通过（近期 CVE） | 推 | `GitHub+CVE` |
-| GitHub CVE-2019-* PoC 仓库 | 通过 | **不通过**（老 CVE） | 不推 | `nday:GitHub+CVE` |
+| Fortinet 发 RCE 公告 | 命中 | 通过（高信任） | **1day** | `RCE+asset/CVE` |
+| CISA KEV 新增条目 | 命中 | 通过（高信任） | **1day** | `RCE+asset/CVE` |
+| GitHub 搜到 CVE-2026-* 仓库 | 特判 | 通过（近期 CVE） | **1day** | `GitHub+CVE` |
+| Sploitus 收录老洞 CVE-2021-* | 命中 | 不通过（老 CVE） | **nday** | `nday:RCE+asset/CVE` |
+| Sploitus 标题含 exploit | RCE+exploit | — | **nday** | `nday:RCE+exploit` |
+| PoC-GitHub 新仓库无 RCE 关键词 | 未命中 | — | **noise** | `no hit` |
+| XSS 漏洞公告 | excluded | — | **noise** | `excluded` |
 
-nday 条目仍入库（`pushed=0`，reason 带 `nday:` 前缀），`query` 可查但 `brief` 和 Telegram 不推。
+性能：`RCE_PATTERNS` 和 `EXCLUDE_PATTERNS` 预编译为联合正则（`_RCE_RE` / `_EXCLUDE_RE`），`ASSET_KEYWORDS` 转 `frozenset`。
 
 ## 调优方法
 
