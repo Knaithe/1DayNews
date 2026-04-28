@@ -692,24 +692,53 @@ def score(text):
 
 _NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _FRESHNESS_DAYS = 60
+_nvd_cache = {}  # in-memory cache: cve_id → "YYYY-MM-DD" or ""
 
 def _nvd_published_date(cve_id):
-    """Query NVD for CVE published date. Returns datetime or None."""
+    """Query NVD for CVE published date. Returns datetime or None.
+
+    Results are cached in-memory (_nvd_cache) AND in the DB (cve_published column)
+    to avoid hitting NVD rate limits (5 req/30s without API key).
+    """
+    cve_upper = cve_id.upper()
+    # check in-memory cache
+    if cve_upper in _nvd_cache:
+        cached = _nvd_cache[cve_upper]
+        if cached:
+            return datetime.fromisoformat(cached).replace(tzinfo=timezone.utc)
+        return None
+    # check DB cache
     try:
-        r = _get_with_retry(SESS, _NVD_API, params={"cveId": cve_id}, timeout=10)
+        conn = _get_conn()
+        row = conn.execute("SELECT cve_published FROM vulns WHERE cve_id=? AND cve_published IS NOT NULL",
+                           (cve_upper,)).fetchone()
+        conn.close()
+        if row:
+            _nvd_cache[cve_upper] = row[0]
+            return datetime.fromisoformat(row[0]).replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+    # query NVD
+    try:
+        r = requests.get(_NVD_API, params={"cveId": cve_upper}, timeout=10,
+                         headers={"User-Agent": "vuln-monitor/1.0 (security research)"})
         if r.status_code != 200:
+            _nvd_cache[cve_upper] = ""
             return None
         vulns = r.json().get("vulnerabilities", [])
         if not vulns:
+            _nvd_cache[cve_upper] = ""
             return None
         pub = vulns[0]["cve"].get("published", "")
         if pub:
             dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
+            _nvd_cache[cve_upper] = dt.strftime("%Y-%m-%d")
             return dt
     except Exception:
         pass
+    _nvd_cache[cve_upper] = ""
     return None
 
 def _is_fresh(source, text):

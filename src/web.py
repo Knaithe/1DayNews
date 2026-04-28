@@ -157,7 +157,7 @@ def api_vulns():
     sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at,cve_published FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY COALESCE(cve_published, datetime(created_at, 'unixepoch')) DESC LIMIT ?"
+    sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
     limit = _int_arg("limit", 100, 1, 500)
     params.append(limit)
 
