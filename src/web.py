@@ -30,6 +30,19 @@ elif SCRIPT_DIR.name == "src":
 else:
     DATA_DIR = SCRIPT_DIR
 DB_FILE = DATA_DIR / "vuln_cache.db"
+TOKEN_FILE = DATA_DIR / ".web_token"
+
+
+def _load_or_create_token():
+    """Load token from file, or generate and persist a new one."""
+    if TOKEN_FILE.exists():
+        token = TOKEN_FILE.read_text(encoding="utf-8").strip()
+        if token:
+            return token
+    token = secrets.token_hex(8)
+    TOKEN_FILE.write_text(token, encoding="utf-8")
+    os.chmod(TOKEN_FILE, 0o600)
+    return token
 
 app = Flask(__name__)
 
@@ -589,8 +602,19 @@ if __name__ == "__main__":
     p.add_argument("--public", action="store_true",
                    help="Bind 0.0.0.0 and require magic token for access")
     p.add_argument("--token", default=None,
-                   help="Set magic token (default: auto-generated 16-char hex)")
+                   help="Manually set token (overrides saved token)")
+    p.add_argument("--rotate-token", action="store_true",
+                   help="Generate a new token (invalidates old one)")
+    p.add_argument("--show-token", action="store_true",
+                   help="Print current token and exit")
     args = p.parse_args()
+
+    if args.show_token:
+        if TOKEN_FILE.exists():
+            print(TOKEN_FILE.read_text(encoding="utf-8").strip())
+        else:
+            print("(no token file, run with --public to generate)")
+        raise SystemExit(0)
 
     if not DB_FILE.exists():
         print(f"ERROR: database not found at {DB_FILE}")
@@ -599,11 +623,28 @@ if __name__ == "__main__":
 
     if args.public:
         args.host = "0.0.0.0"
-        _MAGIC_TOKEN = args.token or secrets.token_hex(8)  # 16 hex chars
+        if args.token:
+            # manually set → persist
+            TOKEN_FILE.write_text(args.token, encoding="utf-8")
+            try:
+                os.chmod(TOKEN_FILE, 0o600)
+            except OSError:
+                pass
+            _MAGIC_TOKEN = args.token
+        elif args.rotate_token:
+            _MAGIC_TOKEN = secrets.token_hex(8)
+            TOKEN_FILE.write_text(_MAGIC_TOKEN, encoding="utf-8")
+            try:
+                os.chmod(TOKEN_FILE, 0o600)
+            except OSError:
+                pass
+            print(f"  rotated:    old token invalidated")
+        else:
+            _MAGIC_TOKEN = _load_or_create_token()
         print(f"vuln-monitor dashboard (PUBLIC mode)")
         print(f"  magic URL:  http://<your-ip>:{args.port}/{_MAGIC_TOKEN}/")
         print(f"  token:      {_MAGIC_TOKEN}")
-        print(f"  cookie:     first visit via magic URL sets a 30-day cookie")
+        print(f"  token file: {TOKEN_FILE}")
         print(f"  database:   {DB_FILE}")
     else:
         print(f"vuln-monitor dashboard: http://{args.host}:{args.port}")

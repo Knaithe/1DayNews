@@ -14,6 +14,7 @@
 **/vuln_alert_state.json
 **/vuln_alert_state.tmp
 **/vuln_monitor.lock
+**/.web_token
 **/vuln_monitor.log
 **/vuln_monitor.log.*
 
