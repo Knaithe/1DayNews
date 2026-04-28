@@ -136,26 +136,36 @@ def _is_fresh(source, text):
 
 性能：`RCE_PATTERNS` 和 `EXCLUDE_PATTERNS` 预编译为联合正则（`_RCE_RE` / `_EXCLUDE_RE`），`ASSET_KEYWORDS` 转 `frozenset`。
 
+## rescore — 重新评估历史记录
+
+改了评分规则后，库里的老记录不会自动重新评分（去重逻辑跳过已有 key）。用 `rescore` 一次性重跑：
+
+```bash
+python src/vuln_monitor.py rescore
+# rescored 2083 records: 42 upgraded, 15 downgraded, 8 reason-changed, 2018 unchanged
+```
+
+| 输出 | 含义 |
+|---|---|
+| upgraded | 之前 no hit / nday → 现在变成 1day（如新增了 GitHub+CVE 特判） |
+| downgraded | 之前推了 → 现在变成 nday（如 RCE+exploit 降级） |
+| reason-changed | pushed 状态没变但 reason 文字更新了 |
+| unchanged | 完全一样，无需更新 |
+
+**注意**：rescore 只更新 reason 和 pushed 字段，不重新 fetch 数据，也不补发 Telegram 推送。
+
 ## 调优方法
 
 **跑一周 DRY，再看日志**。不要凭空猜黑白名单。
 
-DRY 模式输出形如：
-
-```
-2026-04-18 03:21 [INFO] [DRY] score=2 PaloAlto | CVE-2025-XXXX: Pre-auth RCE in ...
-2026-04-18 03:21 [INFO] [FILTER] score=0 MSRC | Chromium release XX.X.X...    ← 黑名单命中
-2026-04-18 03:21 [INFO] [SKIP] no-RCE ZDI | Authentication bypass in ...       ← RCE 门没过
-```
-
 归因四种情况：
 
-| 日志表现 | 原因 | 修复 |
-|---|---|---|
-| 推了不想要的（`score=2` 但你觉得没价值） | 某个源太水 | `RSS_FEEDS` 移除该源 |
-| 推了不想要的（某关键词太宽） | `ASSET_KEYWORDS` 某项引入噪声 | 从 `ASSET_KEYWORDS` 删掉 |
-| 漏了想要的（`score=0` 但你想看） | `RCE_PATTERNS` 不含该表达 | 在 `RCE_PATTERNS` 加正则 |
-| 稳定漏某类（`EXCLUDE_PATTERNS` 误杀） | 黑名单太严 | 收窄该黑名单正则 |
+| 症状 | 原因 | 修复 | 改后操作 |
+|---|---|---|---|
+| 推了不想要的（某源太水） | 源质量差 | `RSS_FEEDS` 移除该源 | — |
+| 推了不想要的（关键词太宽） | `ASSET_KEYWORDS` 引入噪声 | 从 `ASSET_KEYWORDS` 删掉 | `rescore` |
+| 漏了想要的（应推未推） | `RCE_PATTERNS` 不含该表达 | 在 `RCE_PATTERNS` 加正则 | `rescore` |
+| 误杀（`excluded` 但你想看） | 黑名单太严 | 收窄 `EXCLUDE_PATTERNS` 正则 | `rescore` |
 
 ## 已知 false-positive 模式
 
@@ -163,6 +173,5 @@ DRY 模式输出形如：
 
 - MSRC 的 Edge 浏览器 Chromium 基线公告（每月数条，无新漏洞信息）
 - Horizon3 / Rapid7 的产品 marketing 博客（标题含 "NodeZero"、"InsightVM"）
-- VMware 博客转发的合作伙伴公告（标题含 "partner"、"customer success"）
 
 默认没全塞进去是因为偶尔会误杀真漏洞博客。自己运行一段看日志再决定。

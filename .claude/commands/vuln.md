@@ -60,6 +60,12 @@ $PY $SCRIPT rebuild
 ```
 Re-fetches all sources and fills in NULL source/link/summary/cve_id on existing records. Run once after migration from JSON cache, or when records show `(no url)` / `-` for source.
 
+### rescore — Re-evaluate all records with current scoring rules
+```bash
+$PY $SCRIPT rescore
+```
+Run after changing score()/filter rules. Updates reason and pushed fields for all existing records without re-fetching.
+
 ## How to interpret user requests
 
 Map natural language to the right subcommand:
@@ -74,6 +80,7 @@ Map natural language to the right subcommand:
 | "有没有 RCE" | `brief --reason RCE --days 7` |
 | "导出最近漏洞" / "export" | `query --json --pushed --days 7` |
 | "修复历史数据" / "rebuild" / "backfill" | `rebuild` |
+| "重新评分" / "rescore" / "重新评估" | `rescore` |
 | "统计" / "status" / "overview" | `stats` |
 
 ## Available sources

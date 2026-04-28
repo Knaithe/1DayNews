@@ -31,7 +31,8 @@ python src/vuln_monitor.py query --full --cve CVE-2026-1340   # 详细
 python src/vuln_monitor.py query --json --source CISA_KEV     # JSON
 python src/vuln_monitor.py brief --pushed --days 1            # 通知格式（自动补全+质量过滤）
 python src/vuln_monitor.py stats                              # 统计
-python src/vuln_monitor.py rebuild                            # 回填历史记录
+python src/vuln_monitor.py rebuild                            # 回填历史记录缺失字段
+python src/vuln_monitor.py rescore                            # 用当前规则重新评估所有记录
 ```
 
 过滤参数：`--cve` / `--source` / `--keyword` / `--days` / `--pushed` / `--reason` / `--limit`
