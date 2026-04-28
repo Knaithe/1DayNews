@@ -1277,6 +1277,39 @@ def cmd_stats(args):
 
 
 # ================== CLI: rebuild ==================
+def cmd_rescore(args):
+    """Re-evaluate all records with current score() + _is_fresh() rules."""
+    conn = _get_conn()
+    init_db(conn)
+    rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed FROM vulns").fetchall()
+    upgraded = downgraded = unchanged = 0
+    for key, cve_id, source, title, link, summary, old_reason, old_pushed in rows:
+        text = f"{title or ''}\n{summary or ''}"
+
+        hit, reason = score(text)
+        if not hit and source == "GitHub" and CVE_RE.search(text):
+            hit, reason = True, "GitHub+CVE"
+        if hit and not _is_fresh(source or "", text):
+            reason = f"nday:{reason}"
+            hit = False
+
+        new_pushed = 1 if hit else 0
+        if reason != old_reason or new_pushed != old_pushed:
+            conn.execute("UPDATE vulns SET reason=?, pushed=? WHERE key=?", (reason, new_pushed, key))
+            if new_pushed > old_pushed:
+                upgraded += 1
+            elif new_pushed < old_pushed:
+                downgraded += 1
+            else:
+                unchanged += 1  # reason changed but pushed same
+
+    conn.commit()
+    total = len(rows)
+    same = total - upgraded - downgraded - unchanged
+    conn.close()
+    print(f"rescored {total} records: {upgraded} upgraded, {downgraded} downgraded, {unchanged} reason-changed, {same} unchanged")
+
+
 def cmd_rebuild(args):
     """Re-fetch all sources and backfill NULL fields in existing records."""
     conn = _get_conn()
@@ -1332,6 +1365,7 @@ def main():
 
     sub.add_parser("stats", help="Database statistics")
     sub.add_parser("rebuild", help="Re-fetch sources and backfill NULL fields in existing records")
+    sub.add_parser("rescore", help="Re-evaluate all records with current scoring rules")
 
     args = parser.parse_args()
 
@@ -1343,6 +1377,8 @@ def main():
         cmd_stats(args)
     elif args.cmd == "rebuild":
         cmd_rebuild(args)
+    elif args.cmd == "rescore":
+        cmd_rescore(args)
     else:
         # default / "fetch": original behavior
         try:
