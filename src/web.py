@@ -204,6 +204,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vuln-monitor</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23111013'/><text x='50' y='68' font-size='52' font-weight='900' font-family='sans-serif' text-anchor='middle' fill='%23FFFF78'>V</text></svg>">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
