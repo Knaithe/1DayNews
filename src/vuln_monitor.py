@@ -391,6 +391,18 @@ HIGH_PRIORITY_SOURCES = frozenset({
 # Reasons that indicate a genuinely interesting finding.
 STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "RCE+exploit", "GitHub+CVE"})
 
+# ── Freshness (1day vs nday) ──
+# Sources where publication inherently means the vulnerability is fresh.
+# If Fortinet/CISA/ZDI publishes it, the vuln itself is newly disclosed.
+FRESH_SOURCES = frozenset({
+    "Fortinet", "PaloAlto", "Cisco", "MSRC",        # Vendor PSIRT
+    "CISA_KEV",                                       # In-the-wild confirmation
+    "ZDI", "watchTowr", "Horizon3", "Rapid7",        # Research teams
+    "Chaitin", "ThreatBook", "DailyCVE",             # Curated vuln databases
+})
+# Sources that aggregate/republish old vulns — need CVE year validation.
+# Sploitus_*, GitHub, PoC-GitHub are implicitly NOT in FRESH_SOURCES.
+
 # Fallback advisory page per vendor (used when we know the source but have no
 # item-level URL).
 VENDOR_URL_FALLBACK = {
@@ -658,6 +670,24 @@ def score(text):
     if rce and "exploit" in low:
         return True, "RCE+exploit"
     return False, "no hit"
+
+
+def _is_fresh(source, text):
+    """Is this a fresh vulnerability disclosure (1day), not an nday rehash?
+
+    High-trust sources (FRESH_SOURCES): publication = fresh disclosure. Trust them.
+    Low-trust sources (Sploitus/GitHub/PoC-GitHub): check CVE year.
+      - All CVEs in the text are old (year < current - 1) → nday
+      - At least one recent CVE → fresh
+      - No CVE at all → benefit of doubt, treat as fresh
+    """
+    if source in FRESH_SOURCES:
+        return True
+    cves = CVE_RE.findall(text)
+    if not cves:
+        return True
+    year = datetime.now().year
+    return any(int(c.split("-")[1]) >= year - 1 for c in cves)
 
 
 # ================== SOURCES ==================
@@ -1027,11 +1057,16 @@ def _run():
             continue
         seen_this_run.add(key)
 
+        # ── Exploitability (severity) ──
         hit, reason = score(it["text"])
-        # GitHub/PoC-GitHub repos with a CVE in the name are inherently valuable
-        # even without RCE/asset keywords in the (often empty) description.
         if not hit and it["source"] in ("GitHub", "PoC-GitHub") and CVE_RE.search(it["text"]):
             hit, reason = True, "GitHub+CVE"
+
+        # ── Freshness (1day vs nday) ──
+        if hit and not _is_fresh(it["source"], it["text"]):
+            reason = f"nday:{reason}"
+            hit = False
+
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
         conn.execute(
@@ -1102,7 +1137,7 @@ def _query_rows(args, quality_filter=False):
         where.append("link IS NOT NULL AND link != ''")
         where.append("source IS NOT NULL AND source != ''")
         if not args.reason:
-            where.append("reason NOT IN ('no hit','excluded')")
+            where.append("reason NOT IN ('no hit','excluded') AND reason NOT LIKE 'nday:%'")
 
     sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
     if where:
@@ -1176,7 +1211,7 @@ def cmd_brief(args):
         print(f"[explain] db total={total}  still_no_link={no_link}  strong_without_link={strong_no_link}")
         if strong_no_link:
             print(f"[explain] {strong_no_link} strong records could not be enriched (run 'rebuild' to fix from feeds)")
-        print(f"[explain] quality filter: link NOT NULL, source NOT NULL, reason NOT IN (no hit, excluded)")
+        print(f"[explain] quality filter: link NOT NULL, source NOT NULL, reason NOT IN (no hit, excluded, nday:*)")
         print()
     rows = _query_rows(args, quality_filter=True)
     if not rows:
