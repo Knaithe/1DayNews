@@ -684,22 +684,53 @@ def score(text):
     return False, "no hit"
 
 
+_NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+_FRESHNESS_DAYS = 60
+
+def _nvd_published_date(cve_id):
+    """Query NVD for CVE published date. Returns datetime or None."""
+    try:
+        r = _get_with_retry(SESS, _NVD_API, params={"cveId": cve_id}, timeout=10)
+        if r.status_code != 200:
+            return None
+        vulns = r.json().get("vulnerabilities", [])
+        if not vulns:
+            return None
+        pub = vulns[0]["cve"].get("published", "")
+        if pub:
+            dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+    except Exception:
+        pass
+    return None
+
 def _is_fresh(source, text):
     """Is this a fresh vulnerability disclosure (1day), not an nday rehash?
 
     High-trust sources (FRESH_SOURCES): publication = fresh disclosure. Trust them.
-    Low-trust sources (Sploitus/GitHub/PoC-GitHub): check CVE year.
-      - All CVEs in the text are old (year < current - 1) → nday
-      - At least one recent CVE → fresh
-      - No CVE at all → benefit of doubt, treat as fresh
+    Low-trust sources (Sploitus/GitHub/PoC-GitHub):
+      1. Query NVD for actual published date → older than 60 days = nday
+      2. Fallback: check CVE year (if NVD unavailable)
+      3. No CVE at all → benefit of doubt, treat as fresh
     """
     if source in FRESH_SOURCES:
         return True
     cves = CVE_RE.findall(text)
     if not cves:
         return True
-    year = datetime.now().year
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=_FRESHNESS_DAYS)
+    year = now.year
     for c in cves:
+        # Try NVD first for precise date
+        pub_date = _nvd_published_date(c.upper())
+        if pub_date:
+            if pub_date >= cutoff:
+                return True
+            continue  # this CVE is old, check next
+        # Fallback: CVE year
         try:
             cve_year = int(c.split("-")[1])
             if cve_year >= year - 1:
