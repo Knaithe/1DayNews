@@ -72,6 +72,7 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN") or _user_cfg.get("tg_bot_token", "")
 _raw_chat_id = os.getenv("TG_CHAT_ID")   or _user_cfg.get("tg_chat_id", "")
 TG_CHAT_IDS  = [c.strip() for c in _raw_chat_id.split(",") if c.strip()]
 GH_TOKEN     = os.getenv("GH_TOKEN")     or _user_cfg.get("gh_token", "")
+NVD_API_KEY  = os.getenv("NVD_API_KEY") or _user_cfg.get("nvd_api_key", "")
 PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
@@ -720,8 +721,10 @@ def _nvd_published_date(cve_id):
         pass
     # query NVD
     try:
-        r = requests.get(_NVD_API, params={"cveId": cve_upper}, timeout=10,
-                         headers={"User-Agent": "vuln-monitor/1.0 (security research)"})
+        hdrs = {"User-Agent": "vuln-monitor/1.0 (security research)"}
+        if NVD_API_KEY:
+            hdrs["apiKey"] = NVD_API_KEY
+        r = requests.get(_NVD_API, params={"cveId": cve_upper}, timeout=10, headers=hdrs)
         if r.status_code != 200:
             _nvd_cache[cve_upper] = ""
             return None
