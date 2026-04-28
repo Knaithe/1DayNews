@@ -39,10 +39,8 @@ ENV/
 *.swo
 *~
 
-# Claude Code local settings (per-user, not shared)
-.claude/settings.local.json
-# Claude Code git worktrees (machine-local pointer files, not shared)
-.claude/worktrees/
+# Claude Code state (settings, plugins, sessions, worktrees — all machine-local)
+.claude/
 
 # ===== OS =====
 .DS_Store
