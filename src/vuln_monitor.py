@@ -390,7 +390,7 @@ HIGH_PRIORITY_SOURCES = frozenset({
     "watchTowr", "MSRC", "Horizon3", "Chaitin", "ThreatBook",
 })
 # Reasons that indicate a genuinely interesting finding.
-STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "RCE+exploit", "GitHub+CVE"})
+STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "GitHub+CVE"})
 
 # ── Freshness (1day vs nday) ──
 # 1day = 漏洞本体新近公开且处于可利用窗口期，值得立刻关注和防御的新鲜攻击面。
@@ -672,12 +672,15 @@ def score(text):
     rce   = bool(_RCE_RE.search(text))
     asset = any(k in low for k in _ASSET_KW_SET)
     cve   = bool(CVE_RE.search(text))
+    # ── 1day tier: push ──
     if rce and (asset or cve):
         return True, "RCE+asset/CVE"
     if asset and cve:
         return True, "asset+CVE"
+    # ── nday tier: store only ──
     if rce and "exploit" in low:
-        return True, "RCE+exploit"
+        return False, "nday:RCE+exploit"
+    # ── noise tier ──
     return False, "no hit"
 
 
