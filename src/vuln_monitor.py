@@ -1376,6 +1376,10 @@ def cmd_stats(args):
 # ================== CLI: rebuild ==================
 def cmd_rescore(args):
     """Re-evaluate all records with current score() + _is_fresh() rules."""
+    with SingletonLock(LOCK_FILE):
+        _cmd_rescore_inner()
+
+def _cmd_rescore_inner():
     conn = _get_conn()
     init_db(conn)
     _warm_nvd_cache(conn)
@@ -1414,6 +1418,10 @@ def cmd_rescore(args):
 
 def cmd_rebuild(args):
     """Re-fetch all sources and backfill NULL fields in existing records."""
+    with SingletonLock(LOCK_FILE):
+        _cmd_rebuild_inner()
+
+def _cmd_rebuild_inner():
     conn = _get_conn()
     init_db(conn)
 
