@@ -790,9 +790,9 @@ def _is_fresh(source, text):
     # high-trust sources: always fresh
     if source in FRESH_SOURCES:
         return True, latest_pub_str
-    # low-trust sources: need recent CVE
+    # low-trust sources: no CVE = can't verify freshness = nday
     if not cves:
-        return True, None
+        return False, None
     return has_recent_cve, latest_pub_str
 
 
