@@ -769,14 +769,17 @@ def _nvd_detail(cve_id):
         if cached is None or cached == "":
             return None
         # have date but need full detail — query NVD
-    # query NVD
+    # query NVD (rate limit: 50 req/30s with key, 5 req/30s without)
+    _nvd_sleep = 0.7 if NVD_API_KEY else 6.5
+    time.sleep(_nvd_sleep)
     try:
         hdrs = {"User-Agent": "vuln-monitor/1.0 (security research)"}
         if NVD_API_KEY:
             hdrs["apiKey"] = NVD_API_KEY
         r = requests.get(_NVD_API, params={"cveId": cve_upper}, timeout=10, headers=hdrs)
         if r.status_code in (403, 429):
-            _nvd_cache[cve_upper] = None
+            # rate limited — DON'T cache, allow retry next cycle
+            log.debug(f"NVD rate limited for {cve_upper}")
             return None
         if r.status_code != 200:
             _nvd_cache[cve_upper] = ""
@@ -828,13 +831,12 @@ def _nvd_published_date(cve_id):
     return None, None
 
 def _backfill_nvd_severity(conn):
-    """Backfill severity and CVSS for records that have CVE but no severity.
-    Rate-limited to 20 records per cycle.
-    """
+    """Backfill severity and CVSS for records that have CVE but no severity."""
+    batch = 100 if NVD_API_KEY else 20
     rows = conn.execute(
         "SELECT key, cve_id FROM vulns "
         "WHERE cve_id IS NOT NULL AND cve_id LIKE 'CVE-%' AND severity IS NULL "
-        "LIMIT 20"
+        f"LIMIT {batch}"
     ).fetchall()
     updated = 0
     for key, cve_id in rows:
