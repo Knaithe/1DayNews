@@ -107,8 +107,8 @@ LLM_MODEL=deepseek-v4-flash
 LLM_TEMPERATURE=0.1           # 创造性，0=确定性，1=随机
 LLM_MAX_TOKENS=1024           # 最大输出 token 数
 LLM_TIMEOUT=60                # API 超时秒数（推理模型建议 120）
-LLM_MAX_CONTEXT=8192          # 上下文窗口（含输入+输出，按模型能力设）
-LLM_REASONING_EFFORT=medium   # 思考等级：low/medium/high（支持的模型才生效）
+LLM_MAX_CONTEXT=131072        # 上下文窗口（128K，主流模型标配）
+LLM_REASONING_EFFORT=high     # 思考等级：low/medium/high（支持的模型才生效）
 LLM_TOP_P=0.9                 # 核采样，和 temperature 配合控制输出多样性
 ```
 
