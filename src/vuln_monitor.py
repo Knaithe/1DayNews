@@ -75,7 +75,7 @@ GH_TOKEN     = os.getenv("GH_TOKEN")     or _user_cfg.get("gh_token", "")
 NVD_API_KEY  = os.getenv("NVD_API_KEY") or _user_cfg.get("nvd_api_key", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or _user_cfg.get("deepseek_api_key", "")
 OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")   or _user_cfg.get("openai_api_key", "")
-LLM_MODEL    = os.getenv("LLM_MODEL")   or _user_cfg.get("llm_model", "deepseek-chat")
+LLM_MODEL    = os.getenv("LLM_MODEL")   or _user_cfg.get("llm_model", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL") or _user_cfg.get("llm_base_url", "")
 PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
 
@@ -868,10 +868,13 @@ def _llm_chat(messages, tools=None):
     api_key = DEEPSEEK_API_KEY or OPENAI_API_KEY
     if not api_key:
         return None
-    base_url = LLM_BASE_URL or (
-        "https://api.deepseek.com" if DEEPSEEK_API_KEY else "https://api.openai.com"
-    )
-    payload = {"model": LLM_MODEL, "messages": messages, "temperature": 0.1, "max_tokens": 1024}
+    if DEEPSEEK_API_KEY:
+        base_url = LLM_BASE_URL or "https://api.deepseek.com"
+        model = LLM_MODEL or "deepseek-chat"
+    else:
+        base_url = LLM_BASE_URL or "https://api.openai.com"
+        model = LLM_MODEL or "gpt-4o-mini"
+    payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 1024}
     if tools:
         payload["tools"] = tools
     try:
