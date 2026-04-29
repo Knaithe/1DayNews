@@ -1175,7 +1175,7 @@ def _run():
 
         # ── Exploitability (severity) ──
         hit, reason = score(it["text"])
-        if not hit and it["source"] == "GitHub" and CVE_RE.search(it["text"]):
+        if not hit and reason != "excluded" and it["source"] == "GitHub" and CVE_RE.search(it["text"]):
             hit, reason = True, "GitHub+CVE"
 
         # ── Freshness (1day vs nday) ──
@@ -1389,7 +1389,7 @@ def _cmd_rescore_inner():
         text = f"{title or ''}\n{summary or ''}"
 
         hit, reason = score(text)
-        if not hit and source == "GitHub" and CVE_RE.search(text):
+        if not hit and reason != "excluded" and source == "GitHub" and CVE_RE.search(text):
             hit, reason = True, "GitHub+CVE"
         cve_pub = None
         if hit:
