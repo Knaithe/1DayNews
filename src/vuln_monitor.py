@@ -995,18 +995,26 @@ def _enrich_one(record):
         f"URL: {link or 'N/A'}\nSummary: {summary or 'N/A'}\n"
         f"Regex match: {reason}\nCVSS: {cvss or 'unknown'}\nSeverity: {severity or 'unknown'}"
     )
+    # skip tools for high-trust sources with sufficient data — direct judgment is faster
+    has_enough_context = (source in FRESH_SOURCES and (severity or cvss))
+    if has_enough_context:
+        user_msg += "\n\nYou have enough context from this PSIRT advisory. Do NOT call tools — respond with JSON verdict directly."
     messages = [{"role": "system", "content": _get_llm_prompt()},
                 {"role": "user", "content": user_msg}]
     # rough token estimate: 1 token ≈ 4 chars. Reserve max_tokens for output.
     _ctx_budget = (LLM_MAX_CONTEXT - LLM_MAX_TOKENS) * 4
+    use_tools = not has_enough_context
+    max_rounds = _MAX_TOOL_ROUNDS if use_tools else 1
     try:
-        for _ in range(_MAX_TOOL_ROUNDS):
+        for round_i in range(max_rounds):
             kwargs = {
                 "model": _llm_model, "messages": messages,
-                "tools": _ENRICH_TOOLS, "max_tokens": LLM_MAX_TOKENS,
+                "max_tokens": LLM_MAX_TOKENS,
                 "temperature": LLM_TEMPERATURE,
                 "top_p": LLM_TOP_P,
             }
+            if use_tools:
+                kwargs["tools"] = _ENRICH_TOOLS
             if LLM_REASONING:
                 kwargs["reasoning_effort"] = LLM_REASONING
             try:
@@ -1022,7 +1030,7 @@ def _enrich_one(record):
                     raise
                 resp = _llm_client.chat.completions.create(**kwargs)
             choice = resp.choices[0]
-            if choice.message.tool_calls:
+            if choice.message.tool_calls and round_i < max_rounds - 1:
                 messages.append(choice.message)
                 for tc in choice.message.tool_calls:
                     fn = _TOOL_DISPATCH.get(tc.function.name)
@@ -1036,6 +1044,15 @@ def _enrich_one(record):
                     remaining = max(500, _ctx_budget - total_chars)
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result[:remaining]})
                 continue
+            # last round with pending tool_calls: force a verdict
+            if choice.message.tool_calls:
+                messages.append(choice.message)
+                for tc in choice.message.tool_calls:
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": '{"note":"round limit, give verdict now"}'})
+                resp = _llm_client.chat.completions.create(
+                    model=_llm_model, messages=messages,
+                    max_tokens=LLM_MAX_TOKENS, temperature=LLM_TEMPERATURE)
+                choice = resp.choices[0]
             # final response
             content = (choice.message.content or "").strip()
             # strip markdown fences and prose prefix before JSON
@@ -1051,7 +1068,7 @@ def _enrich_one(record):
             except (json.JSONDecodeError, AttributeError):
                 log.warning(f"LLM unparseable for {cve_id}: {content[:200]}")
                 return None, None
-        log.warning(f"LLM exceeded {_MAX_TOOL_ROUNDS} rounds for {cve_id}")
+        log.warning(f"LLM exceeded {max_rounds} rounds for {cve_id}")
     except Exception as ex:
         log.warning(f"LLM err for {cve_id}: {ex}")
     return None, None
