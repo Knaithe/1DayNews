@@ -308,13 +308,6 @@ a:hover { text-decoration: underline; }
 .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; white-space: nowrap; }
 @media (max-width: 900px) { .nav-tagline { display: none; } }
 
-/* ── Severity legend (sits below filter rows, above grid) ── */
-.legend-row { max-width: 1260px; margin: 14px auto 0; padding: 0 40px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-.legend-inline { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.legend-inline-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
-.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ink); }
-.legend-pill { width: 8px; height: 14px; border-radius: 0 var(--pill) var(--pill) 0; border: 1px solid var(--ink); border-left: none; flex-shrink: 0; }
-
 /* ── Pushed toggle (switch) ── */
 .pushed-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink); cursor: pointer; user-select: none; }
 .pushed-toggle input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
@@ -351,14 +344,8 @@ a:hover { text-decoration: underline; }
   transition: transform .25s var(--spring), box-shadow .25s var(--spring);
   position: relative;
 }
-.vcard::before {
-  content: ''; position: absolute; top: 18px; left: -1px;
-  width: 8px; height: 24px;
-  border-radius: 0 var(--pill) var(--pill) 0;
-  border: 1px solid var(--ink); border-left: none;
-}
 .vcard:hover { transform: translateY(-4px); box-shadow: var(--shadow-hard); }
-.vcard-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-left: 4px; }
+.vcard-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .vcard-date { margin-left: auto; font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; font-weight: 500; }
 .src-badge {
   display: inline-flex; align-items: center; padding: 3px 12px; border-radius: var(--pill);
@@ -403,12 +390,6 @@ a:hover { text-decoration: underline; }
 .vcard-link a { color: var(--ink); font-weight: 500; border-bottom: 1px solid var(--ink); }
 .vcard-link a:hover { background: var(--yellow); text-decoration: none; }
 
-/* severity stripe colors (CVSS-standard: CRITICAL=red, HIGH=orange) */
-.sev-critical::before { background: var(--red); }
-.sev-high::before { background: var(--orange); }
-.sev-medium::before { background: var(--yellow); }
-.sev-low::before { background: var(--mint); }
-
 /* ── Load more ── */
 .load-more-row { max-width: 1260px; margin: 8px auto 32px; padding: 0 40px; display: flex; justify-content: center; }
 .load-more-btn {
@@ -446,7 +427,7 @@ a:hover { text-decoration: underline; }
   .nav-filters { align-self: flex-end; margin-left: 0; }
   .hero-title { font-size: 28px; }
   .grid { grid-template-columns: 1fr; }
-  .hero, .meta-row, .filter-row, .legend-row, .grid, .footer { padding-left: 16px; padding-right: 16px; }
+  .hero, .meta-row, .filter-row, .grid, .footer { padding-left: 16px; padding-right: 16px; }
   .nav { padding: 0 16px; }
 }
 </style>
@@ -500,13 +481,6 @@ a:hover { text-decoration: underline; }
 </div>
 
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
-
-<div class="legend-row" aria-label="Severity legend">
-  <span class="legend-item"><span class="legend-pill" style="background:var(--red)"></span>Critical / KEV</span>
-  <span class="legend-item"><span class="legend-pill" style="background:var(--orange)"></span>RCE / Pre-auth</span>
-  <span class="legend-item"><span class="legend-pill" style="background:var(--yellow)"></span>Overflow / Inject</span>
-  <span class="legend-item"><span class="legend-pill" style="background:var(--mint)"></span>Other</span>
-</div>
 
 <div class="grid" id="cardList"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
 <div class="load-more-row hidden" id="loadMoreRow">
