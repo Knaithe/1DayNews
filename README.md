@@ -173,9 +173,10 @@ LLM_TOP_P=0.9
 │
 ├─ 2. freshness _is_fresh()（所有含 CVE 的记录都过）
 │  ├─ 所有 CVE 年份 > 1 年 → nday（无例外）
-│  ├─ 高信任源（厂商 PSIRT/ZDI/watchTowr 等）→ 1day
-│  └─ 低信任源 → NVD ≤60 天 1day，否则 nday
-│  └─ freshness_reason: old_cve / high_trust_source / nvd_60d / no_cve_low_trust
+│  ├─ 高信任源 → 1day（无 CVE 也放行，可回退 CVE 年份）
+│  ├─ 低信任源 + NVD 确认 ≤60 天 → 1day
+│  ├─ 低信任源 + NVD 无数据/超期 → nday（不回退 CVE 年份）
+│  └─ 低信任源 + 无 CVE + hit → nday（显式标记，不留 NULL）
 │
 ├─ 3. 源信任
 │  ├─ GitHub/PoC-GitHub → pushed=0（候选，永不推送）
@@ -184,14 +185,14 @@ LLM_TOP_P=0.9
 ├─ 4. LLM enrich → verdict: confirmed / not_relevant / noise
 │  ├─ 高信任 + CVSS≥9 → confirmed（自动，受 freshness/source 约束）
 │  └─ _resolve_pushed()
-│     ├─ freshness=nday → 锁 0（LLM 不可推翻）
+│     ├─ freshness≠1day → 锁 0（nday/NULL 都不推，LLM 不可推翻）
 │     ├─ GitHub/PoC-GitHub → 锁 0
 │     └─ 其他 → LLM 决定（只能降级）
 │
 └─ 5. pushed=1 AND tg_sent=0 → Telegram 推送
 ```
 
-**核心规则：** freshness=nday → 永不推送 · GitHub 源 → 仅候选 · LLM 只能降级 · LLM 不可推翻 freshness
+**核心规则：** freshness 必须为 1day 才推送（nday/NULL 都锁 0）· GitHub 源 → 仅候选 · 低信任源必须 NVD 确认（不回退年份）· LLM 只能降级 · LLM 不可推翻 freshness
 
 **数据字段：**
 

@@ -88,13 +88,15 @@ def score(text):
 
 判定逻辑：
 1. 所有 CVE 年份 > 1 年 → `nday`（`freshness_reason=old_cve`），无例外
-2. 高信任源 → `1day`（`freshness_reason=high_trust_source`）
-3. 低信任源 + CVE NVD 发布 ≤60 天 → `1day`（`freshness_reason=nvd_60d`）
-4. 低信任源 + CVE > 60 天 → `nday`（`freshness_reason=nvd_60d`）
+2. 高信任源 → `1day`（`freshness_reason=high_trust_source`），无 CVE 也放行（如 FG-IR）
+3. 低信任源 + CVE + NVD 确认发布 ≤60 天 → `1day`（`freshness_reason=nvd_60d`）
+4. 低信任源 + CVE + NVD 无数据或 >60 天 → `nday`（`freshness_reason=nvd_60d`）。**不使用 CVE 年份回退**，必须有 NVD 实际发布日期确认
 5. 低信任源 + 无 CVE → `nday`（`freshness_reason=no_cve_low_trust`）
-6. 高信任源无 CVE（如 Fortinet FG-IR）→ `1day`（`freshness_reason=high_trust_source`）
+6. 低信任源 + hit + 无 CVE → `nday`（显式标记，不留 freshness=None）
 
-多 CVE 记录：只要有一个近期 CVE 就不整体判 nday。
+多 CVE 记录：只要有一个近期 CVE（NVD 确认）就不整体判 nday。高信任源可回退 CVE 年份。
+
+**推送硬约束：** `freshness` 必须为 `1day` 才允许推送。`nday`、`NULL` 都锁 0，LLM 不可推翻。
 
 NVD 查询两级缓存（启动时 `_warm_nvd_cache` 从 DB 预热内存）：
 1. `_nvd_cache`（内存 dict，区分"查到日期" / "确认不存在" / "限频待重试"）
@@ -109,10 +111,10 @@ NVD 查询两级缓存（启动时 `_warm_nvd_cache` 从 DB 预热内存）：
 
 ### freshness 判定矩阵
 
-| 源信任 | 有 CVE ≤60 天 | 有 CVE >60 天 | 无 CVE |
-|---|---|---|---|
-| **高信任** | fresh | fresh | **fresh** |
-| **低信任** | fresh | **nday** | **nday** |
+| 源信任 | CVE + NVD ≤60 天 | CVE + NVD >60 天 | CVE + NVD 无数据 | 无 CVE |
+|---|---|---|---|---|
+| **高信任** | 1day | 1day | 1day（年份回退） | **1day** |
+| **低信任** | 1day | **nday** | **nday**（不回退） | **nday** |
 
 ### 字段对照
 
@@ -131,7 +133,8 @@ NVD 查询两级缓存（启动时 `_warm_nvd_cache` 从 DB 预热内存）：
 | Cisco 认证绕过公告 | asset+CVE | other | 1day | high_trust_source | 1 |
 | Fortinet FG-IR 无 CVE | RCE+asset | RCE | 1day | high_trust_source | 1 |
 | Sploitus 老洞 CVE-2021-* | RCE+asset+CVE | RCE | nday | old_cve | 0 |
-| Sploitus 无 CVE exploit | no hit | NULL | NULL | — | 0 |
+| Sploitus 无 CVE exploit | RCE+asset | RCE | nday | no_cve_low_trust | 0 |
+| Sploitus CVE 无 NVD 数据 | RCE+CVE | RCE | nday | nvd_60d | 0 |
 | GitHub PoC 仓库 | RCE+CVE | RCE | 1day | nvd_60d | 0（GitHub 源锁定） |
 | XSS 漏洞公告 | excluded | NULL | NULL | — | 0 |
 
