@@ -121,6 +121,12 @@ fi
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 chmod 600 "$APP_DIR/.env"
 
+# pre-create .web_token so systemd's ReadWritePaths bind succeeds at startup
+# (web.py fills it lazily, but systemd needs the path to exist for namespace setup)
+if [ ! -f "$APP_DIR/.web_token" ]; then
+    install -m 600 -o "$APP_USER" -g "$APP_USER" /dev/null "$APP_DIR/.web_token"
+fi
+
 # ---------- 6. systemd units ----------
 echo ">>> [6/7] installing systemd units ..."
 # clean up legacy timer from older deploys
