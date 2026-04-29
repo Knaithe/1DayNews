@@ -520,18 +520,36 @@ def init_db(conn):
             reason     TEXT,
             pushed     INTEGER DEFAULT 0,
             created_at REAL NOT NULL,
-            cve_published TEXT
+            cve_published TEXT,
+            severity      TEXT,
+            cvss          REAL,
+            llm_verified  INTEGER DEFAULT 0,
+            llm_verdict   TEXT,
+            llm_notes     TEXT,
+            tg_sent       INTEGER DEFAULT 0
         )
     """)
-    # migrate: add cve_published column if missing (existing databases)
-    try:
-        conn.execute("ALTER TABLE vulns ADD COLUMN cve_published TEXT")
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    # migrate: add columns if missing (existing databases)
+    for col, typedef in [
+        ("cve_published", "TEXT"),
+        ("severity",      "TEXT"),
+        ("cvss",          "REAL"),
+        ("llm_verified",  "INTEGER DEFAULT 0"),
+        ("llm_verdict",   "TEXT"),
+        ("llm_notes",     "TEXT"),
+        ("tg_sent",       "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
+        except sqlite3.OperationalError:
+            pass
+    # backfill tg_sent for historical records (already-pushed = already-sent)
+    conn.execute("UPDATE vulns SET tg_sent = pushed WHERE tg_sent IS NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON vulns(created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pushed     ON vulns(pushed)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_verified ON vulns(llm_verified) WHERE llm_verified=0")
     conn.commit()
 
 def migrate_json_cache(conn):
