@@ -990,11 +990,20 @@ def _enrich_one(record):
             kwargs = {
                 "model": _llm_model, "messages": messages,
                 "tools": _ENRICH_TOOLS, "max_tokens": LLM_MAX_TOKENS,
+                "temperature": LLM_TEMPERATURE,
             }
-            # some models (DeepSeek-R1) don't support temperature
-            if "reasoner" not in _llm_model and "r1" not in _llm_model.lower():
-                kwargs["temperature"] = LLM_TEMPERATURE
-            resp = _llm_client.chat.completions.create(**kwargs)
+            try:
+                resp = _llm_client.chat.completions.create(**kwargs)
+            except Exception as first_err:
+                # some models don't support temperature or tools — retry without
+                if "temperature" in str(first_err).lower():
+                    kwargs.pop("temperature", None)
+                    resp = _llm_client.chat.completions.create(**kwargs)
+                elif "tool" in str(first_err).lower():
+                    kwargs.pop("tools", None)
+                    resp = _llm_client.chat.completions.create(**kwargs)
+                else:
+                    raise
             choice = resp.choices[0]
             if choice.message.tool_calls:
                 messages.append(choice.message)
