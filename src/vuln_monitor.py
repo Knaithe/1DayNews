@@ -894,7 +894,7 @@ def _tool_fetch_nvd_detail(cve_id):
 
 def _tool_fetch_source_page(url):
     try:
-        r = _get_with_retry(SESS, url, timeout=15)
+        r = requests.get(url, timeout=15, headers={"User-Agent": "vuln-monitor/1.0"})
         text = re.sub(r"<[^>]+>", " ", r.text)
         return re.sub(r"\s+", " ", text).strip()[:2000]
     except Exception as ex:
@@ -962,7 +962,10 @@ def _enrich_one(record):
             messages.append(msg)
             for tc in msg["tool_calls"]:
                 fn = _TOOL_DISPATCH.get(tc["function"]["name"])
-                args = json.loads(tc["function"]["arguments"])
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
                 result = fn(**args) if fn else json.dumps({"error": "unknown tool"})
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
             continue
@@ -1379,7 +1382,7 @@ def send_failure_alert(msg):
 
 
 # ================== MAIN ==================
-def _run():
+def _run(no_push=False):
     conn = _get_conn()
     init_db(conn)
     migrate_json_cache(conn)
@@ -1450,7 +1453,7 @@ def _run():
     )
 
     # Send pending Telegram notifications (unless --no-push)
-    if not getattr(_run, '_no_push', False):
+    if not no_push:
         _push_pending(conn)
     conn.close()
 
@@ -1702,8 +1705,7 @@ def _cmd_enrich_inner(dry=False):
         candidates = conn.execute(
             "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss "
             "FROM vulns WHERE llm_verified = 0 "
-            "AND reason NOT IN ('excluded', 'no hit') "
-            "AND reason NOT LIKE 'nday:%' "
+            "AND reason NOT IN ('excluded', 'no hit', 'nday:RCE+exploit') "
             "ORDER BY created_at DESC LIMIT 50"
         ).fetchall()
 
@@ -1720,11 +1722,12 @@ def _cmd_enrich_inner(dry=False):
 
             auto_approved = llm_processed = llm_errors = 0
 
-            # auto-approve: high-trust + critical CVSS
+            # auto-approve: any record from high-trust source + critical CVSS
             for cve_id, records in by_cve.items():
                 rep = records[0]
-                source, cvss = rep[2], rep[8]
-                if source in HIGH_PRIORITY_SOURCES and cvss and cvss >= 9.0:
+                any_high_trust = any(r[2] in HIGH_PRIORITY_SOURCES for r in records)
+                best_cvss = max((r[8] for r in records if r[8]), default=None)
+                if any_high_trust and best_cvss and best_cvss >= 9.0:
                     for rec in records:
                         conn.execute(
                             "UPDATE vulns SET llm_verified=1, llm_verdict='1day_rce', "
@@ -1872,9 +1875,8 @@ def main():
     else:
         # default / "fetch": original behavior
         try:
-            _run._no_push = getattr(args, 'no_push', False)
             with SingletonLock(LOCK_FILE):
-                _run()
+                _run(no_push=getattr(args, 'no_push', False))
         except RuntimeError as ex:
             log.warning(str(ex))
             sys.exit(0)
