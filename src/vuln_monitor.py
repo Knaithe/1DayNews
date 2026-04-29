@@ -402,7 +402,7 @@ HIGH_PRIORITY_SOURCES = frozenset({
     "watchTowr", "MSRC", "Horizon3", "Chaitin", "ThreatBook",
 })
 # Reasons that indicate a genuinely interesting finding.
-STRONG_REASONS = frozenset({"RCE", "other"})
+STRONG_VULN_TYPES = frozenset({"RCE", "other"})
 
 # ── Freshness (1day vs nday) ──
 # 1day = 漏洞本体新近公开且处于可利用窗口期，值得立刻关注和防御的新鲜攻击面。
@@ -528,7 +528,9 @@ def init_db(conn):
             link       TEXT,
             summary    TEXT,
             reason     TEXT,
+            vuln_type  TEXT,
             freshness  TEXT,
+            freshness_reason TEXT,
             pushed     INTEGER DEFAULT 0,
             created_at REAL NOT NULL,
             cve_published TEXT,
@@ -551,6 +553,8 @@ def init_db(conn):
         ("llm_notes",     "TEXT"),
         ("tg_sent",       "INTEGER DEFAULT 0"),
         ("freshness",     "TEXT"),
+        ("freshness_reason", "TEXT"),
+        ("vuln_type",     "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
@@ -560,17 +564,18 @@ def init_db(conn):
     # backfill tg_sent: mark already-pushed records as sent (only on first migration)
     if "tg_sent" in _new_cols:
         conn.execute("UPDATE vulns SET tg_sent = 1 WHERE pushed = 1")
-    # backfill freshness + migrate legacy values (only on first migration)
+    # backfill freshness + vuln_type + migrate legacy values (only on first migration)
     if "freshness" in _new_cols:
         conn.execute("UPDATE vulns SET freshness='nday', reason=SUBSTR(reason,6) WHERE reason LIKE 'nday:%'")
         conn.execute("UPDATE vulns SET freshness='1day' WHERE freshness IS NULL AND reason NOT IN ('excluded','no hit')")
-        # migrate legacy reason values to simplified types
-        conn.execute("UPDATE vulns SET reason='RCE' WHERE reason IN ('RCE+asset/CVE','RCE+exploit')")
-        conn.execute("UPDATE vulns SET reason='other' WHERE reason IN ('asset+CVE','GitHub+CVE')")
         # migrate legacy llm_verdict values
         conn.execute("UPDATE vulns SET llm_verdict='confirmed' WHERE llm_verdict IN ('1day_rce','1day_high','fallback_regex')")
         conn.execute("UPDATE vulns SET llm_verdict='not_relevant' WHERE llm_verdict='1day_low'")
         conn.execute("UPDATE vulns SET llm_verdict='not_relevant' WHERE llm_verdict='nday'")
+    # backfill vuln_type from reason (only on first migration)
+    if "vuln_type" in _new_cols:
+        conn.execute("UPDATE vulns SET vuln_type='RCE' WHERE reason LIKE '%RCE%'")
+        conn.execute("UPDATE vulns SET vuln_type='other' WHERE vuln_type IS NULL AND reason NOT IN ('excluded','no hit')")
     conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
@@ -679,16 +684,16 @@ def _auto_enrich():
     """
     conn = _get_conn()
     init_db(conn)
-    # Match strong reasons (freshness is now a separate field)
-    reason_clauses = []
-    reason_params = []
-    for r in STRONG_REASONS:
-        reason_clauses.append("reason = ?")
-        reason_params.append(r)
+    # Match strong vuln types
+    type_clauses = []
+    type_params = []
+    for t in STRONG_VULN_TYPES:
+        type_clauses.append("vuln_type = ?")
+        type_params.append(t)
     candidates = conn.execute(
         f"SELECT key, cve_id, source, title, link FROM vulns "
-        f"WHERE (link IS NULL OR link = '') AND ({' OR '.join(reason_clauses)})",
-        reason_params,
+        f"WHERE (link IS NULL OR link = '') AND ({' OR '.join(type_clauses)})",
+        type_params,
     ).fetchall()
     updated = 0
     for key, cve_id, source, title, link in candidates:
@@ -718,17 +723,26 @@ _EXCLUDE_RE = re.compile("|".join(f"(?:{p})" for p in EXCLUDE_PATTERNS), re.I)
 _ASSET_KW_SET = frozenset(ASSET_KEYWORDS)
 
 def score(text):
+    """Score text for exploitability. Returns (hit, reason, vuln_type).
+
+    reason: detailed match info (RCE+asset/CVE, asset+CVE, etc.)
+    vuln_type: simplified classification (RCE / other / None)
+    """
     if _EXCLUDE_RE.search(text):
-        return False, "excluded"
+        return False, "excluded", None
     low = text.lower()
     rce   = bool(_RCE_RE.search(text))
     asset = any(k in low for k in _ASSET_KW_SET)
     cve   = bool(CVE_RE.search(text))
-    if rce and (asset or cve):
-        return True, "RCE"
+    if rce and asset and cve:
+        return True, "RCE+asset+CVE", "RCE"
+    if rce and asset:
+        return True, "RCE+asset", "RCE"
+    if rce and cve:
+        return True, "RCE+CVE", "RCE"
     if asset and cve:
-        return True, "other"
-    return False, "no hit"
+        return True, "asset+CVE", "other"
+    return False, "no hit", None
 
 
 _NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
@@ -1109,17 +1123,10 @@ def _warm_nvd_cache(conn):
 def _is_fresh(source, text):
     """Is this a fresh vulnerability disclosure (1day), not an nday rehash?
 
-    Returns (fresh: bool, pub_date_str: str or None).
-    pub_date_str is ISO date from NVD if available — always populated when possible,
-    regardless of source trust level (cve_published is the time standard).
-
-    Freshness logic:
-      1. CVE year > 1 year old → nday, regardless of source (no exceptions).
-      2. Vendor PSIRT / ZDI / watchTowr / Rapid7 etc. → trust source timeliness.
-      3. Low-trust sources (Sploitus/GitHub) → require NVD published ≤ 60 days.
+    Returns (fresh: bool, pub_date_str: str or None, reason: str).
+    reason explains WHY: old_cve / nvd_60d / high_trust_source / no_cve_low_trust.
     """
     cves = CVE_RE.findall(text)
-    # query NVD for all CVEs to populate cve_published
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=_FRESHNESS_DAYS)
     year = now.year
@@ -1133,14 +1140,13 @@ def _is_fresh(source, text):
             if pub_dt and pub_dt >= cutoff:
                 has_recent_cve = True
         else:
-            # NVD unavailable — fallback to CVE year
             try:
                 cve_year = int(c.split("-")[1])
                 if cve_year >= year - 1:
                     has_recent_cve = True
             except (IndexError, ValueError):
                 pass
-    # hard cutoff: if ALL CVEs in text are > 1 year old, it's nday regardless of source
+    # hard cutoff: if ALL CVEs are > 1 year old → nday
     if cves:
         all_old = True
         for c in cves:
@@ -1153,14 +1159,17 @@ def _is_fresh(source, text):
                 all_old = False
                 break
         if all_old:
-            return False, latest_pub_str
-    # high-trust sources: fresh (vendor publishes advisories for current issues)
+            return False, latest_pub_str, "old_cve"
+    # high-trust sources: trust timeliness
     if source in FRESH_SOURCES:
-        return True, latest_pub_str
-    # low-trust sources: no CVE = can't verify freshness = nday
+        return True, latest_pub_str, "high_trust_source"
+    # low-trust sources: no CVE = can't verify
     if not cves:
-        return False, None
-    return has_recent_cve, latest_pub_str
+        return False, None, "no_cve_low_trust"
+    # low-trust with CVE: check NVD date
+    if has_recent_cve:
+        return True, latest_pub_str, "nvd_60d"
+    return False, latest_pub_str, "nvd_60d"
 
 
 # ================== SOURCES ==================
@@ -1545,33 +1554,33 @@ def _run(no_push=False):
         seen_this_run.add(key)
 
         # ── Exploitability (severity) ──
-        hit, reason = score(it["text"])
+        hit, reason, vuln_type = score(it["text"])
 
         # ── Freshness — ALL records with CVE get cve_published + freshness ──
         cve_pub = None
         freshness = None
+        fresh_reason = None
         if CVE_RE.search(it["text"]):
-            fresh, cve_pub = _is_fresh(it["source"], it["text"])
+            fresh, cve_pub, fresh_reason = _is_fresh(it["source"], it["text"])
             freshness = "1day" if fresh else "nday"
             if hit and not fresh:
                 hit = False
         elif hit and it["source"] in FRESH_SOURCES:
-            # high-trust source without CVE (e.g. Fortinet FG-IR) → trust source timeliness
             freshness = "1day"
+            fresh_reason = "high_trust_source"
 
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
-        # extract severity/cvss from NVD detail cache (populated by _is_fresh → _nvd_detail)
         nvd = _nvd_detail_cache.get(cve_id.upper()) if cve_id and cve_id.startswith("CVE-") else None
         nvd_severity = nvd["severity"] if nvd else None
         nvd_cvss = nvd["cvss"] if nvd else None
-        # GitHub/PoC-GitHub: candidate only, never pushed at fetch stage
         should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES
         conn.execute(
-            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,freshness,pushed,created_at,cve_published,severity,cvss) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (key, cve_id, it["source"], it["title"][:300], it["link"],
-             it["summary"][:500], reason, freshness, 1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss),
+             it["summary"][:500], reason, vuln_type, freshness, fresh_reason,
+             1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss),
         )
         if should_push:
             pushed += 1
@@ -1722,10 +1731,10 @@ def cmd_brief(args):
         init_db(conn)
         total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
         no_link = conn.execute("SELECT COUNT(*) FROM vulns WHERE link IS NULL OR link=''").fetchone()[0]
-        placeholders = ",".join("?" for _ in STRONG_REASONS)
+        placeholders = ",".join("?" for _ in STRONG_VULN_TYPES)
         strong_no_link = conn.execute(
-            f"SELECT COUNT(*) FROM vulns WHERE (link IS NULL OR link='') AND reason IN ({placeholders})",
-            tuple(STRONG_REASONS),
+            f"SELECT COUNT(*) FROM vulns WHERE (link IS NULL OR link='') AND vuln_type IN ({placeholders})",
+            tuple(STRONG_VULN_TYPES),
         ).fetchone()[0]
         conn.close()
         print(f"[explain] enriched {enriched} records this pass")
@@ -1791,21 +1800,23 @@ def _cmd_rescore_inner():
     for key, cve_id, source, title, link, summary, old_reason, old_pushed in rows:
         text = f"{title or ''}\n{summary or ''}"
 
-        hit, reason = score(text)
+        hit, reason, vuln_type = score(text)
         cve_pub = None
         freshness = None
+        fresh_reason = None
         if CVE_RE.search(text):
-            fresh, cve_pub = _is_fresh(source or "", text)
+            fresh, cve_pub, fresh_reason = _is_fresh(source or "", text)
             freshness = "1day" if fresh else "nday"
             if hit and not fresh:
                 hit = False
         elif hit and source in FRESH_SOURCES:
             freshness = "1day"
+            fresh_reason = "high_trust_source"
 
         new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES) else 0
         if reason != old_reason or new_pushed != old_pushed or cve_pub:
-            conn.execute("UPDATE vulns SET reason=?, freshness=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
-                        (reason, freshness, new_pushed, cve_pub, key))
+            conn.execute("UPDATE vulns SET reason=?, vuln_type=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
+                        (reason, vuln_type, freshness, fresh_reason, new_pushed, cve_pub, key))
             if new_pushed > old_pushed:
                 upgraded += 1
             elif new_pushed < old_pushed:
@@ -1906,7 +1917,7 @@ def _cmd_enrich_inner(dry=False):
             if llm_errors > 3:
                 fallback = conn.execute(
                     "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', llm_notes='fallback: LLM errors, regex-scored', pushed=1 "
-                    "WHERE llm_verified=0 AND reason IN ('RCE','other') "
+                    "WHERE llm_verified=0 AND vuln_type IN ('RCE','other') "
                     "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub')"
                 ).rowcount
                 conn.commit()
