@@ -13,8 +13,12 @@ import hmac
 import secrets
 import sqlite3
 import os
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# NOTE: keep in sync with JS const MAX_LIMIT in DASHBOARD_HTML (substituted at module load)
+LIMIT_MAX = 500
 
 from flask import Flask, jsonify, request, abort
 from waitress import serve
@@ -103,30 +107,17 @@ def no_cache(response):
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
 
-SOURCE_COLORS = {
-    "CISA_KEV": "#ef4444", "Fortinet": "#f97316", "PaloAlto": "#f59e0b",
-    "Cisco": "#3b82f6", "MSRC": "#6366f1", "ZDI": "#8b5cf6",
-    "watchTowr": "#ec4899", "Horizon3": "#14b8a6", "Rapid7": "#06b6d4",
-    "Chaitin": "#10b981", "ThreatBook": "#22d3ee", "GitHub": "#a78bfa",
-    "Sploitus_Citrix": "#fb923c", "Sploitus_Ivanti": "#fb923c", "Sploitus_F5": "#fb923c",
-}
-VULN_TYPE_COLORS = {
-    "RCE": "#ef4444", "other": "#f97316",
-}
-
-
 def get_db():
-    conn = sqlite3.connect(f"file:{DB_FILE}?mode=ro", uri=True, timeout=5)
+    # quote() guards against rare special chars in DATA_DIR (operator-controlled env)
+    db_uri = f"file:{urllib.parse.quote(str(DB_FILE), safe='/:')}?mode=ro"
+    conn = sqlite3.connect(db_uri, uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     return conn
 
-def _db_has_column(conn, col):
-    """Check if a column exists in vulns table (for pre-migration DB compat)."""
-    try:
-        conn.execute(f"SELECT {col} FROM vulns LIMIT 0")
-        return True
-    except sqlite3.OperationalError:
-        return False
+
+def _vulns_columns(conn):
+    """Set of column names in vulns table (for pre-migration DB compat)."""
+    return {row[1] for row in conn.execute("PRAGMA table_info(vulns)")}
 
 
 def _int_arg(name, default, lo, hi):
@@ -140,6 +131,7 @@ def _int_arg(name, default, lo, hi):
 @app.route("/api/vulns")
 def api_vulns():
     conn = get_db()
+    cols_avail = _vulns_columns(conn)
     where, params = [], []
     q = request.args.get("q", "").strip()
     if q:
@@ -149,7 +141,7 @@ def api_vulns():
     if source:
         where.append("source = ?"); params.append(source)
     vuln_type = request.args.get("vuln_type", "").strip()
-    if vuln_type and _db_has_column(conn, "vuln_type"):
+    if vuln_type and "vuln_type" in cols_avail:
         where.append("vuln_type = ?"); params.append(vuln_type)
     reason = request.args.get("reason", "").strip()
     if reason:
@@ -164,25 +156,23 @@ def api_vulns():
         where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
         params.extend([cutoff_date, cutoff_ts])
 
-    # build column list — handle pre-migration DBs missing new columns
-    base_cols = "cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes,tg_sent"
-    has_vt = _db_has_column(conn, "vuln_type")
-    has_fr = _db_has_column(conn, "freshness")
-    extra = []
-    if has_vt:
-        extra.append("vuln_type")
-    if has_fr:
-        extra.append("freshness")
-    cols = base_cols + ("," + ",".join(extra) if extra else "")
-    sql = f"SELECT {cols} FROM vulns"
+    # column list — drop optional ones missing in pre-migration DBs
+    base_cols = ["cve_id", "source", "title", "link", "summary", "reason", "pushed",
+                 "created_at", "cve_published", "severity", "cvss", "llm_verdict",
+                 "llm_notes", "tg_sent"]
+    optional_cols = ["vuln_type", "freshness"]
+    cols = base_cols + [c for c in optional_cols if c in cols_avail]
+    sql = f"SELECT {','.join(cols)} FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
-    limit = _int_arg("limit", 100, 1, 500)
+    limit = _int_arg("limit", 100, 1, LIMIT_MAX)
     params.append(limit)
 
     rows = conn.execute(sql, params).fetchall()
     conn.close()
+    has_vt = "vuln_type" in cols_avail
+    has_fr = "freshness" in cols_avail
     return jsonify([{
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
@@ -205,12 +195,10 @@ def api_stats():
     total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
     pushed = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
     sources = conn.execute("SELECT source, COUNT(*) as n FROM vulns WHERE source IS NOT NULL GROUP BY source ORDER BY n DESC").fetchall()
-    reasons = conn.execute("SELECT reason, COUNT(*) as n FROM vulns WHERE pushed=1 GROUP BY reason ORDER BY n DESC").fetchall()
     conn.close()
     return jsonify({
         "total": total, "pushed": pushed,
         "sources": {r["source"]: r["n"] for r in sources},
-        "reasons": {r["reason"]: r["n"] for r in reasons},
     })
 
 
@@ -259,7 +247,7 @@ body {
 a { color: var(--violet); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* ── Navbar (cream, slim: logo + search only) ── */
+/* ── Navbar (cream, slim: logo + tagline + search + Telegram-pushed toggle) ── */
 .nav { background: var(--cream); padding: 0 40px; position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var(--ink); backdrop-filter: blur(6px); }
 .nav-inner { max-width: 1260px; margin: 0 auto; display: grid; grid-template-columns: auto 1fr auto; align-items: center; height: 60px; gap: 18px; }
 .nav-left { display: flex; align-items: center; gap: 18px; min-width: 0; }
@@ -445,7 +433,7 @@ a:hover { text-decoration: underline; }
       <div class="nav-tagline">Real-time 1day/0day RCE tracking across <span id="srcCount">—</span> sources</div>
     </div>
     <div class="nav-search">
-      <input type="text" id="searchInput" placeholder="Search CVE, title, keyword..." aria-label="Search vulnerabilities by CVE, title, or keyword" autofocus>
+      <input type="search" id="searchInput" placeholder="Search CVE, title, keyword..." aria-label="Search vulnerabilities by CVE, title, or keyword" autofocus>
     </div>
     <div class="nav-filters">
       <label class="pushed-toggle" title="Show only items pushed to Telegram">
@@ -482,12 +470,12 @@ a:hover { text-decoration: underline; }
 
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
 
-<div class="grid" id="cardList"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
+<div class="grid" id="cardList" aria-live="polite" aria-busy="false"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
 <div class="load-more-row hidden" id="loadMoreRow">
   <button class="load-more-btn" id="loadMoreBtn" type="button">Load more</button>
 </div>
 </main>
-<div class="footer">vuln-monitor &middot; read-only &middot; bound to 127.0.0.1</div>
+<div class="footer">vuln-monitor &middot; read-only</div>
 
 <script>
 const SRC_STYLE = {
@@ -507,7 +495,7 @@ const TYPE_STYLE = {
 
 let debounceTimer, activeCat = '', activeType = '', activeDays = '7';
 let currentLimit = 100;
-const MAX_LIMIT = 500;
+const MAX_LIMIT = __LIMIT_MAX__;
 document.getElementById('loadMoreBtn').addEventListener('click', () => {
   currentLimit = Math.min(currentLimit + 100, MAX_LIMIT);
   loadVulns(true);
@@ -539,7 +527,7 @@ async function loadSources() {
       activeCat = p.dataset.src;
       updateCatPills(); loadVulns();
     }));
-  } catch(e) {}
+  } catch(e) { console.error('loadSources failed', e); }
 }
 
 async function loadStats() {
@@ -552,7 +540,7 @@ async function loadStats() {
       <span class="stat-item"><span class="stat-num">${srcCount}</span><span class="stat-label">Active Sources</span></span>
     `;
     document.getElementById('srcCount').textContent = srcCount;
-  } catch(e) {}
+  } catch(e) { console.error('loadStats failed', e); }
 }
 
 function esc(s) {
@@ -612,11 +600,11 @@ async function loadVulns(append=false) {
     }
     moreRow.classList.toggle('hidden', vulns.length < currentLimit || currentLimit >= MAX_LIMIT);
     moreBtn.disabled = false;
-    moreBtn.textContent = currentLimit >= MAX_LIMIT ? 'Reached display cap (500)' : 'Load more';
+    moreBtn.textContent = currentLimit >= MAX_LIMIT ? `Reached display cap (${MAX_LIMIT})` : 'Load more';
     container.innerHTML = vulns.map((v,i) => {
       const ss = SRC_STYLE[v.source] || {bg:'#F3F4F6',fg:'#374151'};
       const ts = TYPE_STYLE[v.vuln_type] || {bg:'#F3F4F6',fg:'#6B7280'};
-      return `<div class="vcard ${sevClass(v)}" style="animation:fadeUp .4s ${i*.03}s both">
+      return `<div class="vcard" style="animation:fadeUp .4s ${i*.03}s both">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
           <span class="reason-badge" style="background:${ts.bg};color:${ts.fg}">${esc(v.vuln_type||v.reason||'-')}</span>
@@ -646,6 +634,9 @@ loadSources(); loadStats(); loadVulns();
 </style>
 </body>
 </html>"""
+
+# substitute server-side constants into the template (single source of truth)
+DASHBOARD_HTML = DASHBOARD_HTML.replace("__LIMIT_MAX__", str(LIMIT_MAX))
 
 
 if __name__ == "__main__":
