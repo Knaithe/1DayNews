@@ -11,10 +11,11 @@ Group=vuln
 WorkingDirectory=/opt/vuln-monitor
 EnvironmentFile=/opt/vuln-monitor/.env
 Environment=VULN_DATA_DIR=/opt/vuln-monitor
-ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/vuln_monitor.py
+ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/vuln_monitor.py fetch --no-push
+ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/vuln_monitor.py enrich
 
-# resource / time caps
-RuntimeMaxSec=600
+# resource / time caps (increased for LLM enrichment)
+RuntimeMaxSec=900
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

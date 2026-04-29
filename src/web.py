@@ -154,7 +154,7 @@ def api_vulns():
         where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
         params.extend([cutoff_date, cutoff_ts])
 
-    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at,cve_published FROM vulns"
+    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
@@ -168,6 +168,10 @@ def api_vulns():
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
         "pushed": bool(r["pushed"]),
         "cve_published": r["cve_published"],
+        "severity": r["severity"],
+        "cvss": r["cvss"],
+        "llm_verdict": r["llm_verdict"],
+        "llm_notes": r["llm_notes"],
         "date": r["cve_published"] or (datetime.fromtimestamp(r["created_at"], tz=timezone.utc).strftime("%Y-%m-%d") if r["created_at"] else None),
     } for r in rows])
 
