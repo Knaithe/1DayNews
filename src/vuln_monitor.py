@@ -567,6 +567,10 @@ def init_db(conn):
     # migrate legacy reason values to simplified types
     conn.execute("UPDATE vulns SET reason='RCE' WHERE reason IN ('RCE+asset/CVE','RCE+exploit')")
     conn.execute("UPDATE vulns SET reason='other' WHERE reason IN ('asset+CVE','GitHub+CVE')")
+    # migrate legacy llm_verdict values
+    conn.execute("UPDATE vulns SET llm_verdict='confirmed' WHERE llm_verdict IN ('1day_rce','1day_high','fallback_regex')")
+    conn.execute("UPDATE vulns SET llm_verdict='not_relevant' WHERE llm_verdict='1day_low'")
+    conn.execute("UPDATE vulns SET llm_verdict='not_relevant' WHERE llm_verdict='nday'")
     conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
@@ -831,30 +835,24 @@ def _backfill_nvd_severity(conn):
 # ================== LLM ENRICHMENT ==================
 # System prompt: load from DATA_DIR/llm_prompt.txt if exists, else use default.
 _LLM_PROMPT_FILE = DATA_DIR / "llm_prompt.txt"
-_LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. Assess whether a vulnerability is a genuine, fresh, exploitable threat.
+_LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. Determine whether a vulnerability is genuine and worth alerting on.
 
 ## Verdict categories:
-- 1day_rce: Fresh (≤60 days), remotely exploitable code/command execution on a widely deployed target. CRITICAL priority.
-- 1day_high: Fresh, high-severity non-RCE (auth bypass, pre-auth SSRF, privilege escalation on major products). HIGH priority.
-- 1day_low: Fresh but low impact (authenticated-only local exploit, niche product with <1000 deployments, info disclosure only). Monitor only.
-- nday: Old vulnerability (>60 days) or rehash of known info (new PoC for old CVE, aggregator re-indexing).
-- noise: Not a real threat (personal project with 0 users, CTF/homework, marketing, non-security content).
+- confirmed: Genuine vulnerability affecting real, widely-deployed products. Worth pushing.
+- not_relevant: Real vulnerability but low practical impact — requires authentication + local access, niche product (<1000 deployments), info disclosure only with no escalation path. Not worth pushing.
+- noise: Not a real threat — fabricated CVE, personal project with 0 users, CTF/homework, marketing content, automated CVE reservation with no real impact.
 
 ## Rules:
-1. Vendor PSIRTs (Fortinet/Cisco/PaloAlto/MSRC) + CVSS ≥ 9.0 → almost always 1day_rce.
-2. CVSS is a REFERENCE, not the sole criterion. These are at least 1day_high REGARDLESS of CVSS score:
-   - Unauthenticated RCE / command injection / code execution on any widely deployed product
-   - Unauthenticated SQL injection on management platforms (FortiAnalyzer, FortiManager, Cisco ISE, etc.)
-   - Authentication bypass on network infrastructure (firewalls, VPN, access control)
-   - Pre-auth file write / path traversal leading to code execution
-3. 1day_low is ONLY for: authenticated-only local exploits, info disclosure without escalation path, niche products.
-4. GitHub repos: check if the repo has actual exploit code vs placeholder. 0-star personal forks = noise.
-5. "Linux kernel" CVE from NVD/GitHub with no real-world exploit = usually noise (automated reservation).
-6. Use tools when the title/summary is ambiguous — fetch the actual advisory page or NVD details.
-7. Chinese vuln databases (Chaitin) entries are curated — if listed, likely real.
+1. Vendor PSIRTs (Fortinet/Cisco/PaloAlto/MSRC) are authoritative — if they publish an advisory, it's almost always "confirmed".
+2. CVSS is a REFERENCE only. Unauthenticated RCE / command injection / SQL injection / auth bypass on widely-deployed products = "confirmed" regardless of CVSS score.
+3. "not_relevant" requires ALL of: authenticated-only OR local-only, AND niche/low-impact product.
+4. GitHub repos: check if the repo has actual exploit code vs empty placeholder. 0-star personal forks with no code = noise.
+5. Linux kernel CVE from NVD/GitHub with no real-world exploit = usually noise.
+6. Use tools to verify when title/summary is ambiguous.
+7. If you find a public exploit/PoC, mention it in notes — this is valuable intelligence.
 
 Output ONLY JSON (no markdown):
-{"verdict": "1day_rce|1day_high|1day_low|nday|noise", "confidence": 0.0-1.0, "notes": "one-sentence rationale"}
+{"verdict": "confirmed|not_relevant|noise", "notes": "one-sentence rationale"}
 """
 
 def _get_llm_prompt():
@@ -891,7 +889,7 @@ _ENRICH_TOOLS = [
     }},
 ]
 
-_VERDICT_PUSH = {"1day_rce": 1, "1day_high": 1, "1day_low": 0, "nday": 0, "noise": 0}
+_VERDICT_PUSH = {"confirmed": 1, "not_relevant": 0, "noise": 0}
 
 _GITHUB_SOURCES = frozenset({"GitHub", "PoC-GitHub"})
 
@@ -1863,7 +1861,7 @@ def _cmd_enrich_inner(dry=False):
                 if any_high_trust and best_cvss and best_cvss >= 9.0:
                     for rec in records:
                         conn.execute(
-                            "UPDATE vulns SET llm_verified=1, llm_verdict='1day_rce', "
+                            "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', "
                             "llm_notes='auto: high-trust + CVSS>=9.0', pushed=1 WHERE key=?",
                             (rec[0],))
                     auto_approved += len(records)
@@ -1901,7 +1899,7 @@ def _cmd_enrich_inner(dry=False):
             # fallback: too many LLM errors → push regex-scored items
             if llm_errors > 3:
                 fallback = conn.execute(
-                    "UPDATE vulns SET llm_verified=1, llm_verdict='fallback_regex', pushed=1 "
+                    "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', llm_notes='fallback: LLM errors, regex-scored', pushed=1 "
                     "WHERE llm_verified=0 AND reason IN ('RCE','other') "
                     "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub')"
                 ).rowcount
