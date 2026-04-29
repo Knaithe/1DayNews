@@ -1700,7 +1700,8 @@ def _cmd_rescore_inner():
     conn = _get_conn()
     init_db(conn)
     _warm_nvd_cache(conn)
-    rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed FROM vulns").fetchall()
+    # only rescore records NOT yet verified by LLM — don't override LLM verdicts
+    rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed FROM vulns WHERE llm_verified=0").fetchall()
     upgraded = downgraded = unchanged = 0
     for key, cve_id, source, title, link, summary, old_reason, old_pushed in rows:
         text = f"{title or ''}\n{summary or ''}"
