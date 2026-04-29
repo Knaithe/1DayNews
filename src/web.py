@@ -154,7 +154,7 @@ def api_vulns():
         where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
         params.extend([cutoff_date, cutoff_ts])
 
-    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes FROM vulns"
+    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes,tg_sent FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
@@ -167,6 +167,7 @@ def api_vulns():
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
         "pushed": bool(r["pushed"]),
+        "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
         "cve_published": r["cve_published"],
         "severity": r["severity"],
         "cvss": r["cvss"],
@@ -347,6 +348,15 @@ a:hover { text-decoration: underline; }
   font-size: 10px; font-weight: 700;
   text-transform: uppercase; letter-spacing: .3px;
 }
+.sev-badge {
+  padding: 2px 10px; border-radius: var(--pill); border: 1px solid var(--ink);
+  font-size: 10px; font-weight: 700; letter-spacing: .3px;
+  font-family: 'JetBrains Mono', monospace; color: var(--ink);
+}
+.sev-badge.sev-critical { background: #9B1C1C; color: var(--white); font-weight: 800; }
+.sev-badge.sev-high { background: var(--orange); color: var(--ink); }
+.sev-badge.sev-medium { background: var(--yellow); color: var(--ink); }
+.sev-badge.sev-low { background: var(--mint); color: var(--ink); }
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
@@ -358,13 +368,22 @@ a:hover { text-decoration: underline; }
 }
 .vcard-title { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.4; letter-spacing: -.005em; }
 .vcard-summary { font-size: 13px; color: var(--muted); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.vcard-llm {
+  display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%;
+  font-size: 12px; color: var(--body); line-height: 1.4;
+  border-left: 2px solid var(--violet); padding-left: 8px; cursor: help;
+}
+.vcard-llm .llm-prefix {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
+  color: var(--violet); letter-spacing: .5px;
+}
 .vcard-link { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vcard-link a { color: var(--ink); font-weight: 500; border-bottom: 1px solid var(--ink); }
 .vcard-link a:hover { background: var(--yellow); text-decoration: none; }
 
-/* severity pill colors */
-.sev-critical::before { background: var(--orange); }
-.sev-high::before { background: var(--red); }
+/* severity stripe colors (CVSS-standard: CRITICAL=red, HIGH=orange) */
+.sev-critical::before { background: var(--red); }
+.sev-high::before { background: var(--orange); }
 .sev-medium::before { background: var(--yellow); }
 .sev-low::before { background: var(--mint); }
 
@@ -462,8 +481,8 @@ a:hover { text-decoration: underline; }
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
 
 <div class="legend-row" aria-label="Severity legend">
-  <span class="legend-item"><span class="legend-pill" style="background:var(--orange)"></span>Critical / KEV</span>
-  <span class="legend-item"><span class="legend-pill" style="background:var(--red)"></span>RCE / Pre-auth</span>
+  <span class="legend-item"><span class="legend-pill" style="background:var(--red)"></span>Critical / KEV</span>
+  <span class="legend-item"><span class="legend-pill" style="background:var(--orange)"></span>RCE / Pre-auth</span>
   <span class="legend-item"><span class="legend-pill" style="background:var(--yellow)"></span>Overflow / Inject</span>
   <span class="legend-item"><span class="legend-pill" style="background:var(--mint)"></span>Other</span>
 </div>
@@ -554,12 +573,25 @@ function safeUrl(u) {
     return u.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
   } catch(e) { return '#'; }
 }
-function sevClass(title) {
-  const t = (title||'').toLowerCase();
+function sevClass(v) {
+  // Prefer real DB severity field; fall back to title-keyword heuristic for legacy rows
+  if (v && v.severity) {
+    const s = String(v.severity).toLowerCase();
+    if (s === 'critical' || s === 'high' || s === 'medium' || s === 'low') return 'sev-' + s;
+  }
+  const t = ((v && v.title) || '').toLowerCase();
   if (t.includes('critical') || t.includes('[kev]')) return 'sev-critical';
   if (t.includes('rce') || t.includes('pre-auth') || t.includes('remote code')) return 'sev-high';
   if (t.includes('overflow') || t.includes('injection')) return 'sev-medium';
   return 'sev-low';
+}
+function sevBadge(v) {
+  const sev = v.severity ? String(v.severity).toUpperCase() : '';
+  const cvss = (typeof v.cvss === 'number') ? v.cvss.toFixed(1) : '';
+  if (!sev && !cvss) return '';
+  const cls = sevClass(v);
+  const prefix = sev === 'CRITICAL' ? '▲&nbsp;' : '';  // ▲ warning triangle for CRITICAL
+  return `<span class="sev-badge ${cls}">${prefix}${esc(sev || '?')}${cvss ? ` &middot; ${cvss}` : ''}</span>`;
 }
 
 async function loadVulns(append=false) {
@@ -590,16 +622,18 @@ async function loadVulns(append=false) {
     container.innerHTML = vulns.map((v,i) => {
       const ss = SRC_STYLE[v.source] || {bg:'#F3F4F6',fg:'#374151'};
       const rs = REASON_STYLE[v.reason] || {bg:'#F3F4F6',fg:'#6B7280'};
-      return `<div class="vcard ${sevClass(v.title)}" style="animation:fadeUp .4s ${i*.03}s both">
+      return `<div class="vcard ${sevClass(v)}" style="animation:fadeUp .4s ${i*.03}s both">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
           <span class="reason-badge" style="background:${rs.bg};color:${rs.fg}">${esc(v.reason||'-')}</span>
-          <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?'Pushed to Telegram':'Filtered'}"></span>
+          ${sevBadge(v)}
+          <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
           <span class="vcard-date">${esc(v.date||'-')}</span>
         </div>
         <div class="vcard-id">${esc(v.id||'N/A')}</div>
         <div class="vcard-title">${esc(v.title)}</div>
         ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
+        ${v.llm_verdict?`<div class="vcard-llm" title="${esc(v.llm_notes||'')}"><span class="llm-prefix">AI</span> ${esc(v.llm_verdict)}</div>`:''}
         ${v.url?`<div class="vcard-link"><a href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
       </div>`;
     }).join('');
