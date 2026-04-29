@@ -76,43 +76,87 @@ python src/vuln_monitor.py fetch     # 配置后自动推送
 
 ### LLM 研判（可选）
 
-配了 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 后，`enrich` 子命令会用 LLM 做二次研判：
+配了 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 后，`enrich` 子命令会用 LLM 做二次研判。以下是每个模型的完整 .env 配置示例，选一个复制到 `.env` 即可。
 
-配置示例（.env 加几行即可）：
+#### DeepSeek deepseek-v4-flash（推荐，便宜快速）
 
 ```bash
-# ── 方案 1：DeepSeek（推荐，便宜快速）──
 DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 LLM_MODEL=deepseek-v4-flash
-
-# ── 方案 2：OpenAI GPT-5.4（性价比）──
-# OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-# LLM_MODEL=gpt-5.4
-
-# ── 方案 3：OpenAI GPT-5.5（最准）──
-# OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-# LLM_MODEL=gpt-5.5
-
-# ── 方案 4：第三方中转（如 OpenRouter、自建代理）──
-# OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-# LLM_BASE_URL=https://openrouter.ai/api
-# LLM_MODEL=deepseek/deepseek-chat
-
-# ── 方案 5：本地 Ollama ──
-# OPENAI_API_KEY=ollama
-# LLM_BASE_URL=http://localhost:11434
-# LLM_MODEL=llama3
-
-# ── 模型参数 ──
-LLM_TEMPERATURE=0.1           # 创造性，0=确定性，1=随机
-LLM_MAX_TOKENS=1024           # 最大输出 token 数
-LLM_TIMEOUT=60                # API 超时秒数（推理模型建议 120）
-LLM_MAX_CONTEXT=131072        # 上下文窗口（128K，主流模型标配）
-LLM_REASONING_EFFORT=high     # 思考等级：low/medium/high（支持的模型才生效）
-LLM_TOP_P=0.9                 # 核采样，和 temperature 配合控制输出多样性
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=1024
+LLM_TIMEOUT=60
+LLM_MAX_CONTEXT=131072
+LLM_REASONING_EFFORT=high
+LLM_TOP_P=0.9
 ```
 
-自定义 system prompt 放 `/opt/vuln-monitor/llm_prompt.txt`，不存在则用内置默认。不支持 temperature 或 tools 的模型会自动降级重试。
+#### OpenAI GPT-5.4（性价比）
+
+```bash
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+LLM_MODEL=gpt-5.4
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=1024
+LLM_TIMEOUT=60
+LLM_MAX_CONTEXT=131072
+LLM_REASONING_EFFORT=high
+LLM_TOP_P=0.9
+```
+
+#### OpenAI GPT-5.5（最准）
+
+```bash
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+LLM_MODEL=gpt-5.5
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=2048
+LLM_TIMEOUT=90
+LLM_MAX_CONTEXT=131072
+LLM_REASONING_EFFORT=high
+LLM_TOP_P=0.9
+```
+
+#### 第三方中转（OpenRouter / 自建代理）
+
+```bash
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+LLM_BASE_URL=https://openrouter.ai/api
+LLM_MODEL=deepseek/deepseek-chat
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=1024
+LLM_TIMEOUT=60
+LLM_MAX_CONTEXT=131072
+LLM_REASONING_EFFORT=high
+LLM_TOP_P=0.9
+```
+
+#### 本地 Ollama
+
+```bash
+OPENAI_API_KEY=ollama
+LLM_BASE_URL=http://localhost:11434
+LLM_MODEL=llama3
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=1024
+LLM_TIMEOUT=120
+LLM_MAX_CONTEXT=8192
+LLM_REASONING_EFFORT=high
+LLM_TOP_P=0.9
+```
+
+#### 参数说明
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `LLM_TEMPERATURE` | 0.1 | 创造性，0=完全确定性，1=最大随机 |
+| `LLM_MAX_TOKENS` | 1024 | 最大输出 token 数 |
+| `LLM_TIMEOUT` | 60 | API 超时秒数，推理模型建议 120 |
+| `LLM_MAX_CONTEXT` | 131072 | 上下文窗口（128K），工具返回自动截断适配 |
+| `LLM_REASONING_EFFORT` | high | 思考等级：low / medium / high，支持的模型才生效 |
+| `LLM_TOP_P` | 0.9 | 核采样，和 temperature 配合控制输出多样性 |
+
+自定义 system prompt 放 `/opt/vuln-monitor/llm_prompt.txt`，不存在则用内置默认。不支持 temperature / tools / reasoning_effort 的模型会自动降级重试。
 
 LLM 会自主决定是否调用工具（查 NVD、抓源页面、搜 GitHub/长亭），输出结构化研判：
 
