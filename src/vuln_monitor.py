@@ -75,8 +75,11 @@ GH_TOKEN     = os.getenv("GH_TOKEN")     or _user_cfg.get("gh_token", "")
 NVD_API_KEY  = os.getenv("NVD_API_KEY") or _user_cfg.get("nvd_api_key", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or _user_cfg.get("deepseek_api_key", "")
 OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")   or _user_cfg.get("openai_api_key", "")
-LLM_MODEL    = os.getenv("LLM_MODEL")   or _user_cfg.get("llm_model", "")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL") or _user_cfg.get("llm_base_url", "")
+LLM_MODEL    = os.getenv("LLM_MODEL")       or _user_cfg.get("llm_model", "")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL")   or _user_cfg.get("llm_base_url", "")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE") or _user_cfg.get("llm_temperature", "0.1"))
+LLM_MAX_TOKENS  = int(os.getenv("LLM_MAX_TOKENS")    or _user_cfg.get("llm_max_tokens", "1024"))
+LLM_TIMEOUT     = int(os.getenv("LLM_TIMEOUT")        or _user_cfg.get("llm_timeout", "60"))
 PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
@@ -816,7 +819,9 @@ def _backfill_nvd_severity(conn):
 
 
 # ================== LLM ENRICHMENT ==================
-_LLM_SYSTEM_PROMPT = """You are a vulnerability intelligence analyst. Assess whether a vulnerability is a genuine, fresh, exploitable threat.
+# System prompt: load from DATA_DIR/llm_prompt.txt if exists, else use default.
+_LLM_PROMPT_FILE = DATA_DIR / "llm_prompt.txt"
+_LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. Assess whether a vulnerability is a genuine, fresh, exploitable threat.
 
 ## Verdict categories:
 - 1day_rce: Fresh (≤60 days), remotely exploitable code/command execution on a widely deployed target. CRITICAL priority.
@@ -835,6 +840,17 @@ _LLM_SYSTEM_PROMPT = """You are a vulnerability intelligence analyst. Assess whe
 Output ONLY JSON (no markdown):
 {"verdict": "1day_rce|1day_high|1day_low|nday|noise", "confidence": 0.0-1.0, "notes": "one-sentence rationale"}
 """
+
+def _get_llm_prompt():
+    """Load system prompt from file (if exists) or use default."""
+    if _LLM_PROMPT_FILE.exists():
+        try:
+            custom = _LLM_PROMPT_FILE.read_text(encoding="utf-8").strip()
+            if custom:
+                return custom
+        except Exception:
+            pass
+    return _LLM_SYSTEM_PROMPT_DEFAULT
 
 _ENRICH_TOOLS = [
     {"type": "function", "function": {
@@ -875,7 +891,7 @@ def _get_llm_client():
     else:
         base_url = LLM_BASE_URL or "https://api.openai.com"
         model = LLM_MODEL or "gpt-4o-mini"
-    client = OpenAI(api_key=api_key, base_url=f"{base_url.rstrip('/')}/v1", timeout=30)
+    client = OpenAI(api_key=api_key, base_url=f"{base_url.rstrip('/')}/v1", timeout=LLM_TIMEOUT)
     return client, model
 
 _llm_client = None
@@ -951,13 +967,13 @@ def _enrich_one(record):
         f"URL: {link or 'N/A'}\nSummary: {summary or 'N/A'}\n"
         f"Regex match: {reason}\nCVSS: {cvss or 'unknown'}\nSeverity: {severity or 'unknown'}"
     )
-    messages = [{"role": "system", "content": _LLM_SYSTEM_PROMPT},
+    messages = [{"role": "system", "content": _get_llm_prompt()},
                 {"role": "user", "content": user_msg}]
     try:
         for _ in range(_MAX_TOOL_ROUNDS):
             resp = _llm_client.chat.completions.create(
                 model=_llm_model, messages=messages,
-                tools=_ENRICH_TOOLS, temperature=0.1, max_tokens=1024,
+                tools=_ENRICH_TOOLS, temperature=LLM_TEMPERATURE, max_tokens=LLM_MAX_TOKENS,
             )
             choice = resp.choices[0]
             if choice.message.tool_calls:

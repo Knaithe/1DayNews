@@ -15,6 +15,7 @@
 **/vuln_alert_state.tmp
 **/vuln_monitor.lock
 **/.web_token
+**/llm_prompt.txt
 **/vuln_monitor.log
 **/vuln_monitor.log.*
 
