@@ -540,6 +540,7 @@ def init_db(conn):
         )
     """)
     # migrate: add columns if missing (existing databases)
+    _new_cols = []
     for col, typedef in [
         ("cve_published", "TEXT"),
         ("severity",      "TEXT"),
@@ -551,10 +552,12 @@ def init_db(conn):
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
+            _new_cols.append(col)
         except sqlite3.OperationalError:
             pass
-    # backfill tg_sent for historical records (already-pushed = already-sent)
-    conn.execute("UPDATE vulns SET tg_sent = pushed WHERE tg_sent IS NULL")
+    # backfill tg_sent: mark already-pushed records as sent (only on first migration)
+    if "tg_sent" in _new_cols:
+        conn.execute("UPDATE vulns SET tg_sent = 1 WHERE pushed = 1")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON vulns(created_at)")

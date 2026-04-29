@@ -98,48 +98,39 @@ IOSchedulingPriority=7  # 最低 I/O 优先级
 
 前台有别的东西跑时，本脚本自动退让——不会和主业务抢 CPU/IO。
 
-## Timer 策略
+## 调度策略
 
-```
-OnBootSec=2min          # 开机 2 分钟后首触发
-OnUnitActiveSec=5min    # 此后每 5 分钟（从上一次"完成"算起）
-AccuracySec=30s         # 触发时间误差 ±30s
-Persistent=true         # 机器关过机也会补跑一次
+后台调度器内置在 web 进程中，默认每 300 秒（5 分钟）执行 `fetch → enrich` 一轮。可通过环境变量调整：
+
+```bash
+FETCH_INTERVAL=600   # 改为 10 分钟
 ```
 
-`OnUnitActiveSec`（不是 `OnCalendar`）的含义：两次执行之间间隔 5 分钟——如果某次跑了 8 分钟，下一次是 8+5=13 分钟后开始，不会堆积触发。
+调度器使用 `SingletonLock` 防止并发：如果上一轮还没跑完，下一轮自动跳过，不会堆积。
 
 ## 运行时观察命令
 
 ```bash
-# 下次触发时间
-systemctl list-timers vuln-monitor.timer
-
 # 实时 journal（推荐）
 journalctl -u vuln-monitor.service -f
 
 # 文件日志（更长保留）
 tail -f /opt/vuln-monitor/vuln_monitor.log
 
-# 手动触发一次（不影响下一次定时触发）
-sudo systemctl start vuln-monitor.service
-
-# 看上一次运行状态与退出码
+# 服务状态
 systemctl status vuln-monitor.service
 
-# 完全停掉（禁止再触发）
-sudo systemctl disable --now vuln-monitor.timer
+# 重启（web + 调度器一起重启）
+sudo systemctl restart vuln-monitor.service
+
+# 完全停掉
+sudo systemctl disable --now vuln-monitor.service
 
 # 看 cache 有多少条（诊断）
 sqlite3 /opt/vuln-monitor/vuln_cache.db "SELECT COUNT(*) FROM vulns;"
 
 # 数据库统计（CLI）
 python /opt/vuln-monitor/src/vuln_monitor.py stats
-
-# Web 仪表盘管理
-sudo systemctl status vuln-web.service
-sudo systemctl restart vuln-web.service
-journalctl -u vuln-web.service -f
 ```
 
 ## 常见故障定位

@@ -1,21 +1,21 @@
 [Unit]
-Description=Vulnerability intelligence aggregator (oneshot)
+Description=vuln-monitor: web dashboard + background fetch/enrich
 Documentation=https://github.com/Knaithe/1DayNews
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
+Type=simple
 User=vuln
 Group=vuln
 WorkingDirectory=/opt/vuln-monitor
 EnvironmentFile=/opt/vuln-monitor/.env
 Environment=VULN_DATA_DIR=/opt/vuln-monitor
-ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/vuln_monitor.py fetch --no-push
-ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/vuln_monitor.py enrich
+ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/web.py --public
+Restart=on-failure
+RestartSec=10
 
-# resource / time caps (increased for LLM enrichment)
-RuntimeMaxSec=900
+# resource caps
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
@@ -33,7 +33,6 @@ ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
 RestrictRealtime=true
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM

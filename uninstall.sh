@@ -20,8 +20,9 @@ fi
 
 # ---------- 1. stop & disable systemd ----------
 echo ">>> [1/4] stopping systemd units ..."
-systemctl disable --now vuln-monitor.timer   2>/dev/null || true
 systemctl disable --now vuln-monitor.service 2>/dev/null || true
+# clean up legacy units from older deploys
+systemctl disable --now vuln-monitor.timer   2>/dev/null || true
 systemctl disable --now vuln-web.service     2>/dev/null || true
 rm -f "$SYSTEMD_DIR/vuln-monitor.service" "$SYSTEMD_DIR/vuln-monitor.timer" "$SYSTEMD_DIR/vuln-web.service"
 systemctl daemon-reload

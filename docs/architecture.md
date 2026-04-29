@@ -11,9 +11,7 @@
 │   ├── probe_feeds.py         # 源失效时用来批量探测替代 URL 的工具
 │   └── configure.py           # 本地交互式写 ~/.config/vuln-monitor/config.json
 ├── systemd/
-│   ├── vuln-monitor.service   # oneshot：fetch --no-push && enrich（串联）
-│   ├── vuln-monitor.timer     # 5 分钟触发定时器
-│   └── vuln-web.service       # Web 仪表盘常驻服务
+│   └── vuln-monitor.service   # web 仪表盘 + 后台 fetch/enrich 定时调度（单服务）
 ├── docs/
 │   ├── architecture.md        # 本文
 │   ├── sources.md             # 信息源清单与取舍理由
@@ -36,9 +34,7 @@
 │   ├── probe_feeds.py
 │   └── configure.py
 ├── systemd/
-│   ├── vuln-monitor.service   # fetch 服务
-│   ├── vuln-monitor.timer     # 5 分钟定时触发
-│   └── vuln-web.service       # Web 仪表盘常驻服务
+│   └── vuln-monitor.service   # web + 后台调度（单服务）
 ├── venv/                      # Python 虚拟环境（deploy.sh 创建）
 ├── .env                       # 敏感变量，600
 ├── vuln_cache.db              # ←│ SQLite WAL 模式
@@ -176,9 +172,7 @@ sudo -u vuln env -i \
 
 - `env -i` 清空所有 env → `TG_BOT_TOKEN` 不存在 → 脚本进入 dry mode → 只写 cache 不推送
 - 这一跑会把 1900+ 条当前"存量"全部标记成"已见"
-- 然后 `systemctl enable --now vuln-monitor.timer` 接管 → 之后只推增量
-
-这一步失败也没关系（`|| true`）——timer 第一次触发时 cache 没热，会推一次历史刷屏，但不是永久问题。
+- 然后 `systemctl enable --now vuln-monitor.service` 接管 → 后台调度器每 5 分钟自动 fetch+enrich，之后只推增量
 
 ## 下一步可能的演进
 

@@ -95,29 +95,10 @@ ssh -L 8001:127.0.0.1:8001 user@server
 
 ## 生产部署
 
-`deploy.sh` 已自动安装并启用 `vuln-web.service`。手动管理：
-
-```ini
-# /etc/systemd/system/vuln-web.service
-[Unit]
-Description=vuln-monitor web dashboard
-After=network.target vuln-monitor.service
-
-[Service]
-Type=simple
-User=vuln
-ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/web.py
-Restart=on-failure
-RestartSec=5
-Environment=VULN_DATA_DIR=/opt/vuln-monitor
-ReadOnlyPaths=/opt/vuln-monitor
-
-[Install]
-WantedBy=multi-user.target
-```
+Web 仪表盘和后台调度已合并为单一服务 `vuln-monitor.service`，`deploy.sh` 自动安装。
 
 ```bash
-sudo systemctl status vuln-web.service   # 查看状态
-sudo systemctl restart vuln-web.service  # 重启
-journalctl -u vuln-web.service -f        # 查看日志
+sudo systemctl status vuln-monitor.service    # 查看状态
+sudo systemctl restart vuln-monitor.service   # 重启
+journalctl -u vuln-monitor.service -f         # 查看日志
 ```

@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """
-vuln-monitor web dashboard. Read-only SQLite viewer.
+vuln-monitor: web dashboard + background fetch/enrich scheduler.
 
 Usage:
     python src/web.py                          # localhost only
     python src/web.py --public                 # 0.0.0.0 + magic token
     python src/web.py --public --token MY_SEC  # custom token
+    python src/web.py --no-scheduler           # web only, no background fetch
     ssh -L 8001:127.0.0.1:8001 user@srv       # SSH tunnel (no token needed)
+
+Env:
+    FETCH_INTERVAL  seconds between fetch+enrich cycles (default 300 = 5min)
 """
 import argparse
 import hmac
+import logging
 import secrets
 import sqlite3
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request, abort
 from waitress import serve
+
+log = logging.getLogger("vuln-web")
 
 # ── Magic token auth ──
 _MAGIC_TOKEN = None  # set at startup if --public
@@ -620,8 +629,39 @@ loadSources(); loadStats(); loadVulns();
 </html>"""
 
 
+# ── Background fetch+enrich scheduler ──
+_scheduler_stop = threading.Event()
+
+def _scheduler_loop(interval):
+    """Background thread: fetch → enrich → sleep → repeat."""
+    from vuln_monitor import (
+        SingletonLock, LOCK_FILE, _run, _cmd_enrich_inner,
+        init_db, _get_conn, send_failure_alert,
+    )
+    log.info(f"scheduler started: interval={interval}s")
+    # small delay so web server is ready before first fetch
+    _scheduler_stop.wait(10)
+    while not _scheduler_stop.is_set():
+        try:
+            with SingletonLock(LOCK_FILE):
+                _run(no_push=True)
+                _cmd_enrich_inner()
+        except RuntimeError as ex:
+            log.warning(f"scheduler skip (lock held): {ex}")
+        except Exception:
+            import traceback
+            tb = traceback.format_exc()
+            log.exception("scheduler error")
+            try:
+                send_failure_alert(f"scheduler error:\n{tb[-3500:]}")
+            except Exception:
+                pass
+        _scheduler_stop.wait(interval)
+    log.info("scheduler stopped")
+
+
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="vuln-monitor web dashboard")
+    p = argparse.ArgumentParser(description="vuln-monitor: web dashboard + scheduler")
     p.add_argument("--port", type=int, default=8001)
     p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1 only)")
     p.add_argument("--public", action="store_true",
@@ -632,6 +672,8 @@ if __name__ == "__main__":
                    help="Generate a new token (invalidates old one)")
     p.add_argument("--show-token", action="store_true",
                    help="Print current token and exit")
+    p.add_argument("--no-scheduler", action="store_true",
+                   help="Disable background fetch+enrich (web only)")
     args = p.parse_args()
 
     # Token management commands (work without --public)
@@ -648,19 +690,14 @@ if __name__ == "__main__":
         print(f"new token: {new_token}")
         print(f"saved to:  {TOKEN_FILE}")
         if not args.public:
-            print("restart vuln-web.service to apply")
+            print("restart vuln-monitor.service to apply")
             raise SystemExit(0)
 
     if args.token:
         _save_token(args.token)
         if not args.public:
-            print(f"token saved to {TOKEN_FILE}, restart vuln-web.service to apply")
+            print(f"token saved to {TOKEN_FILE}, restart vuln-monitor.service to apply")
             raise SystemExit(0)
-
-    if not DB_FILE.exists():
-        print(f"ERROR: database not found at {DB_FILE}")
-        print("Run 'python src/vuln_monitor.py fetch' first to create it.")
-        raise SystemExit(1)
 
     if args.public:
         args.host = "0.0.0.0"
@@ -675,5 +712,14 @@ if __name__ == "__main__":
         print(f"database: {DB_FILE}")
         if args.host == "127.0.0.1":
             print(f"localhost only (use --public for external access, or SSH tunnel)")
+
+    # Start background scheduler
+    if not args.no_scheduler:
+        interval = int(os.getenv("FETCH_INTERVAL", "300"))
+        t = threading.Thread(target=_scheduler_loop, args=(interval,), daemon=True)
+        t.start()
+        print(f"  scheduler:  every {interval}s")
+    else:
+        print(f"  scheduler:  disabled")
 
     serve(app, host=args.host, port=args.port)

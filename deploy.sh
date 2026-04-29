@@ -121,36 +121,25 @@ fi
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 chmod 600 "$APP_DIR/.env"
 
-# ---------- 6. systemd units ----------
-echo ">>> [6/7] installing systemd units ..."
+# ---------- 6. systemd unit ----------
+echo ">>> [6/7] installing systemd unit ..."
+# clean up legacy units from older deploys
+systemctl disable --now vuln-monitor.timer 2>/dev/null || true
+systemctl disable --now vuln-web.service   2>/dev/null || true
+rm -f "$SYSTEMD_DIR/vuln-monitor.timer" "$SYSTEMD_DIR/vuln-web.service"
 install -m 644 "$APP_DIR/systemd/vuln-monitor.service" "$SYSTEMD_DIR/vuln-monitor.service"
-install -m 644 "$APP_DIR/systemd/vuln-monitor.timer"   "$SYSTEMD_DIR/vuln-monitor.timer"
-install -m 644 "$APP_DIR/systemd/vuln-web.service"     "$SYSTEMD_DIR/vuln-web.service"
 systemctl daemon-reload
 
-# ---------- 7. warm cache (dry) then enable timer ----------
-echo ">>> [7/7] warming cache (dry run, NO Telegram push) ..."
-# env -i guarantees no TG_* leak from the installer shell — forces dry mode.
-# VULN_DATA_DIR pinned to APP_DIR so cache lands at /opt/vuln-monitor/ not src/.
-sudo -u "$APP_USER" env -i \
-    HOME="$APP_DIR" \
-    PATH="/usr/bin:/bin" \
-    VULN_DATA_DIR="$APP_DIR" \
-    "$APP_DIR/venv/bin/python" "$APP_DIR/src/vuln_monitor.py" || {
-        echo "    (cache warm exited non-zero; it's OK, timer will retry)"
-    }
-
-systemctl enable --now vuln-monitor.timer
-systemctl enable --now vuln-web.service
+# ---------- 7. enable service ----------
+echo ">>> [7/7] enabling vuln-monitor.service ..."
+systemctl enable --now vuln-monitor.service
 
 echo
 echo "============================================================"
 echo "  deployed."
-echo "  fetch:      systemctl status vuln-monitor.timer"
-echo "  web:        systemctl status vuln-web.service"
+echo "  status:     systemctl status vuln-monitor.service"
 echo "  dashboard:  http://127.0.0.1:8001 (SSH tunnel for remote)"
-echo "  live logs:  journalctl -u vuln-monitor.service -f"
-echo "  web logs:   journalctl -u vuln-web.service -f"
+echo "  logs:       journalctl -u vuln-monitor.service -f"
 echo "  file logs:  tail -f $APP_DIR/vuln_monitor.log"
-echo "  run now:    sudo systemctl start vuln-monitor.service"
+echo "  restart:    sudo systemctl restart vuln-monitor.service"
 echo "============================================================"
