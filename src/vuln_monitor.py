@@ -888,6 +888,19 @@ _ENRICH_TOOLS = [
 ]
 
 _VERDICT_PUSH = {"1day_rce": 1, "1day_high": 1, "1day_low": 0, "nday": 0, "noise": 0}
+
+_GITHUB_SOURCES = frozenset({"GitHub", "PoC-GitHub"})
+
+def _resolve_pushed(verdict, reason, source):
+    """Determine pushed value from LLM verdict, respecting hard constraints."""
+    llm_wants_push = _VERDICT_PUSH.get(verdict, 0)
+    # nday is objective (based on CVE date) — LLM cannot override
+    if reason.startswith("nday:"):
+        return 0
+    # GitHub repos: LLM cannot single-handedly push — regex must also agree
+    if source in _GITHUB_SOURCES and reason in ("GitHub+CVE",):
+        return 0
+    return llm_wants_push
 _MAX_TOOL_ROUNDS = 5
 
 
@@ -1856,8 +1869,8 @@ def _cmd_enrich_inner(dry=False):
                 if verdict is None:
                     llm_errors += 1
                     continue
-                pushed_val = _VERDICT_PUSH.get(verdict, 0)
                 for rec in records:
+                    pushed_val = _resolve_pushed(verdict, rec[6], rec[2])
                     conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                         (verdict, (notes or "")[:500], pushed_val, rec[0]))
@@ -1870,7 +1883,7 @@ def _cmd_enrich_inner(dry=False):
                 if verdict is None:
                     llm_errors += 1
                     continue
-                pushed_val = _VERDICT_PUSH.get(verdict, 0)
+                pushed_val = _resolve_pushed(verdict, rec[6], rec[2])
                 conn.execute(
                     "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                     (verdict, (notes or "")[:500], pushed_val, rec[0]))
