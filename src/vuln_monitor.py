@@ -1681,6 +1681,105 @@ def _cmd_rescore_inner():
     print(f"rescored {total} records: {upgraded} upgraded, {downgraded} downgraded, {unchanged} reason-changed, {same} unchanged")
 
 
+def cmd_enrich(args):
+    """LLM-based vulnerability enrichment: NVD severity + LLM agent + push."""
+    with SingletonLock(LOCK_FILE):
+        _cmd_enrich_inner(getattr(args, 'dry', False))
+
+def _cmd_enrich_inner(dry=False):
+    conn = _get_conn()
+    init_db(conn)
+    _warm_nvd_cache(conn)
+
+    # Phase 1: NVD severity/CVSS backfill
+    _backfill_nvd_severity(conn)
+
+    # Phase 2: LLM enrichment
+    api_key = DEEPSEEK_API_KEY or OPENAI_API_KEY
+    if not api_key:
+        log.info("enrich: no LLM API key, skipping LLM enrichment")
+    else:
+        candidates = conn.execute(
+            "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss "
+            "FROM vulns WHERE llm_verified = 0 "
+            "AND reason NOT IN ('excluded', 'no hit') "
+            "AND reason NOT LIKE 'nday:%' "
+            "ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
+
+        if candidates:
+            # group by CVE to avoid duplicate LLM calls
+            by_cve = {}
+            no_cve = []
+            for rec in candidates:
+                cve_id = rec[1]
+                if cve_id and cve_id.startswith("CVE-"):
+                    by_cve.setdefault(cve_id, []).append(rec)
+                else:
+                    no_cve.append(rec)
+
+            auto_approved = llm_processed = llm_errors = 0
+
+            # auto-approve: high-trust + critical CVSS
+            for cve_id, records in by_cve.items():
+                rep = records[0]
+                source, cvss = rep[2], rep[8]
+                if source in HIGH_PRIORITY_SOURCES and cvss and cvss >= 9.0:
+                    for rec in records:
+                        conn.execute(
+                            "UPDATE vulns SET llm_verified=1, llm_verdict='1day_rce', "
+                            "llm_notes='auto: high-trust + CVSS>=9.0', pushed=1 WHERE key=?",
+                            (rec[0],))
+                    auto_approved += len(records)
+                    continue
+
+                # LLM enrichment
+                verdict, notes = _enrich_one(rep)
+                if verdict is None:
+                    llm_errors += 1
+                    continue
+                pushed_val = _VERDICT_PUSH.get(verdict, 0)
+                for rec in records:
+                    conn.execute(
+                        "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
+                        (verdict, (notes or "")[:500], pushed_val, rec[0]))
+                llm_processed += 1
+                time.sleep(0.5)
+
+            # non-CVE records
+            for rec in no_cve:
+                verdict, notes = _enrich_one(rec)
+                if verdict is None:
+                    llm_errors += 1
+                    continue
+                pushed_val = _VERDICT_PUSH.get(verdict, 0)
+                conn.execute(
+                    "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
+                    (verdict, (notes or "")[:500], pushed_val, rec[0]))
+                llm_processed += 1
+                time.sleep(0.5)
+
+            conn.commit()
+            log.info(f"enrich: auto={auto_approved} llm={llm_processed} errors={llm_errors}")
+
+            # fallback: too many LLM errors → push regex-scored items
+            if llm_errors > 3:
+                fallback = conn.execute(
+                    "UPDATE vulns SET llm_verified=1, llm_verdict='fallback_regex', pushed=1 "
+                    "WHERE llm_verified=0 AND reason IN ('RCE+asset/CVE','asset+CVE','GitHub+CVE')"
+                ).rowcount
+                conn.commit()
+                if fallback:
+                    log.warning(f"enrich: LLM errors, fell back to regex for {fallback} records")
+        else:
+            log.info("enrich: no unverified candidates")
+
+    # Phase 3: push pending
+    if not dry:
+        _push_pending(conn)
+    conn.close()
+
+
 def cmd_rebuild(args):
     """Re-fetch all sources and backfill NULL fields in existing records."""
     with SingletonLock(LOCK_FILE):
@@ -1743,6 +1842,9 @@ def main():
     sub.add_parser("rebuild", help="Re-fetch sources and backfill NULL fields in existing records")
     sub.add_parser("rescore", help="Re-evaluate all records with current scoring rules")
 
+    ep = sub.add_parser("enrich", help="LLM-based enrichment: NVD severity + AI verdict + push")
+    ep.add_argument("--dry", action="store_true", help="Enrich but do not push to Telegram")
+
     args = parser.parse_args()
 
     if args.cmd == "query":
@@ -1755,6 +1857,18 @@ def main():
         cmd_rebuild(args)
     elif args.cmd == "rescore":
         cmd_rescore(args)
+    elif args.cmd == "enrich":
+        try:
+            cmd_enrich(args)
+        except RuntimeError as ex:
+            log.warning(str(ex))
+            sys.exit(0)
+        except Exception:
+            import traceback
+            tb = traceback.format_exc()
+            log.exception("enrich error")
+            send_failure_alert(f"enrich failed:\n{tb[-3500:]}")
+            sys.exit(1)
     else:
         # default / "fetch": original behavior
         try:
