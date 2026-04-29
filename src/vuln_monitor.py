@@ -560,17 +560,17 @@ def init_db(conn):
     # backfill tg_sent: mark already-pushed records as sent (only on first migration)
     if "tg_sent" in _new_cols:
         conn.execute("UPDATE vulns SET tg_sent = 1 WHERE pushed = 1")
-    # backfill freshness from legacy reason field (only on first migration)
+    # backfill freshness + migrate legacy values (only on first migration)
     if "freshness" in _new_cols:
         conn.execute("UPDATE vulns SET freshness='nday', reason=SUBSTR(reason,6) WHERE reason LIKE 'nday:%'")
         conn.execute("UPDATE vulns SET freshness='1day' WHERE freshness IS NULL AND reason NOT IN ('excluded','no hit')")
-    # migrate legacy reason values to simplified types
-    conn.execute("UPDATE vulns SET reason='RCE' WHERE reason IN ('RCE+asset/CVE','RCE+exploit')")
-    conn.execute("UPDATE vulns SET reason='other' WHERE reason IN ('asset+CVE','GitHub+CVE')")
-    # migrate legacy llm_verdict values
-    conn.execute("UPDATE vulns SET llm_verdict='confirmed' WHERE llm_verdict IN ('1day_rce','1day_high','fallback_regex')")
-    conn.execute("UPDATE vulns SET llm_verdict='not_relevant' WHERE llm_verdict='1day_low'")
-    conn.execute("UPDATE vulns SET llm_verdict='not_relevant' WHERE llm_verdict='nday'")
+        # migrate legacy reason values to simplified types
+        conn.execute("UPDATE vulns SET reason='RCE' WHERE reason IN ('RCE+asset/CVE','RCE+exploit')")
+        conn.execute("UPDATE vulns SET reason='other' WHERE reason IN ('asset+CVE','GitHub+CVE')")
+        # migrate legacy llm_verdict values
+        conn.execute("UPDATE vulns SET llm_verdict='confirmed' WHERE llm_verdict IN ('1day_rce','1day_high','fallback_regex')")
+        conn.execute("UPDATE vulns SET llm_verdict='not_relevant' WHERE llm_verdict='1day_low'")
+        conn.execute("UPDATE vulns SET llm_verdict='not_relevant' WHERE llm_verdict='nday'")
     conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
@@ -1009,7 +1009,7 @@ def _enrich_one(record):
     if _llm_client is None:
         return None, None
 
-    key, cve_id, source, title, link, summary, reason, severity, cvss = record
+    key, cve_id, source, title, link, summary, reason, severity, cvss, *_ = record
     user_msg = (
         f"Assess this vulnerability:\n"
         f"CVE: {cve_id or 'N/A'}\nSource: {source}\nTitle: {title}\n"
@@ -1547,7 +1547,7 @@ def _run(no_push=False):
         # ── Exploitability (severity) ──
         hit, reason = score(it["text"])
 
-        # ── Freshness — ALL records get cve_published + freshness ──
+        # ── Freshness — ALL records with CVE get cve_published + freshness ──
         cve_pub = None
         freshness = None
         if CVE_RE.search(it["text"]):
@@ -1555,6 +1555,9 @@ def _run(no_push=False):
             freshness = "1day" if fresh else "nday"
             if hit and not fresh:
                 hit = False
+        elif hit and it["source"] in FRESH_SOURCES:
+            # high-trust source without CVE (e.g. Fortinet FG-IR) → trust source timeliness
+            freshness = "1day"
 
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
@@ -1796,6 +1799,8 @@ def _cmd_rescore_inner():
             freshness = "1day" if fresh else "nday"
             if hit and not fresh:
                 hit = False
+        elif hit and source in FRESH_SOURCES:
+            freshness = "1day"
 
         new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES) else 0
         if reason != old_reason or new_pushed != old_pushed or cve_pub:
@@ -1860,10 +1865,11 @@ def _cmd_enrich_inner(dry=False):
                 best_cvss = max((r[8] for r in records if r[8]), default=None)
                 if any_high_trust and best_cvss and best_cvss >= 9.0:
                     for rec in records:
+                        pushed_val = _resolve_pushed("confirmed", rec[9], rec[2])
                         conn.execute(
                             "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', "
-                            "llm_notes='auto: high-trust + CVSS>=9.0', pushed=1 WHERE key=?",
-                            (rec[0],))
+                            "llm_notes='auto: high-trust + CVSS>=9.0', pushed=? WHERE key=?",
+                            (pushed_val, rec[0]))
                     auto_approved += len(records)
                     continue
 

@@ -111,8 +111,8 @@ SOURCE_COLORS = {
     "Sploitus_Citrix": "#fb923c", "Sploitus_Ivanti": "#fb923c", "Sploitus_F5": "#fb923c",
 }
 REASON_COLORS = {
-    "RCE+asset/CVE": "#ef4444", "asset+CVE": "#f97316",
-    "RCE+exploit": "#f43f5e", "excluded": "#4b5563", "no hit": "#374151",
+    "RCE": "#ef4444", "other": "#f97316",
+    "excluded": "#4b5563", "no hit": "#374151",
 }
 
 
@@ -473,9 +473,8 @@ a:hover { text-decoration: underline; }
 
 <div class="filter-row" id="reasonRow" role="group" aria-label="Filter by reason">
   <button type="button" class="cat-pill active" data-reason="">All</button>
-  <button type="button" class="cat-pill" data-reason="RCE+asset/CVE">RCE+asset/CVE</button>
-  <button type="button" class="cat-pill" data-reason="asset+CVE">asset+CVE</button>
-  <button type="button" class="cat-pill" data-reason="RCE+exploit">RCE+exploit</button>
+  <button type="button" class="cat-pill" data-reason="RCE">RCE</button>
+  <button type="button" class="cat-pill" data-reason="other">other</button>
 </div>
 
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
@@ -506,9 +505,8 @@ const SRC_STYLE = {
   Sploitus_F5:{bg:"#FED7AA",fg:"#9a3412"},
 };
 const REASON_STYLE = {
-  "RCE+asset/CVE": {bg:"#FEE2E2",fg:"#991b1b"},
-  "asset+CVE":     {bg:"#FEF3C7",fg:"#92400e"},
-  "RCE+exploit":   {bg:"#FCE7F3",fg:"#9d174d"},
+  "RCE":   {bg:"#FEE2E2",fg:"#991b1b"},
+  "other": {bg:"#FEF3C7",fg:"#92400e"},
 };
 
 let debounceTimer, activeCat = '', activeReason = '', activeDays = '7';
