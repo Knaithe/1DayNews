@@ -402,7 +402,7 @@ HIGH_PRIORITY_SOURCES = frozenset({
     "watchTowr", "MSRC", "Horizon3", "Chaitin", "ThreatBook",
 })
 # Reasons that indicate a genuinely interesting finding.
-STRONG_REASONS = frozenset({"RCE+asset/CVE", "asset+CVE", "GitHub+CVE"})
+STRONG_REASONS = frozenset({"RCE", "other"})
 
 # ── Freshness (1day vs nday) ──
 # 1day = 漏洞本体新近公开且处于可利用窗口期，值得立刻关注和防御的新鲜攻击面。
@@ -564,7 +564,10 @@ def init_db(conn):
     if "freshness" in _new_cols:
         conn.execute("UPDATE vulns SET freshness='nday', reason=SUBSTR(reason,6) WHERE reason LIKE 'nday:%'")
         conn.execute("UPDATE vulns SET freshness='1day' WHERE freshness IS NULL AND reason NOT IN ('excluded','no hit')")
-        conn.commit()
+    # migrate legacy reason values to simplified types
+    conn.execute("UPDATE vulns SET reason='RCE' WHERE reason IN ('RCE+asset/CVE','RCE+exploit')")
+    conn.execute("UPDATE vulns SET reason='other' WHERE reason IN ('asset+CVE','GitHub+CVE')")
+    conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON vulns(created_at)")
@@ -717,15 +720,10 @@ def score(text):
     rce   = bool(_RCE_RE.search(text))
     asset = any(k in low for k in _ASSET_KW_SET)
     cve   = bool(CVE_RE.search(text))
-    # ── 1day tier: push ──
     if rce and (asset or cve):
-        return True, "RCE+asset/CVE"
+        return True, "RCE"
     if asset and cve:
-        return True, "asset+CVE"
-    # ── exploit-only tier: RCE keywords + "exploit" but no asset/CVE match ──
-    if rce and "exploit" in low:
-        return False, "RCE+exploit"
-    # ── noise tier ──
+        return True, "other"
     return False, "no hit"
 
 
@@ -1550,22 +1548,15 @@ def _run(no_push=False):
 
         # ── Exploitability (severity) ──
         hit, reason = score(it["text"])
-        if not hit and reason != "excluded" and it["source"] in ("GitHub", "PoC-GitHub") and CVE_RE.search(it["text"]):
-            # only promote if description signals real exploit/PoC content
-            _desc = it["text"].lower()
-            if any(kw in _desc for kw in ("exploit", "poc", "proof of concept", "rce", "shell", "payload", "remote code")):
-                hit, reason = True, "GitHub+CVE"
 
-        # ── Freshness (1day vs nday) ──
+        # ── Freshness — ALL records get cve_published + freshness ──
         cve_pub = None
         freshness = None
-        if hit:
+        if CVE_RE.search(it["text"]):
             fresh, cve_pub = _is_fresh(it["source"], it["text"])
             freshness = "1day" if fresh else "nday"
-            if not fresh:
+            if hit and not fresh:
                 hit = False
-        elif reason == "RCE+exploit":
-            freshness = "nday"
 
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
@@ -1574,7 +1565,7 @@ def _run(no_push=False):
         nvd_severity = nvd["severity"] if nvd else None
         nvd_cvss = nvd["cvss"] if nvd else None
         # GitHub/PoC-GitHub: candidate only, never pushed at fetch stage
-        should_push = hit and it["source"] not in _GITHUB_SOURCES
+        should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES
         conn.execute(
             "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,freshness,pushed,created_at,cve_published,severity,cvss) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1800,21 +1791,15 @@ def _cmd_rescore_inner():
         text = f"{title or ''}\n{summary or ''}"
 
         hit, reason = score(text)
-        if not hit and reason != "excluded" and source in ("GitHub", "PoC-GitHub") and CVE_RE.search(text):
-            _desc = text.lower()
-            if any(kw in _desc for kw in ("exploit", "poc", "proof of concept", "rce", "shell", "payload", "remote code")):
-                hit, reason = True, "GitHub+CVE"
         cve_pub = None
         freshness = None
-        if hit:
+        if CVE_RE.search(text):
             fresh, cve_pub = _is_fresh(source or "", text)
             freshness = "1day" if fresh else "nday"
-            if not fresh:
+            if hit and not fresh:
                 hit = False
-        elif reason == "RCE+exploit":
-            freshness = "nday"
 
-        new_pushed = 1 if (hit and source not in _GITHUB_SOURCES) else 0
+        new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES) else 0
         if reason != old_reason or new_pushed != old_pushed or cve_pub:
             conn.execute("UPDATE vulns SET reason=?, freshness=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
                         (reason, freshness, new_pushed, cve_pub, key))
@@ -1853,7 +1838,7 @@ def _cmd_enrich_inner(dry=False):
         candidates = conn.execute(
             "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss, freshness "
             "FROM vulns WHERE llm_verified = 0 "
-            "AND reason NOT IN ('excluded', 'no hit', 'RCE+exploit') "
+            "AND reason NOT IN ('excluded', 'no hit') "
             "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
 
@@ -1917,7 +1902,7 @@ def _cmd_enrich_inner(dry=False):
             if llm_errors > 3:
                 fallback = conn.execute(
                     "UPDATE vulns SET llm_verified=1, llm_verdict='fallback_regex', pushed=1 "
-                    "WHERE llm_verified=0 AND reason IN ('RCE+asset/CVE','asset+CVE') "
+                    "WHERE llm_verified=0 AND reason IN ('RCE','other') "
                     "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub')"
                 ).rowcount
                 conn.commit()
