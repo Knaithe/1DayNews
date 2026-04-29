@@ -5,8 +5,8 @@
 ## 核心特性
 
 - **17 个数据通道**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus/GitHub/PoC-in-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）
-- **聚焦 RCE**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声；GitHub PoC 仓库需 stars >= 3 + 描述含 exploit 关键词才推送
-- **增量去重**：SQLite WAL 模式，CVE 为主键，60 天 TTL，同一 CVE 跨源只推一次；CVE 年份 > 1 年硬过滤 nday（CISA KEV 在野利用豁免）
+- **聚焦 RCE**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声
+- **增量去重**：SQLite WAL 模式，CVE 为主键，60 天 TTL，同一 CVE 跨源只推一次；CVE 年份 > 1 年硬过滤 nday，无例外
 - **多视图查询**：简表 / 详细 / 通知友好 / JSON，支持 CVE/厂商/关键词/时间过滤
 - **Web 仪表盘**：暖色卡片式界面，实时搜索过滤，只绑 localhost（SSH 隧道访问）
 - **自动补全**：缺字段的高价值记录自动从 CVE/公告编号/标题推断链接和来源
@@ -160,19 +160,41 @@ LLM_TOP_P=0.9
 
 自定义 system prompt 放 `/opt/vuln-monitor/llm_prompt.txt`，不存在则用内置默认。不支持 temperature / tools / reasoning_effort 的模型会自动降级重试。
 
-LLM 会自主决定是否调用工具（查 NVD、抓源页面、搜 GitHub/长亭），输出结构化研判：
+### 判定逻辑
 
-| LLM 判定 | 含义 | 推送 |
-|---|---|---|
-| `1day_rce` | 新鲜 + 远程代码执行 | 推 |
-| `1day_high` | 新鲜 + 高危非 RCE | 推 |
-| `1day_low` | 新鲜但低影响（需认证本地利用、信息泄露、冷门产品） | 不推 |
-| `nday` | 老洞 | 不推 |
-| `noise` | 噪声 | 不推 |
+```
+漏洞记录
+│
+├─ regex score()
+│  ├─ excluded → 不推，不审
+│  ├─ no hit → 不推，不审
+│  ├─ nday:RCE+exploit → 不推，不审
+│  ├─ RCE+asset/CVE ─┐
+│  ├─ asset+CVE ─────┤
+│  └─ GitHub+CVE ────┤（GitHub 源需描述含 exploit 关键词）
+│                     │
+├─ _is_fresh()  ←────┘
+│  ├─ CVE 年份 > 1 年 → nday, pushed=0（无例外）
+│  ├─ 高信任源（厂商 PSIRT/ZDI/watchTowr 等）→ fresh
+│  └─ 低信任源 → NVD ≤60 天才 fresh，否则 nday
+│
+├─ 源信任判定
+│  ├─ GitHub/PoC-GitHub → pushed=0（候选，永不直接推送）
+│  └─ 其他源 → pushed = hit
+│
+├─ LLM enrich → verdict = 1day_rce/1day_high/1day_low/nday/noise
+│  ├─ 高信任 + CVSS≥9 → 自动批准，不调 LLM
+│  └─ _resolve_pushed()
+│     ├─ reason = nday:* → 锁 0（LLM 不可推翻新鲜度）
+│     ├─ source = GitHub/PoC-GitHub → 锁 0（仅标注）
+│     └─ 其他 → LLM 决定（可降级，不可推翻 freshness）
+│
+└─ pushed=1 AND tg_sent=0 → Telegram 推送
+```
 
-高信任源（厂商 PSIRT）且已有 CVSS/severity 数据时跳过工具调用，单次 API 直接判定，速度提升 3-5x。
-CVSS 仅作参考：未授权 RCE/命令注入/SQL 注入/认证绕过不论 CVSS 分数至少判 `1day_high`。
-工具调用轮次用尽时强制出结论，不会白烧 token。
+**核心规则：** regex 判 nday → 永不推送 · 低信任源老 CVE / 无 NVD 日期 → 永不推送 · GitHub 描述命中 → 只是候选 · LLM 可降级任何记录 · LLM 不可推翻 freshness
+
+LLM 会调用工具（查 NVD、抓源页面、搜 GitHub/长亭），高信任源且已有 CVSS 数据时跳过工具调用直接判定。CVSS 仅作参考：未授权 RCE/命令注入/SQL 注入/认证绕过不论 CVSS 分数至少判 `1day_high`。工具调用轮次用尽时强制出结论。
 
 不配 LLM key 时 enrich 跳过 LLM 步骤，直接走正则结果推送，不影响现有功能。
 
