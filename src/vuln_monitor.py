@@ -1267,23 +1267,46 @@ def _run():
             (key, cve_id, it["source"], it["title"][:300], it["link"],
              it["summary"][:500], reason, 1 if hit else 0, now, cve_pub, nvd_severity, nvd_cvss),
         )
-        if not hit:
-            skipped_filter += 1
-            continue
-
-        ok = send_telegram(format_msg(it, reason))
-        if ok:
+        if hit:
             pushed += 1
-        time.sleep(PUSH_SLEEP_SEC)
+        else:
+            skipped_filter += 1
 
     conn.commit()
     db_cleanup(conn)
     total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
-    conn.close()
     log.info(
         f"done: pushed={pushed}  filtered={skipped_filter}  already_seen={skipped_seen}  "
         f"backfilled={backfilled}  db_size={total}"
     )
+
+    # Send pending Telegram notifications (unless --no-push)
+    if not getattr(_run, '_no_push', False):
+        _push_pending(conn)
+    conn.close()
+
+
+def _push_pending(conn):
+    """Send Telegram for all pushed=1, tg_sent=0 records."""
+    pending = conn.execute(
+        "SELECT key, cve_id, source, title, link, summary, reason, llm_verdict, llm_notes "
+        "FROM vulns WHERE pushed=1 AND tg_sent=0"
+    ).fetchall()
+    if not pending:
+        return
+    sent = 0
+    for key, cve_id, source, title, link, summary, reason, verdict, notes in pending:
+        it = {"source": source or "", "title": title or "", "link": link or "",
+              "summary": summary or "", "text": f"{title or ''}\n{summary or ''}"}
+        msg = format_msg(it, reason)
+        ok = send_telegram(msg)
+        if ok:
+            conn.execute("UPDATE vulns SET tg_sent=1 WHERE key=?", (key,))
+            sent += 1
+        time.sleep(PUSH_SLEEP_SEC)
+    conn.commit()
+    if sent:
+        log.info(f"push: sent {sent} Telegram notifications")
 
 
 # ================== TABLE FORMATTER ==================
@@ -1525,7 +1548,8 @@ def main():
     parser = argparse.ArgumentParser(description="vuln-monitor: 0day/1day RCE intelligence")
     sub = parser.add_subparsers(dest="cmd")
 
-    sub.add_parser("fetch", help="Fetch all sources, dedup, store, push")
+    fp = sub.add_parser("fetch", help="Fetch all sources, dedup, store, push")
+    fp.add_argument("--no-push", action="store_true", help="Do not send Telegram (for chained use with enrich)")
 
     # shared filter args for query and brief
     def _add_filter_args(p):
@@ -1565,6 +1589,7 @@ def main():
     else:
         # default / "fetch": original behavior
         try:
+            _run._no_push = getattr(args, 'no_push', False)
             with SingletonLock(LOCK_FILE):
                 _run()
         except RuntimeError as ex:
