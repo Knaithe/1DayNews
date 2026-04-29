@@ -103,10 +103,10 @@ LLM_MODEL=deepseek-v4-flash
 # LLM_BASE_URL=http://localhost:11434
 # LLM_MODEL=llama3
 
-# ── 高级参数（可选）──
-# LLM_TEMPERATURE=0.1      # 创造性，0=确定性
-# LLM_MAX_TOKENS=1024       # 最大输出
-# LLM_TIMEOUT=60            # 超时秒数（推理模型建议 120）
+# ── 高级参数 ──
+LLM_TEMPERATURE=0.1          # 创造性，0=确定性，1=随机
+LLM_MAX_TOKENS=1024           # 最大输出 token 数
+LLM_TIMEOUT=60                # API 超时秒数（推理模型建议 120）
 ```
 
 自定义 system prompt 放 `/opt/vuln-monitor/llm_prompt.txt`，不存在则用内置默认。不支持 temperature 或 tools 的模型会自动降级重试。
