@@ -1038,8 +1038,13 @@ def _enrich_one(record):
                 continue
             # final response
             content = (choice.message.content or "").strip()
+            # strip markdown fences and prose prefix before JSON
             content = re.sub(r"^```json\s*", "", content)
             content = re.sub(r"```\s*$", "", content)
+            # extract first JSON object if LLM added prose around it
+            m = re.search(r'\{[^{}]*"verdict"[^{}]*\}', content)
+            if m:
+                content = m.group(0)
             try:
                 data = json.loads(content)
                 return data.get("verdict"), data.get("notes", "")
@@ -1799,7 +1804,7 @@ def _cmd_enrich_inner(dry=False):
             "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss "
             "FROM vulns WHERE llm_verified = 0 "
             "AND reason NOT IN ('excluded', 'no hit', 'nday:RCE+exploit') "
-            "ORDER BY created_at DESC LIMIT 50"
+            "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
 
         if candidates:
