@@ -892,13 +892,19 @@ _VERDICT_PUSH = {"1day_rce": 1, "1day_high": 1, "1day_low": 0, "nday": 0, "noise
 _GITHUB_SOURCES = frozenset({"GitHub", "PoC-GitHub"})
 
 def _resolve_pushed(verdict, reason, source):
-    """Determine pushed value from LLM verdict, respecting hard constraints."""
+    """Determine pushed value from LLM verdict, respecting hard constraints.
+
+    Rules:
+      - nday (by regex freshness check) → locked 0, LLM annotates only
+      - GitHub/PoC-GitHub → locked 0, candidate only (real CVEs push via PSIRT source)
+      - LLM can downgrade any record, but cannot override freshness or source trust
+    """
     llm_wants_push = _VERDICT_PUSH.get(verdict, 0)
     # nday is objective (based on CVE date) — LLM cannot override
     if reason.startswith("nday:"):
         return 0
-    # GitHub repos: LLM cannot single-handedly push — regex must also agree
-    if source in _GITHUB_SOURCES and reason in ("GitHub+CVE",):
+    # GitHub/PoC-GitHub: never push — too noisy, real CVEs come from PSIRT sources
+    if source in _GITHUB_SOURCES:
         return 0
     return llm_wants_push
 _MAX_TOOL_ROUNDS = 5
@@ -1106,8 +1112,9 @@ def _is_fresh(source, text):
     regardless of source trust level (cve_published is the time standard).
 
     Freshness logic:
-      High-trust sources: always fresh (but still query NVD for pub date).
-      Low-trust sources: NVD published > 60 days = nday.
+      1. CVE year > 1 year old → nday, regardless of source (no exceptions).
+      2. Vendor PSIRT / ZDI / watchTowr / Rapid7 etc. → trust source timeliness.
+      3. Low-trust sources (Sploitus/GitHub) → require NVD published ≤ 60 days.
     """
     cves = CVE_RE.findall(text)
     # query NVD for all CVEs to populate cve_published
@@ -1557,13 +1564,15 @@ def _run(no_push=False):
         nvd = _nvd_detail_cache.get(cve_id.upper()) if cve_id and cve_id.startswith("CVE-") else None
         nvd_severity = nvd["severity"] if nvd else None
         nvd_cvss = nvd["cvss"] if nvd else None
+        # GitHub/PoC-GitHub: candidate only, never pushed at fetch stage
+        should_push = hit and it["source"] not in _GITHUB_SOURCES
         conn.execute(
             "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (key, cve_id, it["source"], it["title"][:300], it["link"],
-             it["summary"][:500], reason, 1 if hit else 0, now, cve_pub, nvd_severity, nvd_cvss),
+             it["summary"][:500], reason, 1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss),
         )
-        if hit:
+        if should_push:
             pushed += 1
         else:
             skipped_filter += 1
@@ -1793,7 +1802,7 @@ def _cmd_rescore_inner():
                 reason = f"nday:{reason}"
                 hit = False
 
-        new_pushed = 1 if hit else 0
+        new_pushed = 1 if (hit and source not in _GITHUB_SOURCES) else 0
         if reason != old_reason or new_pushed != old_pushed or cve_pub:
             conn.execute("UPDATE vulns SET reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
                         (reason, new_pushed, cve_pub, key))
