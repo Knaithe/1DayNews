@@ -73,6 +73,10 @@ _raw_chat_id = os.getenv("TG_CHAT_ID")   or _user_cfg.get("tg_chat_id", "")
 TG_CHAT_IDS  = [c.strip() for c in _raw_chat_id.split(",") if c.strip()]
 GH_TOKEN     = os.getenv("GH_TOKEN")     or _user_cfg.get("gh_token", "")
 NVD_API_KEY  = os.getenv("NVD_API_KEY") or _user_cfg.get("nvd_api_key", "")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or _user_cfg.get("deepseek_api_key", "")
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")   or _user_cfg.get("openai_api_key", "")
+LLM_MODEL    = os.getenv("LLM_MODEL")   or _user_cfg.get("llm_model", "deepseek-chat")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL") or _user_cfg.get("llm_base_url", "")
 PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
@@ -809,6 +813,171 @@ def _backfill_nvd_severity(conn):
     if updated:
         conn.commit()
         log.info(f"backfill_nvd_severity: updated {updated} records")
+
+
+# ================== LLM ENRICHMENT ==================
+_LLM_SYSTEM_PROMPT = """You are a vulnerability intelligence analyst. Assess whether a vulnerability is a genuine, fresh, exploitable threat.
+
+## Verdict categories:
+- 1day_rce: Fresh (≤60 days), remotely exploitable code/command execution on a widely deployed target. CRITICAL priority.
+- 1day_high: Fresh, high-severity non-RCE (auth bypass, pre-auth SSRF, privilege escalation on major products). HIGH priority.
+- 1day_low: Fresh but low impact (authenticated-only, niche product, limited blast radius). Monitor only.
+- nday: Old vulnerability (>60 days) or rehash of known info (new PoC for old CVE, aggregator re-indexing).
+- noise: Not a real threat (personal project with 0 users, CTF/homework, marketing, non-security content).
+
+## Rules:
+1. Vendor PSIRTs (Fortinet/Cisco/PaloAlto/MSRC) + CVSS ≥ 9.0 → almost always 1day_rce.
+2. GitHub repos: check if the repo has actual exploit code vs placeholder. 0-star personal forks = noise.
+3. "Linux kernel" CVE from NVD/GitHub with no real-world exploit = usually noise (automated reservation).
+4. Use tools when the title/summary is ambiguous — fetch the actual advisory page or NVD details.
+5. Chinese vuln databases (Chaitin) entries are curated — if listed, likely real.
+
+Output ONLY JSON (no markdown):
+{"verdict": "1day_rce|1day_high|1day_low|nday|noise", "confidence": 0.0-1.0, "notes": "one-sentence rationale"}
+"""
+
+_ENRICH_TOOLS = [
+    {"type": "function", "function": {
+        "name": "fetch_nvd_detail",
+        "description": "Get NVD detail for a CVE: CVSS score, severity, full description, published date.",
+        "parameters": {"type": "object", "properties": {"cve_id": {"type": "string"}}, "required": ["cve_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "fetch_source_page",
+        "description": "Fetch text content of a URL (advisory page, blog post). Returns first 2000 chars.",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+    }},
+    {"type": "function", "function": {
+        "name": "search_github",
+        "description": "Search GitHub for PoC/exploit repositories related to a CVE.",
+        "parameters": {"type": "object", "properties": {"cve_id": {"type": "string"}}, "required": ["cve_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "search_chaitin",
+        "description": "Search Chaitin Stack vuldb (Chinese vulnerability database) for details.",
+        "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]},
+    }},
+]
+
+_VERDICT_PUSH = {"1day_rce": 1, "1day_high": 1, "1day_low": 0, "nday": 0, "noise": 0}
+_MAX_TOOL_ROUNDS = 5
+
+
+def _llm_chat(messages, tools=None):
+    """Call OpenAI-compatible chat API. Returns response dict or None."""
+    api_key = DEEPSEEK_API_KEY or OPENAI_API_KEY
+    if not api_key:
+        return None
+    base_url = LLM_BASE_URL or (
+        "https://api.deepseek.com" if DEEPSEEK_API_KEY else "https://api.openai.com"
+    )
+    payload = {"model": LLM_MODEL, "messages": messages, "temperature": 0.1, "max_tokens": 1024}
+    if tools:
+        payload["tools"] = tools
+    try:
+        r = requests.post(f"{base_url.rstrip('/')}/v1/chat/completions", json=payload,
+                          headers={"Authorization": f"Bearer {api_key}",
+                                   "Content-Type": "application/json"},
+                          timeout=30)
+        if r.status_code != 200:
+            log.warning(f"LLM API {r.status_code}: {r.text[:200]}")
+            return None
+        return r.json()
+    except Exception as ex:
+        log.warning(f"LLM API err: {ex}")
+        return None
+
+
+def _tool_fetch_nvd_detail(cve_id):
+    detail = _nvd_detail(cve_id)
+    return json.dumps(detail, ensure_ascii=False) if detail else '{"error": "not found in NVD"}'
+
+def _tool_fetch_source_page(url):
+    try:
+        r = _get_with_retry(SESS, url, timeout=15)
+        text = re.sub(r"<[^>]+>", " ", r.text)
+        return re.sub(r"\s+", " ", text).strip()[:2000]
+    except Exception as ex:
+        return json.dumps({"error": str(ex)})
+
+def _tool_search_github(cve_id):
+    headers = {"Accept": "application/vnd.github+json"}
+    if GH_TOKEN:
+        headers["Authorization"] = f"Bearer {GH_TOKEN}"
+    try:
+        r = _get_with_retry(SESS, "https://api.github.com/search/repositories",
+            params={"q": f"{cve_id} in:name,description", "sort": "stars", "per_page": 5},
+            headers=headers, timeout=15)
+        if r.status_code != 200:
+            return json.dumps({"error": f"HTTP {r.status_code}"})
+        repos = [{"name": rr["full_name"], "desc": (rr.get("description") or "")[:200],
+                  "stars": rr["stargazers_count"], "url": rr["html_url"]}
+                 for rr in r.json().get("items", [])]
+        return json.dumps(repos, ensure_ascii=False)
+    except Exception as ex:
+        return json.dumps({"error": str(ex)})
+
+def _tool_search_chaitin(keyword):
+    s = requests.Session()
+    try:
+        s.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://stack.chaitin.com/vuldb/index",
+                          "Origin": "https://stack.chaitin.com", "Accept": "application/json"})
+        r = s.get(CHAITIN_API_URL, params={"limit": 5, "offset": 0, "search": keyword}, timeout=15)
+        if r.status_code != 200:
+            return json.dumps({"error": f"HTTP {r.status_code}"})
+        items = r.json().get("data", {}).get("list", [])
+        return json.dumps([{"cve": v.get("cve_id", ""), "title": v.get("title", ""),
+                            "severity": v.get("severity", ""), "summary": (v.get("summary") or "")[:300]}
+                           for v in items], ensure_ascii=False)
+    except Exception as ex:
+        return json.dumps({"error": str(ex)})
+    finally:
+        s.close()
+
+_TOOL_DISPATCH = {
+    "fetch_nvd_detail": _tool_fetch_nvd_detail,
+    "fetch_source_page": _tool_fetch_source_page,
+    "search_github": _tool_search_github,
+    "search_chaitin": _tool_search_chaitin,
+}
+
+
+def _enrich_one(record):
+    """Run LLM agent loop on one vulnerability. Returns (verdict, notes) or (None, None)."""
+    key, cve_id, source, title, link, summary, reason, severity, cvss = record
+    user_msg = (
+        f"Assess this vulnerability:\n"
+        f"CVE: {cve_id or 'N/A'}\nSource: {source}\nTitle: {title}\n"
+        f"URL: {link or 'N/A'}\nSummary: {summary or 'N/A'}\n"
+        f"Regex match: {reason}\nCVSS: {cvss or 'unknown'}\nSeverity: {severity or 'unknown'}"
+    )
+    messages = [{"role": "system", "content": _LLM_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg}]
+    for _ in range(_MAX_TOOL_ROUNDS):
+        resp = _llm_chat(messages, tools=_ENRICH_TOOLS)
+        if resp is None:
+            return None, None
+        msg = resp["choices"][0]["message"]
+        if msg.get("tool_calls"):
+            messages.append(msg)
+            for tc in msg["tool_calls"]:
+                fn = _TOOL_DISPATCH.get(tc["function"]["name"])
+                args = json.loads(tc["function"]["arguments"])
+                result = fn(**args) if fn else json.dumps({"error": "unknown tool"})
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+            continue
+        # final response
+        content = (msg.get("content") or "").strip()
+        content = re.sub(r"^```json\s*", "", content)
+        content = re.sub(r"```\s*$", "", content)
+        try:
+            data = json.loads(content)
+            return data.get("verdict"), data.get("notes", "")
+        except (json.JSONDecodeError, AttributeError):
+            log.warning(f"LLM unparseable for {cve_id}: {content[:200]}")
+            return None, None
+    log.warning(f"LLM exceeded {_MAX_TOOL_ROUNDS} rounds for {cve_id}")
+    return None, None
 
 
 def _warm_nvd_cache(conn):
