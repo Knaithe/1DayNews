@@ -100,13 +100,13 @@ IOSchedulingPriority=7  # 最低 I/O 优先级
 
 ## 调度策略
 
-后台调度器内置在 web 进程中，默认每 300 秒（5 分钟）执行 `fetch → enrich` 一轮。可通过环境变量调整：
+`vuln-monitor.service` 运行 `daemon` 子命令，内部循环执行 `fetch → enrich`，默认间隔 300 秒（5 分钟）。可通过环境变量调整：
 
 ```bash
 FETCH_INTERVAL=600   # 改为 10 分钟
 ```
 
-调度器使用 `SingletonLock` 防止并发：如果上一轮还没跑完，下一轮自动跳过，不会堆积。
+daemon 使用 `SingletonLock` 防止并发：如果上一轮还没跑完，下一轮自动跳过，不会堆积。
 
 ## 运行时观察命令
 
@@ -119,12 +119,14 @@ tail -f /opt/vuln-monitor/vuln_monitor.log
 
 # 服务状态
 systemctl status vuln-monitor.service
+systemctl status vuln-web.service
 
-# 重启（web + 调度器一起重启）
-sudo systemctl restart vuln-monitor.service
+# 重启
+sudo systemctl restart vuln-monitor.service   # 采集
+sudo systemctl restart vuln-web.service       # Web
 
 # 完全停掉
-sudo systemctl disable --now vuln-monitor.service
+sudo systemctl disable --now vuln-monitor.service vuln-web.service
 
 # 看 cache 有多少条（诊断）
 sqlite3 /opt/vuln-monitor/vuln_cache.db "SELECT COUNT(*) FROM vulns;"

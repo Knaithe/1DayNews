@@ -1,0 +1,24 @@
+[Unit]
+Description=vuln-monitor web dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=vuln
+Group=vuln
+WorkingDirectory=/opt/vuln-monitor
+Environment=VULN_DATA_DIR=/opt/vuln-monitor
+ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/web.py --public
+Restart=on-failure
+RestartSec=5
+
+# sandboxing — web is read-only except token file
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/vuln-monitor/.web_token
+ReadOnlyPaths=/opt/vuln-monitor
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -95,10 +95,10 @@ ssh -L 8001:127.0.0.1:8001 user@server
 
 ## 生产部署
 
-Web 仪表盘和后台调度已合并为单一服务 `vuln-monitor.service`，`deploy.sh` 自动安装。
+`deploy.sh` 已自动安装并启用 `vuln-web.service`。手动管理：
 
 ```bash
-sudo systemctl status vuln-monitor.service    # 查看状态
-sudo systemctl restart vuln-monitor.service   # 重启
-journalctl -u vuln-monitor.service -f         # 查看日志
+sudo systemctl status vuln-web.service    # 查看状态
+sudo systemctl restart vuln-web.service   # 重启
+journalctl -u vuln-web.service -f         # 查看日志
 ```

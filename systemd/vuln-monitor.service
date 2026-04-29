@@ -1,5 +1,5 @@
 [Unit]
-Description=vuln-monitor: web dashboard + background fetch/enrich
+Description=vuln-monitor: fetch + enrich daemon
 Documentation=https://github.com/Knaithe/1DayNews
 After=network-online.target
 Wants=network-online.target
@@ -11,9 +11,9 @@ Group=vuln
 WorkingDirectory=/opt/vuln-monitor
 EnvironmentFile=/opt/vuln-monitor/.env
 Environment=VULN_DATA_DIR=/opt/vuln-monitor
-ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/web.py --public
+ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/vuln_monitor.py daemon
 Restart=on-failure
-RestartSec=10
+RestartSec=30
 
 # resource caps
 Nice=10

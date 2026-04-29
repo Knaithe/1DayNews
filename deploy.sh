@@ -121,25 +121,26 @@ fi
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 chmod 600 "$APP_DIR/.env"
 
-# ---------- 6. systemd unit ----------
-echo ">>> [6/7] installing systemd unit ..."
-# clean up legacy units from older deploys
+# ---------- 6. systemd units ----------
+echo ">>> [6/7] installing systemd units ..."
+# clean up legacy timer from older deploys
 systemctl disable --now vuln-monitor.timer 2>/dev/null || true
-systemctl disable --now vuln-web.service   2>/dev/null || true
-rm -f "$SYSTEMD_DIR/vuln-monitor.timer" "$SYSTEMD_DIR/vuln-web.service"
+rm -f "$SYSTEMD_DIR/vuln-monitor.timer"
 install -m 644 "$APP_DIR/systemd/vuln-monitor.service" "$SYSTEMD_DIR/vuln-monitor.service"
+install -m 644 "$APP_DIR/systemd/vuln-web.service"     "$SYSTEMD_DIR/vuln-web.service"
 systemctl daemon-reload
 
-# ---------- 7. enable service ----------
-echo ">>> [7/7] enabling vuln-monitor.service ..."
+# ---------- 7. enable services ----------
+echo ">>> [7/7] enabling services ..."
 systemctl enable --now vuln-monitor.service
+systemctl enable --now vuln-web.service
 
 echo
 echo "============================================================"
 echo "  deployed."
-echo "  status:     systemctl status vuln-monitor.service"
+echo "  monitor:    systemctl status vuln-monitor.service"
+echo "  web:        systemctl status vuln-web.service"
 echo "  dashboard:  http://127.0.0.1:8001 (SSH tunnel for remote)"
 echo "  logs:       journalctl -u vuln-monitor.service -f"
 echo "  file logs:  tail -f $APP_DIR/vuln_monitor.log"
-echo "  restart:    sudo systemctl restart vuln-monitor.service"
 echo "============================================================"

@@ -1879,6 +1879,25 @@ def _cmd_rebuild_inner():
 
 
 # ================== MAIN ==================
+def cmd_daemon(args):
+    """Long-running daemon: fetch → enrich → sleep → repeat."""
+    interval = int(os.getenv("FETCH_INTERVAL", "300"))
+    log.info(f"daemon started: interval={interval}s")
+    while True:
+        try:
+            with SingletonLock(LOCK_FILE):
+                _run(no_push=True)
+                _cmd_enrich_inner()
+        except RuntimeError as ex:
+            log.warning(f"daemon skip (lock held): {ex}")
+        except Exception:
+            import traceback
+            tb = traceback.format_exc()
+            log.exception("daemon error")
+            send_failure_alert(f"daemon error:\n{tb[-3500:]}")
+        time.sleep(interval)
+
+
 def main():
     parser = argparse.ArgumentParser(description="vuln-monitor: 0day/1day RCE intelligence")
     sub = parser.add_subparsers(dest="cmd")
@@ -1912,9 +1931,13 @@ def main():
     ep = sub.add_parser("enrich", help="LLM-based enrichment: NVD severity + AI verdict + push")
     ep.add_argument("--dry", action="store_true", help="Enrich but do not push to Telegram")
 
+    sub.add_parser("daemon", help="Long-running: fetch+enrich loop (env FETCH_INTERVAL=300)")
+
     args = parser.parse_args()
 
-    if args.cmd == "query":
+    if args.cmd == "daemon":
+        cmd_daemon(args)
+    elif args.cmd == "query":
         cmd_query(args)
     elif args.cmd == "brief":
         cmd_brief(args)
