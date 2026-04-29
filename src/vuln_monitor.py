@@ -80,6 +80,9 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL")   or _user_cfg.get("llm_base_url", "")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE") or _user_cfg.get("llm_temperature", "0.1"))
 LLM_MAX_TOKENS  = int(os.getenv("LLM_MAX_TOKENS")    or _user_cfg.get("llm_max_tokens", "1024"))
 LLM_TIMEOUT     = int(os.getenv("LLM_TIMEOUT")        or _user_cfg.get("llm_timeout", "60"))
+LLM_MAX_CONTEXT = int(os.getenv("LLM_MAX_CONTEXT")    or _user_cfg.get("llm_max_context", "8192"))
+LLM_REASONING   = os.getenv("LLM_REASONING_EFFORT")   or _user_cfg.get("llm_reasoning_effort", "")
+LLM_TOP_P       = float(os.getenv("LLM_TOP_P")        or _user_cfg.get("llm_top_p", "0.9"))
 PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
@@ -985,25 +988,30 @@ def _enrich_one(record):
     )
     messages = [{"role": "system", "content": _get_llm_prompt()},
                 {"role": "user", "content": user_msg}]
+    # rough token estimate: 1 token ≈ 4 chars. Reserve max_tokens for output.
+    _ctx_budget = (LLM_MAX_CONTEXT - LLM_MAX_TOKENS) * 4
     try:
         for _ in range(_MAX_TOOL_ROUNDS):
             kwargs = {
                 "model": _llm_model, "messages": messages,
                 "tools": _ENRICH_TOOLS, "max_tokens": LLM_MAX_TOKENS,
                 "temperature": LLM_TEMPERATURE,
+                "top_p": LLM_TOP_P,
             }
+            if LLM_REASONING:
+                kwargs["reasoning_effort"] = LLM_REASONING
             try:
                 resp = _llm_client.chat.completions.create(**kwargs)
             except Exception as first_err:
-                # some models don't support temperature or tools — retry without
-                if "temperature" in str(first_err).lower():
-                    kwargs.pop("temperature", None)
-                    resp = _llm_client.chat.completions.create(**kwargs)
-                elif "tool" in str(first_err).lower():
-                    kwargs.pop("tools", None)
-                    resp = _llm_client.chat.completions.create(**kwargs)
+                err_msg = str(first_err).lower()
+                # some models don't support certain params — retry without
+                for param in ("temperature", "top_p", "reasoning_effort", "tools"):
+                    if param in err_msg:
+                        kwargs.pop(param, None)
+                        break
                 else:
                     raise
+                resp = _llm_client.chat.completions.create(**kwargs)
             choice = resp.choices[0]
             if choice.message.tool_calls:
                 messages.append(choice.message)
@@ -1014,7 +1022,10 @@ def _enrich_one(record):
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     result = fn(**args) if fn else json.dumps({"error": "unknown tool"})
-                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                    # truncate tool result to fit context budget
+                    total_chars = sum(len(str(m.get("content", "") if isinstance(m, dict) else getattr(m, "content", ""))) for m in messages)
+                    remaining = max(500, _ctx_budget - total_chars)
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result[:remaining]})
                 continue
             # final response
             content = (choice.message.content or "").strip()
