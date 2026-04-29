@@ -881,7 +881,11 @@ _MAX_TOOL_ROUNDS = 5
 
 def _get_llm_client():
     """Create OpenAI-compatible client. Returns (client, model) or (None, None)."""
-    from openai import OpenAI
+    try:
+        from openai import OpenAI
+    except ImportError:
+        log.error("openai package not installed. Run: pip install openai")
+        return None, None
     api_key = DEEPSEEK_API_KEY or OPENAI_API_KEY
     if not api_key:
         return None, None
@@ -891,16 +895,28 @@ def _get_llm_client():
     else:
         base_url = LLM_BASE_URL or "https://api.openai.com"
         model = LLM_MODEL or "gpt-4o-mini"
-    client = OpenAI(api_key=api_key, base_url=f"{base_url.rstrip('/')}/v1", timeout=LLM_TIMEOUT)
+    # avoid double /v1 if user already included it in base_url
+    base = base_url.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    client = OpenAI(api_key=api_key, base_url=base, timeout=LLM_TIMEOUT)
+    log.info(f"LLM client: model={model} base_url={base}")
     return client, model
 
 _llm_client = None
 _llm_model = None
 
 
+_TOOL_MAX_OUTPUT = 3000  # truncate tool output to avoid blowing context
+
 def _tool_fetch_nvd_detail(cve_id):
     detail = _nvd_detail(cve_id)
-    return json.dumps(detail, ensure_ascii=False) if detail else '{"error": "not found in NVD"}'
+    if not detail:
+        return '{"error": "not found in NVD"}'
+    # truncate description to avoid huge output
+    if detail.get("description"):
+        detail["description"] = detail["description"][:1000]
+    return json.dumps(detail, ensure_ascii=False)[:_TOOL_MAX_OUTPUT]
 
 def _tool_fetch_source_page(url):
     try:
@@ -923,7 +939,7 @@ def _tool_search_github(cve_id):
         repos = [{"name": rr["full_name"], "desc": (rr.get("description") or "")[:200],
                   "stars": rr["stargazers_count"], "url": rr["html_url"]}
                  for rr in r.json().get("items", [])]
-        return json.dumps(repos, ensure_ascii=False)
+        return json.dumps(repos, ensure_ascii=False)[:_TOOL_MAX_OUTPUT]
     except Exception as ex:
         return json.dumps({"error": str(ex)})
 
@@ -938,7 +954,7 @@ def _tool_search_chaitin(keyword):
         items = r.json().get("data", {}).get("list", [])
         return json.dumps([{"cve": v.get("cve_id", ""), "title": v.get("title", ""),
                             "severity": v.get("severity", ""), "summary": (v.get("summary") or "")[:300]}
-                           for v in items], ensure_ascii=False)
+                           for v in items], ensure_ascii=False)[:_TOOL_MAX_OUTPUT]
     except Exception as ex:
         return json.dumps({"error": str(ex)})
     finally:
@@ -971,10 +987,14 @@ def _enrich_one(record):
                 {"role": "user", "content": user_msg}]
     try:
         for _ in range(_MAX_TOOL_ROUNDS):
-            resp = _llm_client.chat.completions.create(
-                model=_llm_model, messages=messages,
-                tools=_ENRICH_TOOLS, temperature=LLM_TEMPERATURE, max_tokens=LLM_MAX_TOKENS,
-            )
+            kwargs = {
+                "model": _llm_model, "messages": messages,
+                "tools": _ENRICH_TOOLS, "max_tokens": LLM_MAX_TOKENS,
+            }
+            # some models (DeepSeek-R1) don't support temperature
+            if "reasoner" not in _llm_model and "r1" not in _llm_model.lower():
+                kwargs["temperature"] = LLM_TEMPERATURE
+            resp = _llm_client.chat.completions.create(**kwargs)
             choice = resp.choices[0]
             if choice.message.tool_calls:
                 messages.append(choice.message)
