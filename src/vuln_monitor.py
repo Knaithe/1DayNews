@@ -576,6 +576,9 @@ def init_db(conn):
     if "vuln_type" in _new_cols:
         conn.execute("UPDATE vulns SET vuln_type='RCE' WHERE reason LIKE '%RCE%'")
         conn.execute("UPDATE vulns SET vuln_type='other' WHERE vuln_type IS NULL AND reason NOT IN ('excluded','no hit')")
+    # enforce hard locks on existing data: GitHub/nday must not remain pushed
+    conn.execute("UPDATE vulns SET pushed=0 WHERE source IN ('GitHub','PoC-GitHub') AND pushed=1")
+    conn.execute("UPDATE vulns SET pushed=0 WHERE freshness='nday' AND pushed=1")
     conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
@@ -911,15 +914,14 @@ def _resolve_pushed(verdict, freshness, source):
     """Determine pushed value from LLM verdict, respecting hard constraints.
 
     Rules:
-      - freshness='nday' → locked 0, LLM annotates only
-      - GitHub/PoC-GitHub → locked 0, candidate only (real CVEs push via PSIRT source)
+      - freshness must be '1day' to push — nday/None/unknown all locked 0
+      - GitHub/PoC-GitHub → locked 0, candidate only
       - LLM can downgrade any record, but cannot override freshness or source trust
     """
     llm_wants_push = _VERDICT_PUSH.get(verdict, 0)
-    # nday is objective (based on CVE date) — LLM cannot override
-    if freshness == "nday":
+    # only 1day is pushable — nday, None (no CVE / unverified) all blocked
+    if freshness != "1day":
         return 0
-    # GitHub/PoC-GitHub: never push — too noisy, real CVEs come from PSIRT sources
     if source in _GITHUB_SOURCES:
         return 0
     return llm_wants_push
@@ -1131,19 +1133,21 @@ def _is_fresh(source, text):
     cutoff = now - timedelta(days=_FRESHNESS_DAYS)
     year = now.year
     latest_pub_str = None
-    has_recent_cve = False
+    has_nvd_confirmed_recent = False
+    has_recent_year = False
     for c in cves:
         pub_dt, pub_str = _nvd_published_date(c.upper())
         if pub_str:
             if latest_pub_str is None or pub_str > latest_pub_str:
                 latest_pub_str = pub_str
             if pub_dt and pub_dt >= cutoff:
-                has_recent_cve = True
+                has_nvd_confirmed_recent = True
         else:
+            # NVD unavailable — track year for high-trust fallback only
             try:
                 cve_year = int(c.split("-")[1])
                 if cve_year >= year - 1:
-                    has_recent_cve = True
+                    has_recent_year = True
             except (IndexError, ValueError):
                 pass
     # hard cutoff: if ALL CVEs are > 1 year old → nday
@@ -1160,14 +1164,14 @@ def _is_fresh(source, text):
                 break
         if all_old:
             return False, latest_pub_str, "old_cve"
-    # high-trust sources: trust timeliness
+    # high-trust sources: trust timeliness (NVD confirmed OR recent CVE year)
     if source in FRESH_SOURCES:
         return True, latest_pub_str, "high_trust_source"
     # low-trust sources: no CVE = can't verify
     if not cves:
         return False, None, "no_cve_low_trust"
-    # low-trust with CVE: check NVD date
-    if has_recent_cve:
+    # low-trust with CVE: require actual NVD confirmation, year fallback not trusted
+    if has_nvd_confirmed_recent:
         return True, latest_pub_str, "nvd_60d"
     return False, latest_pub_str, "nvd_60d"
 
@@ -1565,9 +1569,15 @@ def _run(no_push=False):
             freshness = "1day" if fresh else "nday"
             if hit and not fresh:
                 hit = False
-        elif hit and it["source"] in FRESH_SOURCES:
+        elif it["source"] in FRESH_SOURCES:
+            # high-trust source without CVE (e.g. Fortinet FG-IR)
             freshness = "1day"
             fresh_reason = "high_trust_source"
+        elif hit:
+            # low-trust source, no CVE → can't verify freshness
+            freshness = "nday"
+            fresh_reason = "no_cve_low_trust"
+            hit = False
 
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
@@ -1809,9 +1819,13 @@ def _cmd_rescore_inner():
             freshness = "1day" if fresh else "nday"
             if hit and not fresh:
                 hit = False
-        elif hit and source in FRESH_SOURCES:
+        elif source in FRESH_SOURCES:
             freshness = "1day"
             fresh_reason = "high_trust_source"
+        elif hit:
+            freshness = "nday"
+            fresh_reason = "no_cve_low_trust"
+            hit = False
 
         new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES) else 0
         if reason != old_reason or new_pushed != old_pushed or cve_pub:

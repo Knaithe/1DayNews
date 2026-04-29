@@ -120,6 +120,14 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+def _db_has_column(conn, col):
+    """Check if a column exists in vulns table (for pre-migration DB compat)."""
+    try:
+        conn.execute(f"SELECT {col} FROM vulns LIMIT 0")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
 
 def _int_arg(name, default, lo, hi):
     try:
@@ -141,7 +149,7 @@ def api_vulns():
     if source:
         where.append("source = ?"); params.append(source)
     vuln_type = request.args.get("vuln_type", "").strip()
-    if vuln_type:
+    if vuln_type and _db_has_column(conn, "vuln_type"):
         where.append("vuln_type = ?"); params.append(vuln_type)
     reason = request.args.get("reason", "").strip()
     if reason:
@@ -156,7 +164,17 @@ def api_vulns():
         where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
         params.extend([cutoff_date, cutoff_ts])
 
-    sql = "SELECT cve_id,source,title,link,summary,reason,vuln_type,freshness,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes,tg_sent FROM vulns"
+    # build column list — handle pre-migration DBs missing new columns
+    base_cols = "cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes,tg_sent"
+    has_vt = _db_has_column(conn, "vuln_type")
+    has_fr = _db_has_column(conn, "freshness")
+    extra = []
+    if has_vt:
+        extra.append("vuln_type")
+    if has_fr:
+        extra.append("freshness")
+    cols = base_cols + ("," + ",".join(extra) if extra else "")
+    sql = f"SELECT {cols} FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
@@ -168,7 +186,8 @@ def api_vulns():
     return jsonify([{
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
-        "vuln_type": r["vuln_type"], "freshness": r["freshness"],
+        "vuln_type": r["vuln_type"] if has_vt else None,
+        "freshness": r["freshness"] if has_fr else None,
         "pushed": bool(r["pushed"]),
         "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
         "cve_published": r["cve_published"],
