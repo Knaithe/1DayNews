@@ -61,12 +61,43 @@ python src/vuln_monitor.py fetch     # 配置后自动推送
 
 优先级：环境变量 > 配置文件 > 空（dry mode）。
 
-### 可选凭证
+### 凭证配置
 
 | 变量 | 用途 | 获取 |
 |---|---|---|
+| `TG_BOT_TOKEN` | Telegram 推送 | @BotFather |
+| `TG_CHAT_ID` | 推送目标（逗号分隔多个） | @userinfobot / @RawDataBot |
 | `GH_TOKEN` | GitHub API 限频 60→5000 次/小时 | GitHub → Settings → Developer settings → PAT |
 | `NVD_API_KEY` | NVD API 限频 5→50 次/30 秒 | https://nvd.nist.gov/developers/request-an-api-key |
+| `DEEPSEEK_API_KEY` | LLM 研判（推荐，便宜） | https://platform.deepseek.com |
+| `OPENAI_API_KEY` | LLM 研判（备选） | https://platform.openai.com |
+| `LLM_MODEL` | 模型名（默认 deepseek-chat） | 可选 |
+| `LLM_BASE_URL` | 自定义 API 端点 | 可选，兼容任意 OpenAI 格式 |
+
+### LLM 研判（可选）
+
+配了 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 后，`enrich` 子命令会用 LLM 做二次研判：
+
+```bash
+# .env 加一行（二选一）
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
+# 或
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+```
+
+LLM 会自主决定是否调用工具（查 NVD、抓源页面、搜 GitHub/长亭），输出结构化研判：
+
+| LLM 判定 | 含义 | 推送 |
+|---|---|---|
+| `1day_rce` | 新鲜 + 远程代码执行 | 推 |
+| `1day_high` | 新鲜 + 高危非 RCE | 推 |
+| `1day_low` | 新鲜但低影响 | 不推 |
+| `nday` | 老洞 | 不推 |
+| `noise` | 噪声 | 不推 |
+
+不配 LLM key 时 enrich 跳过 LLM 步骤，直接走正则结果推送，不影响现有功能。
+
+部署后 systemd 自动串联 `fetch --no-push && enrich`，无需手动操作。
 
 ## 一键部署
 
