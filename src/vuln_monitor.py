@@ -832,16 +832,22 @@ _LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. As
 ## Verdict categories:
 - 1day_rce: Fresh (≤60 days), remotely exploitable code/command execution on a widely deployed target. CRITICAL priority.
 - 1day_high: Fresh, high-severity non-RCE (auth bypass, pre-auth SSRF, privilege escalation on major products). HIGH priority.
-- 1day_low: Fresh but low impact (authenticated-only, niche product, limited blast radius). Monitor only.
+- 1day_low: Fresh but low impact (authenticated-only local exploit, niche product with <1000 deployments, info disclosure only). Monitor only.
 - nday: Old vulnerability (>60 days) or rehash of known info (new PoC for old CVE, aggregator re-indexing).
 - noise: Not a real threat (personal project with 0 users, CTF/homework, marketing, non-security content).
 
 ## Rules:
 1. Vendor PSIRTs (Fortinet/Cisco/PaloAlto/MSRC) + CVSS ≥ 9.0 → almost always 1day_rce.
-2. GitHub repos: check if the repo has actual exploit code vs placeholder. 0-star personal forks = noise.
-3. "Linux kernel" CVE from NVD/GitHub with no real-world exploit = usually noise (automated reservation).
-4. Use tools when the title/summary is ambiguous — fetch the actual advisory page or NVD details.
-5. Chinese vuln databases (Chaitin) entries are curated — if listed, likely real.
+2. CVSS is a REFERENCE, not the sole criterion. These are at least 1day_high REGARDLESS of CVSS score:
+   - Unauthenticated RCE / command injection / code execution on any widely deployed product
+   - Unauthenticated SQL injection on management platforms (FortiAnalyzer, FortiManager, Cisco ISE, etc.)
+   - Authentication bypass on network infrastructure (firewalls, VPN, access control)
+   - Pre-auth file write / path traversal leading to code execution
+3. 1day_low is ONLY for: authenticated-only local exploits, info disclosure without escalation path, niche products.
+4. GitHub repos: check if the repo has actual exploit code vs placeholder. 0-star personal forks = noise.
+5. "Linux kernel" CVE from NVD/GitHub with no real-world exploit = usually noise (automated reservation).
+6. Use tools when the title/summary is ambiguous — fetch the actual advisory page or NVD details.
+7. Chinese vuln databases (Chaitin) entries are curated — if listed, likely real.
 
 Output ONLY JSON (no markdown):
 {"verdict": "1day_rce|1day_high|1day_low|nday|noise", "confidence": 0.0-1.0, "notes": "one-sentence rationale"}
@@ -1090,7 +1096,22 @@ def _is_fresh(source, text):
                     has_recent_cve = True
             except (IndexError, ValueError):
                 pass
-    # high-trust sources: always fresh
+    # hard cutoff: if ALL CVEs in text are > 1 year old, it's nday
+    # exception: CISA_KEV tracks active exploitation — old CVE in KEV = fresh intel
+    if cves and source != "CISA_KEV":
+        all_old = True
+        for c in cves:
+            try:
+                cve_year = int(c.split("-")[1])
+                if cve_year >= year - 1:
+                    all_old = False
+                    break
+            except (IndexError, ValueError):
+                all_old = False
+                break
+        if all_old:
+            return False, latest_pub_str
+    # high-trust sources: fresh (vendor publishes advisories for current issues)
     if source in FRESH_SOURCES:
         return True, latest_pub_str
     # low-trust sources: no CVE = can't verify freshness = nday
@@ -1273,6 +1294,9 @@ def fetch_github_cve():
                 log.warning(f"GitHub {q} status {r.status_code}: {r.text[:150]}")
                 continue
             for repo in r.json().get("items", []):
+                stars = repo.get("stargazers_count", 0)
+                if stars < 3:
+                    continue
                 name = repo["full_name"]
                 desc = repo.get("description") or ""
                 out.append({
@@ -1479,8 +1503,11 @@ def _run(no_push=False):
 
         # ── Exploitability (severity) ──
         hit, reason = score(it["text"])
-        if not hit and reason != "excluded" and it["source"] == "GitHub" and CVE_RE.search(it["text"]):
-            hit, reason = True, "GitHub+CVE"
+        if not hit and reason != "excluded" and it["source"] in ("GitHub", "PoC-GitHub") and CVE_RE.search(it["text"]):
+            # only promote if description signals real exploit/PoC content
+            _desc = it["text"].lower()
+            if any(kw in _desc for kw in ("exploit", "poc", "proof of concept", "rce", "shell", "payload", "remote code")):
+                hit, reason = True, "GitHub+CVE"
 
         # ── Freshness (1day vs nday) ──
         cve_pub = None
@@ -1721,8 +1748,10 @@ def _cmd_rescore_inner():
         text = f"{title or ''}\n{summary or ''}"
 
         hit, reason = score(text)
-        if not hit and reason != "excluded" and source == "GitHub" and CVE_RE.search(text):
-            hit, reason = True, "GitHub+CVE"
+        if not hit and reason != "excluded" and source in ("GitHub", "PoC-GitHub") and CVE_RE.search(text):
+            _desc = text.lower()
+            if any(kw in _desc for kw in ("exploit", "poc", "proof of concept", "rce", "shell", "payload", "remote code")):
+                hit, reason = True, "GitHub+CVE"
         cve_pub = None
         if hit:
             fresh, cve_pub = _is_fresh(source or "", text)
