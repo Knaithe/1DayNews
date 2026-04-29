@@ -528,6 +528,7 @@ def init_db(conn):
             link       TEXT,
             summary    TEXT,
             reason     TEXT,
+            freshness  TEXT,
             pushed     INTEGER DEFAULT 0,
             created_at REAL NOT NULL,
             cve_published TEXT,
@@ -549,6 +550,7 @@ def init_db(conn):
         ("llm_verdict",   "TEXT"),
         ("llm_notes",     "TEXT"),
         ("tg_sent",       "INTEGER DEFAULT 0"),
+        ("freshness",     "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
@@ -558,6 +560,11 @@ def init_db(conn):
     # backfill tg_sent: mark already-pushed records as sent (only on first migration)
     if "tg_sent" in _new_cols:
         conn.execute("UPDATE vulns SET tg_sent = 1 WHERE pushed = 1")
+    # backfill freshness from legacy reason field (only on first migration)
+    if "freshness" in _new_cols:
+        conn.execute("UPDATE vulns SET freshness='nday', reason=SUBSTR(reason,6) WHERE reason LIKE 'nday:%'")
+        conn.execute("UPDATE vulns SET freshness='1day' WHERE freshness IS NULL AND reason NOT IN ('excluded','no hit')")
+        conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON vulns(created_at)")
@@ -665,13 +672,12 @@ def _auto_enrich():
     """
     conn = _get_conn()
     init_db(conn)
-    # Match both strong reasons and their nday: variants (e.g. "nday:RCE+asset/CVE")
+    # Match strong reasons (freshness is now a separate field)
     reason_clauses = []
     reason_params = []
     for r in STRONG_REASONS:
         reason_clauses.append("reason = ?")
-        reason_clauses.append("reason = ?")
-        reason_params.extend([r, f"nday:{r}"])
+        reason_params.append(r)
     candidates = conn.execute(
         f"SELECT key, cve_id, source, title, link FROM vulns "
         f"WHERE (link IS NULL OR link = '') AND ({' OR '.join(reason_clauses)})",
@@ -716,9 +722,9 @@ def score(text):
         return True, "RCE+asset/CVE"
     if asset and cve:
         return True, "asset+CVE"
-    # ── nday tier: store only ──
+    # ── exploit-only tier: RCE keywords + "exploit" but no asset/CVE match ──
     if rce and "exploit" in low:
-        return False, "nday:RCE+exploit"
+        return False, "RCE+exploit"
     # ── noise tier ──
     return False, "no hit"
 
@@ -891,17 +897,17 @@ _VERDICT_PUSH = {"1day_rce": 1, "1day_high": 1, "1day_low": 0, "nday": 0, "noise
 
 _GITHUB_SOURCES = frozenset({"GitHub", "PoC-GitHub"})
 
-def _resolve_pushed(verdict, reason, source):
+def _resolve_pushed(verdict, freshness, source):
     """Determine pushed value from LLM verdict, respecting hard constraints.
 
     Rules:
-      - nday (by regex freshness check) → locked 0, LLM annotates only
+      - freshness='nday' → locked 0, LLM annotates only
       - GitHub/PoC-GitHub → locked 0, candidate only (real CVEs push via PSIRT source)
       - LLM can downgrade any record, but cannot override freshness or source trust
     """
     llm_wants_push = _VERDICT_PUSH.get(verdict, 0)
     # nday is objective (based on CVE date) — LLM cannot override
-    if reason.startswith("nday:"):
+    if freshness == "nday":
         return 0
     # GitHub/PoC-GitHub: never push — too noisy, real CVEs come from PSIRT sources
     if source in _GITHUB_SOURCES:
@@ -1552,11 +1558,14 @@ def _run(no_push=False):
 
         # ── Freshness (1day vs nday) ──
         cve_pub = None
+        freshness = None
         if hit:
             fresh, cve_pub = _is_fresh(it["source"], it["text"])
+            freshness = "1day" if fresh else "nday"
             if not fresh:
-                reason = f"nday:{reason}"
                 hit = False
+        elif reason == "RCE+exploit":
+            freshness = "nday"
 
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
@@ -1567,10 +1576,10 @@ def _run(no_push=False):
         # GitHub/PoC-GitHub: candidate only, never pushed at fetch stage
         should_push = hit and it["source"] not in _GITHUB_SOURCES
         conn.execute(
-            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,freshness,pushed,created_at,cve_published,severity,cvss) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (key, cve_id, it["source"], it["title"][:300], it["link"],
-             it["summary"][:500], reason, 1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss),
+             it["summary"][:500], reason, freshness, 1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss),
         )
         if should_push:
             pushed += 1
@@ -1657,7 +1666,7 @@ def _query_rows(args, quality_filter=False):
         where.append("link IS NOT NULL AND link != ''")
         where.append("source IS NOT NULL AND source != ''")
         if not args.reason:
-            where.append("reason NOT IN ('no hit','excluded') AND reason NOT LIKE 'nday:%'")
+            where.append("reason NOT IN ('no hit','excluded') AND freshness != 'nday'")
 
     sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
     if where:
@@ -1731,7 +1740,7 @@ def cmd_brief(args):
         print(f"[explain] db total={total}  still_no_link={no_link}  strong_without_link={strong_no_link}")
         if strong_no_link:
             print(f"[explain] {strong_no_link} strong records could not be enriched (run 'rebuild' to fix from feeds)")
-        print(f"[explain] quality filter: link NOT NULL, source NOT NULL, reason NOT IN (no hit, excluded, nday:*)")
+        print(f"[explain] quality filter: link NOT NULL, source NOT NULL, reason NOT IN (no hit, excluded), freshness != nday")
         print()
     rows = _query_rows(args, quality_filter=True)
     if not rows:
@@ -1796,16 +1805,19 @@ def _cmd_rescore_inner():
             if any(kw in _desc for kw in ("exploit", "poc", "proof of concept", "rce", "shell", "payload", "remote code")):
                 hit, reason = True, "GitHub+CVE"
         cve_pub = None
+        freshness = None
         if hit:
             fresh, cve_pub = _is_fresh(source or "", text)
+            freshness = "1day" if fresh else "nday"
             if not fresh:
-                reason = f"nday:{reason}"
                 hit = False
+        elif reason == "RCE+exploit":
+            freshness = "nday"
 
         new_pushed = 1 if (hit and source not in _GITHUB_SOURCES) else 0
         if reason != old_reason or new_pushed != old_pushed or cve_pub:
-            conn.execute("UPDATE vulns SET reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
-                        (reason, new_pushed, cve_pub, key))
+            conn.execute("UPDATE vulns SET reason=?, freshness=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
+                        (reason, freshness, new_pushed, cve_pub, key))
             if new_pushed > old_pushed:
                 upgraded += 1
             elif new_pushed < old_pushed:
@@ -1839,9 +1851,9 @@ def _cmd_enrich_inner(dry=False):
         log.info("enrich: no LLM API key, skipping LLM enrichment")
     else:
         candidates = conn.execute(
-            "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss "
+            "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss, freshness "
             "FROM vulns WHERE llm_verified = 0 "
-            "AND reason NOT IN ('excluded', 'no hit', 'nday:RCE+exploit') "
+            "AND reason NOT IN ('excluded', 'no hit', 'RCE+exploit') "
             "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
 
@@ -1878,7 +1890,7 @@ def _cmd_enrich_inner(dry=False):
                     llm_errors += 1
                     continue
                 for rec in records:
-                    pushed_val = _resolve_pushed(verdict, rec[6], rec[2])
+                    pushed_val = _resolve_pushed(verdict, rec[9], rec[2])
                     conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                         (verdict, (notes or "")[:500], pushed_val, rec[0]))
@@ -1891,7 +1903,7 @@ def _cmd_enrich_inner(dry=False):
                 if verdict is None:
                     llm_errors += 1
                     continue
-                pushed_val = _resolve_pushed(verdict, rec[6], rec[2])
+                pushed_val = _resolve_pushed(verdict, rec[9], rec[2])
                 conn.execute(
                     "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                     (verdict, (notes or "")[:500], pushed_val, rec[0]))
@@ -1905,7 +1917,8 @@ def _cmd_enrich_inner(dry=False):
             if llm_errors > 3:
                 fallback = conn.execute(
                     "UPDATE vulns SET llm_verified=1, llm_verdict='fallback_regex', pushed=1 "
-                    "WHERE llm_verified=0 AND reason IN ('RCE+asset/CVE','asset+CVE','GitHub+CVE')"
+                    "WHERE llm_verified=0 AND reason IN ('RCE+asset/CVE','asset+CVE') "
+                    "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub')"
                 ).rowcount
                 conn.commit()
                 if fallback:

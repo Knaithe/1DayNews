@@ -154,7 +154,7 @@ def api_vulns():
         where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
         params.extend([cutoff_date, cutoff_ts])
 
-    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes,tg_sent FROM vulns"
+    sql = "SELECT cve_id,source,title,link,summary,reason,freshness,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes,tg_sent FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
@@ -165,7 +165,7 @@ def api_vulns():
     conn.close()
     return jsonify([{
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
-        "url": r["link"], "summary": r["summary"], "reason": r["reason"],
+        "url": r["link"], "summary": r["summary"], "reason": r["reason"], "freshness": r["freshness"],
         "pushed": bool(r["pushed"]),
         "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
         "cve_published": r["cve_published"],
