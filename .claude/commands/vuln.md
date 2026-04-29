@@ -66,6 +66,14 @@ $PY $SCRIPT rescore
 ```
 Run after changing score()/filter rules. Updates reason and pushed fields for all existing records without re-fetching.
 
+### enrich — LLM-based enrichment + NVD CVSS + push
+```bash
+$PY $SCRIPT enrich              # NVD 补 CVSS + LLM 研判 + 推送
+$PY $SCRIPT enrich --dry        # 研判但不推送
+$PY $SCRIPT fetch --no-push     # 只采集不推送（配合 enrich）
+```
+Requires DEEPSEEK_API_KEY or OPENAI_API_KEY in .env. Without LLM key, skips AI and pushes regex results.
+
 ## How to interpret user requests
 
 Map natural language to the right subcommand:

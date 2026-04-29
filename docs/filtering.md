@@ -171,6 +171,65 @@ python src/vuln_monitor.py rescore
 
 **注意**：rescore 只更新 reason 和 pushed 字段，不重新 fetch 数据，也不补发 Telegram 推送。
 
+## LLM 研判（enrich）
+
+正则粗筛之后，`enrich` 子命令用 LLM（DeepSeek/GPT）做二次核验。
+
+### 流水线
+
+```
+fetch --no-push → 入库（pushed 由正则初判）
+    ↓
+enrich:
+    1. NVD 补 severity/cvss（_backfill_nvd_severity，每轮 20 条）
+    2. 自动 approve：高信任源 + CVSS ≥ 9.0 → 1day_rce（不花 LLM token）
+    3. LLM agent loop：发漏洞信息 → LLM 自主决定调工具 → 返回 verdict
+    4. 更新 pushed 字段
+    5. 推送 pushed=1 AND tg_sent=0 → Telegram
+```
+
+### LLM 可调用的工具
+
+| 工具 | 功能 | LLM 自主决定是否调用 |
+|---|---|---|
+| `fetch_nvd_detail(cve_id)` | NVD 完整信息（CVSS/描述/发布日期） | 需要确认严重等级 |
+| `fetch_source_page(url)` | 抓源页面正文（截断 2000 字符） | 需要看公告原文 |
+| `search_github(cve_id)` | 搜 GitHub PoC 仓库（stars/描述） | 确认是否有真实 exploit |
+| `search_chaitin(keyword)` | 搜长亭漏洞库 | 需要中文漏洞信息 |
+
+最多 5 轮工具调用，防止失控。
+
+### LLM verdict
+
+| verdict | 推送 | 含义 |
+|---|---|---|
+| `1day_rce` | 推 | 新鲜 + 远程代码执行 + 广泛部署 |
+| `1day_high` | 推 | 新鲜 + 高危非 RCE |
+| `1day_low` | 不推 | 新鲜但低影响 |
+| `nday` | 不推 | 老洞 |
+| `noise` | 不推 | 个人项目/噪声 |
+| `fallback_regex` | 推 | LLM 故障，回退正则结果 |
+
+### 技术实现
+
+- SDK：`openai` Python 包（兼容 DeepSeek/OpenAI/任意兼容端点）
+- 客户端：`OpenAI(api_key=..., base_url=...)`
+- 成本控制：CVE 去重（同 CVE 多源只审一次）+ 自动 approve + 50 条/轮上限
+- 回退：LLM 连续 3 次错误 → 走正则结果推送
+
+### 配置
+
+```bash
+# .env 加一行（二选一）
+DEEPSEEK_API_KEY=sk-xxx          # 默认模型 deepseek-chat
+OPENAI_API_KEY=sk-xxx            # 默认模型 gpt-4o-mini
+# 可选覆盖
+LLM_MODEL=deepseek-reasoner
+LLM_BASE_URL=http://localhost:11434/v1   # 本地 Ollama 等
+```
+
+不配 LLM key 时 enrich 跳过 LLM，直接推正则结果。
+
 ## 调优方法
 
 **跑一周 DRY，再看日志**。不要凭空猜黑白名单。

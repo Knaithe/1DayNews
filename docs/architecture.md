@@ -5,13 +5,15 @@
 ```
 1DayNews/
 ├── src/
-│   └── vuln_monitor.py        # 主程序（所有逻辑都在这一个文件里）
+│   ├── vuln_monitor.py        # 主程序（采集/评分/LLM研判/推送）
+│   └── web.py                 # Web 仪表盘（Flask + waitress）
 ├── scripts/
 │   ├── probe_feeds.py         # 源失效时用来批量探测替代 URL 的工具
 │   └── configure.py           # 本地交互式写 ~/.config/vuln-monitor/config.json
 ├── systemd/
-│   ├── vuln-monitor.service   # oneshot 服务单元（带完整沙盒指令）
-│   └── vuln-monitor.timer     # 5 分钟触发定时器
+│   ├── vuln-monitor.service   # oneshot：fetch --no-push && enrich（串联）
+│   ├── vuln-monitor.timer     # 5 分钟触发定时器
+│   └── vuln-web.service       # Web 仪表盘常驻服务
 ├── docs/
 │   ├── architecture.md        # 本文
 │   ├── sources.md             # 信息源清单与取舍理由
