@@ -110,9 +110,8 @@ SOURCE_COLORS = {
     "Chaitin": "#10b981", "ThreatBook": "#22d3ee", "GitHub": "#a78bfa",
     "Sploitus_Citrix": "#fb923c", "Sploitus_Ivanti": "#fb923c", "Sploitus_F5": "#fb923c",
 }
-REASON_COLORS = {
+VULN_TYPE_COLORS = {
     "RCE": "#ef4444", "other": "#f97316",
-    "excluded": "#4b5563", "no hit": "#374151",
 }
 
 
@@ -141,6 +140,9 @@ def api_vulns():
     source = request.args.get("source", "").strip()
     if source:
         where.append("source = ?"); params.append(source)
+    vuln_type = request.args.get("vuln_type", "").strip()
+    if vuln_type:
+        where.append("vuln_type = ?"); params.append(vuln_type)
     reason = request.args.get("reason", "").strip()
     if reason:
         where.append("reason = ?"); params.append(reason)
@@ -154,7 +156,7 @@ def api_vulns():
         where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
         params.extend([cutoff_date, cutoff_ts])
 
-    sql = "SELECT cve_id,source,title,link,summary,reason,freshness,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes,tg_sent FROM vulns"
+    sql = "SELECT cve_id,source,title,link,summary,reason,vuln_type,freshness,pushed,created_at,cve_published,severity,cvss,llm_verdict,llm_notes,tg_sent FROM vulns"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
@@ -165,7 +167,8 @@ def api_vulns():
     conn.close()
     return jsonify([{
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
-        "url": r["link"], "summary": r["summary"], "reason": r["reason"], "freshness": r["freshness"],
+        "url": r["link"], "summary": r["summary"], "reason": r["reason"],
+        "vuln_type": r["vuln_type"], "freshness": r["freshness"],
         "pushed": bool(r["pushed"]),
         "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
         "cve_published": r["cve_published"],
@@ -471,10 +474,10 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill" data-days="60">60 days</button>
 </div>
 
-<div class="filter-row" id="reasonRow" role="group" aria-label="Filter by reason">
-  <button type="button" class="cat-pill active" data-reason="">All</button>
-  <button type="button" class="cat-pill" data-reason="RCE">RCE</button>
-  <button type="button" class="cat-pill" data-reason="other">other</button>
+<div class="filter-row" id="typeRow" role="group" aria-label="Filter by type">
+  <button type="button" class="cat-pill active" data-vtype="">All</button>
+  <button type="button" class="cat-pill" data-vtype="RCE">RCE</button>
+  <button type="button" class="cat-pill" data-vtype="other">other</button>
 </div>
 
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
@@ -504,12 +507,12 @@ const SRC_STYLE = {
   Sploitus_Citrix:{bg:"#FED7AA",fg:"#9a3412"}, Sploitus_Ivanti:{bg:"#FED7AA",fg:"#9a3412"},
   Sploitus_F5:{bg:"#FED7AA",fg:"#9a3412"},
 };
-const REASON_STYLE = {
+const TYPE_STYLE = {
   "RCE":   {bg:"#FEE2E2",fg:"#991b1b"},
   "other": {bg:"#FEF3C7",fg:"#92400e"},
 };
 
-let debounceTimer, activeCat = '', activeReason = '', activeDays = '7';
+let debounceTimer, activeCat = '', activeType = '', activeDays = '7';
 let currentLimit = 100;
 const MAX_LIMIT = 500;
 document.getElementById('loadMoreBtn').addEventListener('click', () => {
@@ -529,8 +532,8 @@ function updateCatPills() { setActive('#catRow', 'src', activeCat); }
 document.querySelectorAll('#timeRow .cat-pill').forEach(p => p.addEventListener('click', () => {
   activeDays = p.dataset.days; setActive('#timeRow', 'days', activeDays); loadVulns();
 }));
-document.querySelectorAll('#reasonRow .cat-pill').forEach(p => p.addEventListener('click', () => {
-  activeReason = p.dataset.reason; setActive('#reasonRow', 'reason', activeReason); loadVulns();
+document.querySelectorAll('#typeRow .cat-pill').forEach(p => p.addEventListener('click', () => {
+  activeType = p.dataset.vtype; setActive('#typeRow', 'vtype', activeType); loadVulns();
 }));
 
 async function loadSources() {
@@ -598,7 +601,7 @@ async function loadVulns(append=false) {
   const q = document.getElementById('searchInput').value.trim();
   if (q) params.set('q', q);
   if (activeCat) params.set('source', activeCat);
-  if (activeReason) params.set('reason', activeReason);
+  if (activeType) params.set('vuln_type', activeType);
   if (activeDays) params.set('days', activeDays);
   if (document.getElementById('pushedFilter').checked) params.set('pushed', '1');
   params.set('limit', String(currentLimit));
@@ -619,11 +622,11 @@ async function loadVulns(append=false) {
     moreBtn.textContent = currentLimit >= MAX_LIMIT ? 'Reached display cap (500)' : 'Load more';
     container.innerHTML = vulns.map((v,i) => {
       const ss = SRC_STYLE[v.source] || {bg:'#F3F4F6',fg:'#374151'};
-      const rs = REASON_STYLE[v.reason] || {bg:'#F3F4F6',fg:'#6B7280'};
+      const ts = TYPE_STYLE[v.vuln_type] || {bg:'#F3F4F6',fg:'#6B7280'};
       return `<div class="vcard ${sevClass(v)}" style="animation:fadeUp .4s ${i*.03}s both">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
-          <span class="reason-badge" style="background:${rs.bg};color:${rs.fg}">${esc(v.reason||'-')}</span>
+          <span class="reason-badge" style="background:${ts.bg};color:${ts.fg}">${esc(v.vuln_type||v.reason||'-')}</span>
           ${sevBadge(v)}
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
           <span class="vcard-date">${esc(v.date||'-')}</span>
