@@ -11,7 +11,7 @@
 - **Web 仪表盘**：暖色卡片式界面，实时搜索过滤，只绑 localhost（SSH 隧道访问）
 - **自动补全**：缺字段的高价值记录自动从 CVE/公告编号/标题推断链接和来源
 - **AI 驱动**：Claude Code skill（`/vuln`），自然语言查询漏洞情报
-- **LLM 研判**：DeepSeek/GPT function calling 自主核验 1day/RCE/影响面，NVD CVSS 自动补全
+- **LLM 研判**：DeepSeek/GPT function calling 核验漏洞真实性，verdict = confirmed/not_relevant/noise，NVD CVSS 自动补全
 - **双服务部署**：monitor daemon + web 仪表盘各一个 systemd 服务，无需 timer
 - **生产级**：文件锁防并发、失败重试、日志轮转、告警限流、一键部署/卸载
 
@@ -163,38 +163,48 @@ LLM_TOP_P=0.9
 ### 判定逻辑
 
 ```
-漏洞记录
+漏洞记录进入
 │
-├─ regex score()
+├─ 1. regex score() → reason + vuln_type
 │  ├─ excluded → 不推，不审
 │  ├─ no hit → 不推，不审
-│  ├─ nday:RCE+exploit → 不推，不审
-│  ├─ RCE+asset/CVE ─┐
-│  ├─ asset+CVE ─────┤
-│  └─ GitHub+CVE ────┤（GitHub 源需描述含 exploit 关键词）
-│                     │
-├─ _is_fresh()  ←────┘
-│  ├─ CVE 年份 > 1 年 → nday, pushed=0（无例外）
-│  ├─ 高信任源（厂商 PSIRT/ZDI/watchTowr 等）→ fresh
-│  └─ 低信任源 → NVD ≤60 天才 fresh，否则 nday
+│  ├─ RCE+asset+CVE / RCE+asset / RCE+CVE → vuln_type=RCE
+│  └─ asset+CVE → vuln_type=other
 │
-├─ 源信任判定
-│  ├─ GitHub/PoC-GitHub → pushed=0（候选，永不直接推送）
-│  └─ 其他源 → pushed = hit
+├─ 2. freshness _is_fresh()（所有含 CVE 的记录都过）
+│  ├─ 所有 CVE 年份 > 1 年 → nday（无例外）
+│  ├─ 高信任源（厂商 PSIRT/ZDI/watchTowr 等）→ 1day
+│  └─ 低信任源 → NVD ≤60 天 1day，否则 nday
+│  └─ freshness_reason: old_cve / high_trust_source / nvd_60d / no_cve_low_trust
 │
-├─ LLM enrich → verdict = 1day_rce/1day_high/1day_low/nday/noise
-│  ├─ 高信任 + CVSS≥9 → 自动批准，不调 LLM
+├─ 3. 源信任
+│  ├─ GitHub/PoC-GitHub → pushed=0（候选，永不推送）
+│  └─ 其他 + vuln_type∈(RCE,other) + freshness=1day → pushed=1
+│
+├─ 4. LLM enrich → verdict: confirmed / not_relevant / noise
+│  ├─ 高信任 + CVSS≥9 → confirmed（自动，受 freshness/source 约束）
 │  └─ _resolve_pushed()
-│     ├─ reason = nday:* → 锁 0（LLM 不可推翻新鲜度）
-│     ├─ source = GitHub/PoC-GitHub → 锁 0（仅标注）
-│     └─ 其他 → LLM 决定（可降级，不可推翻 freshness）
+│     ├─ freshness=nday → 锁 0（LLM 不可推翻）
+│     ├─ GitHub/PoC-GitHub → 锁 0
+│     └─ 其他 → LLM 决定（只能降级）
 │
-└─ pushed=1 AND tg_sent=0 → Telegram 推送
+└─ 5. pushed=1 AND tg_sent=0 → Telegram 推送
 ```
 
-**核心规则：** regex 判 nday → 永不推送 · 低信任源老 CVE / 无 NVD 日期 → 永不推送 · GitHub 描述命中 → 只是候选 · LLM 可降级任何记录 · LLM 不可推翻 freshness
+**核心规则：** freshness=nday → 永不推送 · GitHub 源 → 仅候选 · LLM 只能降级 · LLM 不可推翻 freshness
 
-LLM 会调用工具（查 NVD、抓源页面、搜 GitHub/长亭），高信任源且已有 CVSS 数据时跳过工具调用直接判定。CVSS 仅作参考：未授权 RCE/命令注入/SQL 注入/认证绕过不论 CVSS 分数至少判 `1day_high`。工具调用轮次用尽时强制出结论。
+**数据字段：**
+
+| 字段 | 问什么 | 示例值 |
+|---|---|---|
+| `reason` | 详细匹配原因 | `RCE+asset+CVE` / `RCE+CVE` / `asset+CVE` |
+| `vuln_type` | 漏洞分类 | `RCE` / `other` |
+| `freshness` | 新鲜度 | `1day` / `nday` |
+| `freshness_reason` | 为什么 | `high_trust_source` / `nvd_60d` / `old_cve` |
+| `llm_verdict` | LLM 判定 | `confirmed` / `not_relevant` / `noise` |
+| `pushed` | 最终推送 | 0 / 1 |
+
+LLM 会调用工具（查 NVD、抓源页面、搜 GitHub/长亭），高信任源且已有 CVSS 数据时跳过工具调用直接判定。工具调用轮次用尽时强制出结论。
 
 不配 LLM key 时 enrich 跳过 LLM 步骤，直接走正则结果推送，不影响现有功能。
 

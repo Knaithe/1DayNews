@@ -89,7 +89,7 @@ React SPA + Contentstack CMS，API 需认证（401）。
 | A（高质量） | ZDI, MSRC, Cisco, Chaitin, ThreatBook | 50-100% |
 | B（有噪声） | Sploitus×3, Horizon3, Rapid7 | 20-40% |
 | B+ | DailyCVE | 42%（标题自带严重等级，覆盖面广） |
-| PoC | GitHub CVE Search, PoC-in-GitHub | 100%（纯 CVE PoC，GitHub+CVE 特判不漏推） |
+| PoC（候选） | GitHub CVE Search, PoC-in-GitHub | 不直接推送，仅标注（stars<3 过滤，真实 CVE 通过 PSIRT 源推送） |
 
 ## 添加新源
 

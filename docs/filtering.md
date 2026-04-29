@@ -63,52 +63,42 @@
 ```python
 def score(text):
     if _EXCLUDE_RE.search(text):
-        return False, "excluded"              # → noise
+        return False, "excluded", None
 
     rce   = bool(_RCE_RE.search(text))
     asset = any(k in text.lower() for k in ASSET_KEYWORDS)
     cve   = bool(CVE_RE.search(text))
 
-    # ── 1day 候选 ──
-    if rce and (asset or cve):
-        return True, "RCE+asset/CVE"          # → 1day 候选
+    if rce and asset and cve:
+        return True, "RCE+asset+CVE", "RCE"
+    if rce and asset:
+        return True, "RCE+asset", "RCE"
+    if rce and cve:
+        return True, "RCE+CVE", "RCE"
     if asset and cve:
-        return True, "asset+CVE"              # → 1day 候选
-
-    # ── 直接 nday ──
-    if rce and "exploit" in text.lower():
-        return False, "nday:RCE+exploit"      # 有 exploit = 不是新鲜窗口期
-
-    return False, "no hit"                    # → noise
+        return True, "asset+CVE", "other"
+    return False, "no hit", None
 ```
 
-`_run()` 中还有一条特判：**GitHub 源**（仅 GitHub 搜索，不含 PoC-GitHub）如果有 CVE 但 score 未命中 → `GitHub+CVE`（1day 候选）。PoC-GitHub 不走此特判，必须命中 score() 才推。
+返回三元组 `(hit, reason, vuln_type)`。`reason` 保留详细匹配信息用于分析，`vuln_type` 是简化分类（RCE / other）用于过滤和统计。
 
 ### 第二步：_is_fresh() — 1day 确认
 
-score() 命中的 1day 候选还要过 freshness 检查：
+**所有含 CVE 的记录**（不限 hit=True）都过 freshness 检查，统一记录 `cve_published` 和 `freshness`。返回三元组 `(fresh, pub_date, reason)`。
 
-```python
-def _is_fresh(source, text):
-    cves = CVE_RE.findall(text)
-    # 所有源都查 NVD 拿 cve_published（cve_published 是时间标准）
-    for cve in cves:
-        pub_dt, pub_str = _nvd_published_date(cve)  # 缓存：内存 → NVD API
-        if pub_dt and pub_dt >= now - 60天:
-            has_recent_cve = True
-        # NVD 不可用时回退 CVE 年份
-    if source in FRESH_SOURCES:
-        return True, latest_pub_str    # 高信任源：始终 fresh，但仍返回日期
-    if not cves:
-        return False, None             # 低信任源 + 无 CVE：无法验证 = nday
-    return has_recent_cve, latest_pub_str
-```
+判定逻辑：
+1. 所有 CVE 年份 > 1 年 → `nday`（`freshness_reason=old_cve`），无例外
+2. 高信任源 → `1day`（`freshness_reason=high_trust_source`）
+3. 低信任源 + CVE NVD 发布 ≤60 天 → `1day`（`freshness_reason=nvd_60d`）
+4. 低信任源 + CVE > 60 天 → `nday`（`freshness_reason=nvd_60d`）
+5. 低信任源 + 无 CVE → `nday`（`freshness_reason=no_cve_low_trust`）
+6. 高信任源无 CVE（如 Fortinet FG-IR）→ `1day`（`freshness_reason=high_trust_source`）
+
+多 CVE 记录：只要有一个近期 CVE 就不整体判 nday。
 
 NVD 查询两级缓存（启动时 `_warm_nvd_cache` 从 DB 预热内存）：
 1. `_nvd_cache`（内存 dict，区分"查到日期" / "确认不存在" / "限频待重试"）
 2. NVD API（支持 `NVD_API_KEY`，限频 5→50 次/30 秒）
-
-不通过 → reason 加 `nday:` 前缀，降级到 nday 档。发布日期存入 `cve_published` 字段。
 
 ### 源信任分层
 
@@ -124,32 +114,26 @@ NVD 查询两级缓存（启动时 `_warm_nvd_cache` 从 DB 预热内存）：
 | **高信任** | fresh | fresh | **fresh** |
 | **低信任** | fresh | **nday** | **nday** |
 
-### reason 完整对照
+### 字段对照
 
-| reason | 档位 | 推送 | 判定路径 |
-|---|---|---|---|
-| `RCE+asset/CVE` | 1day | 推 | RCE 关键词 + 资产或 CVE + freshness 通过 |
-| `asset+CVE` | 1day | 推 | 资产关键词 + CVE + freshness 通过 |
-| `GitHub+CVE` | 1day | 推 | GitHub 搜索源 + 有 CVE（特判） + freshness 通过 |
-| `nday:RCE+exploit` | nday | 不推 | 有 RCE + exploit 字样（score 直接判 nday） |
-| `nday:RCE+asset/CVE` | nday | 不推 | 高危但 CVE 太老（低信任源 freshness 不通过） |
-| `nday:asset+CVE` | nday | 不推 | 同上 |
-| `nday:GitHub+CVE` | nday | 不推 | 同上 |
-| `excluded` | noise | 不推 | 命中排除规则（XSS/CSRF/DoS 等） |
-| `no hit` | noise | 不推 | 未命中任何规则 |
+| 字段 | 含义 | 值 |
+|---|---|---|
+| `reason` | 详细匹配原因 | `RCE+asset+CVE` / `RCE+asset` / `RCE+CVE` / `asset+CVE` / `excluded` / `no hit` |
+| `vuln_type` | 简化分类 | `RCE` / `other` / `NULL` |
+| `freshness` | 新鲜度 | `1day` / `nday` / `NULL` |
+| `freshness_reason` | 判定依据 | `high_trust_source` / `nvd_60d` / `old_cve` / `no_cve_low_trust` |
 
 ### 判定场景示例
 
-| 场景 | score | fresh | 最终 | reason |
-|---|---|---|---|---|
-| Fortinet 发 RCE 公告 | 命中 | 通过（高信任） | **1day** | `RCE+asset/CVE` |
-| CISA KEV 新增条目 | 命中 | 通过（高信任） | **1day** | `RCE+asset/CVE` |
-| GitHub 搜到 CVE-2026-* 仓库 | 特判 | 通过（近期 CVE） | **1day** | `GitHub+CVE` |
-| Sploitus 收录老洞 CVE-2021-* | 命中 | 不通过（老 CVE） | **nday** | `nday:RCE+asset/CVE` |
-| Sploitus 标题含 exploit | RCE+exploit | — | **nday** | `nday:RCE+exploit` |
-| Sploitus 无 CVE 的老固件 exploit | 命中 | 不通过（无 CVE） | **nday** | `nday:RCE+asset/CVE` |
-| PoC-GitHub 新仓库无 RCE 关键词 | 未命中 | — | **noise** | `no hit` |
-| XSS 漏洞公告 | excluded | — | **noise** | `excluded` |
+| 场景 | reason | vuln_type | freshness | freshness_reason | pushed |
+|---|---|---|---|---|---|
+| Fortinet 发 RCE 公告 | RCE+asset+CVE | RCE | 1day | high_trust_source | 1 |
+| Cisco 认证绕过公告 | asset+CVE | other | 1day | high_trust_source | 1 |
+| Fortinet FG-IR 无 CVE | RCE+asset | RCE | 1day | high_trust_source | 1 |
+| Sploitus 老洞 CVE-2021-* | RCE+asset+CVE | RCE | nday | old_cve | 0 |
+| Sploitus 无 CVE exploit | no hit | NULL | NULL | — | 0 |
+| GitHub PoC 仓库 | RCE+CVE | RCE | 1day | nvd_60d | 0（GitHub 源锁定） |
+| XSS 漏洞公告 | excluded | NULL | NULL | — | 0 |
 
 性能：`RCE_PATTERNS` 和 `EXCLUDE_PATTERNS` 预编译为联合正则（`_RCE_RE` / `_EXCLUDE_RE`），`ASSET_KEYWORDS` 转 `frozenset`。
 
@@ -164,12 +148,12 @@ python src/vuln_monitor.py rescore
 
 | 输出 | 含义 |
 |---|---|
-| upgraded | 之前 no hit / nday → 现在变成 1day（如新增了 GitHub+CVE 特判） |
-| downgraded | 之前推了 → 现在变成 nday（如 RCE+exploit 降级） |
+| upgraded | 之前 no hit / nday → 现在变成 1day |
+| downgraded | 之前推了 → 现在变成 nday |
 | reason-changed | pushed 状态没变但 reason 文字更新了 |
 | unchanged | 完全一样，无需更新 |
 
-**注意**：rescore 只更新 reason 和 pushed 字段，不重新 fetch 数据，也不补发 Telegram 推送。
+**注意**：rescore 只更新 reason/vuln_type/freshness/pushed 字段，不重新 fetch 数据，也不补发 Telegram 推送。GitHub/PoC-GitHub 源即使 rescore 后 hit=True 也不推送。
 
 ## LLM 研判（enrich）
 
@@ -182,9 +166,9 @@ fetch --no-push → 入库（pushed 由正则初判）
     ↓
 enrich:
     1. NVD 补 severity/cvss（_backfill_nvd_severity，每轮 20 条）
-    2. 自动 approve：高信任源 + CVSS ≥ 9.0 → 1day_rce（不花 LLM token）
+    2. 自动 approve：高信任源 + CVSS ≥ 9.0 → confirmed（受 freshness/source 约束）
     3. LLM agent loop：发漏洞信息 → LLM 自主决定调工具 → 返回 verdict
-    4. 更新 pushed 字段
+    4. _resolve_pushed()：freshness=nday → 锁 0，GitHub 源 → 锁 0，其他由 LLM 决定
     5. 推送 pushed=1 AND tg_sent=0 → Telegram
 ```
 
@@ -201,21 +185,22 @@ enrich:
 
 ### LLM verdict
 
-| verdict | 推送 | 含义 |
+| verdict | 含义 | pushed 影响 |
 |---|---|---|
-| `1day_rce` | 推 | 新鲜 + 远程代码执行 + 广泛部署 |
-| `1day_high` | 推 | 新鲜 + 高危非 RCE |
-| `1day_low` | 不推 | 新鲜但低影响 |
-| `nday` | 不推 | 老洞 |
-| `noise` | 不推 | 个人项目/噪声 |
-| `fallback_regex` | 推 | LLM 故障，回退正则结果 |
+| `confirmed` | 真实漏洞，值得关注 | 维持（受 freshness/source 约束） |
+| `not_relevant` | 真实但低影响（需认证/冷门产品） | 降级为 0 |
+| `noise` | 伪造/垃圾/非漏洞 | 降级为 0 |
+
+LLM 只能降级（confirmed→not_relevant/noise），不能推翻 freshness=nday 或 GitHub 源锁定。
+
+高信任源且已有 CVSS 数据时跳过工具调用，单次 API 直接判定。工具调用轮次用尽时强制出结论。
 
 ### 技术实现
 
 - SDK：`openai` Python 包（兼容 DeepSeek/OpenAI/任意兼容端点）
 - 客户端：`OpenAI(api_key=..., base_url=...)`
-- 成本控制：CVE 去重（同 CVE 多源只审一次）+ 自动 approve + 50 条/轮上限
-- 回退：LLM 连续 3 次错误 → 走正则结果推送
+- 成本控制：CVE 去重（同 CVE 多源只审一次）+ 自动 approve + 500 条/轮上限
+- 回退：LLM 连续 3 次错误 → 走正则结果推送（仅 freshness=1day 且非 GitHub 源）
 
 ### 配置
 
