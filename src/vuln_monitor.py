@@ -1131,9 +1131,8 @@ def _is_fresh(source, text):
                     has_recent_cve = True
             except (IndexError, ValueError):
                 pass
-    # hard cutoff: if ALL CVEs in text are > 1 year old, it's nday
-    # exception: CISA_KEV tracks active exploitation — old CVE in KEV = fresh intel
-    if cves and source != "CISA_KEV":
+    # hard cutoff: if ALL CVEs in text are > 1 year old, it's nday regardless of source
+    if cves:
         all_old = True
         for c in cves:
             try:
