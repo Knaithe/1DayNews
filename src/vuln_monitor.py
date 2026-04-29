@@ -712,24 +712,25 @@ def score(text):
 
 _NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _FRESHNESS_DAYS = 60
-_nvd_cache = {}  # in-memory cache: cve_id → "YYYY-MM-DD" or "" (not found) or None (rate-limited)
+_nvd_cache = {}       # cve_id → {"published":"YYYY-MM-DD","cvss":float,"severity":str} or "" or None
+_nvd_detail_cache = {}  # full detail cache for LLM tools
 
-def _nvd_published_date(cve_id):
-    """Query NVD for CVE published date. Returns (datetime, "YYYY-MM-DD") or (None, None).
+def _nvd_detail(cve_id):
+    """Query NVD for CVE detail. Returns dict or None.
 
-    Two-level cache: in-memory dict → NVD API.
-    DB cache is handled by the caller (cve_published column written on INSERT/UPDATE).
+    Returns: {"published": "YYYY-MM-DD", "cvss": float, "severity": str, "description": str}
+    Cache: in-memory dict → NVD API. DB cache handled by caller.
     """
     cve_upper = cve_id.upper()
-    # check in-memory cache
+    # check full detail cache
+    if cve_upper in _nvd_detail_cache:
+        return _nvd_detail_cache[cve_upper] or None
+    # check date-only cache (from _warm_nvd_cache)
     if cve_upper in _nvd_cache:
         cached = _nvd_cache[cve_upper]
-        if cached is None:
-            return None, None  # rate-limited last time, retry on next run
-        if cached == "":
-            return None, None  # confirmed not in NVD
-        dt = datetime.fromisoformat(cached).replace(tzinfo=timezone.utc)
-        return dt, cached
+        if cached is None or cached == "":
+            return None
+        # have date but need full detail — query NVD
     # query NVD
     try:
         hdrs = {"User-Agent": "vuln-monitor/1.0 (security research)"}
@@ -737,27 +738,77 @@ def _nvd_published_date(cve_id):
             hdrs["apiKey"] = NVD_API_KEY
         r = requests.get(_NVD_API, params={"cveId": cve_upper}, timeout=10, headers=hdrs)
         if r.status_code in (403, 429):
-            # rate-limited — don't cache permanently, retry next run
             _nvd_cache[cve_upper] = None
-            return None, None
+            return None
         if r.status_code != 200:
-            _nvd_cache[cve_upper] = ""  # permanent miss
-            return None, None
+            _nvd_cache[cve_upper] = ""
+            return None
         vulns = r.json().get("vulnerabilities", [])
         if not vulns:
-            _nvd_cache[cve_upper] = ""  # CVE not in NVD
-            return None, None
-        pub = vulns[0]["cve"].get("published", "")
+            _nvd_cache[cve_upper] = ""
+            _nvd_detail_cache[cve_upper] = None
+            return None
+        cve_data = vulns[0]["cve"]
+        # published date
+        pub = cve_data.get("published", "")
+        pub_str = None
         if pub:
             dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             pub_str = dt.strftime("%Y-%m-%d")
-            _nvd_cache[cve_upper] = pub_str
-            return dt, pub_str
+        # CVSS v3.1 (fallback to v3.0, then v2)
+        cvss = None
+        severity = None
+        for metric_key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+            metrics = cve_data.get("metrics", {}).get(metric_key, [])
+            if metrics:
+                cvss_data = metrics[0].get("cvssData", {})
+                cvss = cvss_data.get("baseScore")
+                severity = cvss_data.get("baseSeverity", "").lower()
+                break
+        if cvss and not severity:
+            severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
+        # description
+        descs = cve_data.get("descriptions", [])
+        desc_en = next((d["value"] for d in descs if d.get("lang") == "en"), "")
+        detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc_en}
+        _nvd_cache[cve_upper] = pub_str or ""
+        _nvd_detail_cache[cve_upper] = detail
+        return detail
     except Exception:
-        _nvd_cache[cve_upper] = None  # network error, retry next run
+        _nvd_cache[cve_upper] = None
+    return None
+
+def _nvd_published_date(cve_id):
+    """Thin wrapper: returns (datetime, "YYYY-MM-DD") or (None, None)."""
+    detail = _nvd_detail(cve_id)
+    if detail and detail.get("published"):
+        pub_str = detail["published"]
+        dt = datetime.fromisoformat(pub_str).replace(tzinfo=timezone.utc)
+        return dt, pub_str
     return None, None
+
+def _backfill_nvd_severity(conn):
+    """Backfill severity and CVSS for records that have CVE but no severity.
+    Rate-limited to 20 records per cycle.
+    """
+    rows = conn.execute(
+        "SELECT key, cve_id FROM vulns "
+        "WHERE cve_id IS NOT NULL AND cve_id LIKE 'CVE-%' AND severity IS NULL "
+        "LIMIT 20"
+    ).fetchall()
+    updated = 0
+    for key, cve_id in rows:
+        detail = _nvd_detail(cve_id)
+        if detail and detail.get("cvss"):
+            conn.execute(
+                "UPDATE vulns SET severity=?, cvss=?, cve_published=COALESCE(cve_published,?) WHERE key=?",
+                (detail["severity"], detail["cvss"], detail.get("published"), key))
+            updated += 1
+    if updated:
+        conn.commit()
+        log.info(f"backfill_nvd_severity: updated {updated} records")
 
 
 def _warm_nvd_cache(conn):
@@ -1206,11 +1257,15 @@ def _run():
 
         tag = _extract_id(it["text"], it["link"])
         cve_id = tag if tag != "N/A" else None
+        # extract severity/cvss from NVD detail cache (populated by _is_fresh → _nvd_detail)
+        nvd = _nvd_detail_cache.get(cve_id.upper()) if cve_id and cve_id.startswith("CVE-") else None
+        nvd_severity = nvd["severity"] if nvd else None
+        nvd_cvss = nvd["cvss"] if nvd else None
         conn.execute(
-            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,pushed,created_at,cve_published) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,pushed,created_at,cve_published,severity,cvss) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (key, cve_id, it["source"], it["title"][:300], it["link"],
-             it["summary"][:500], reason, 1 if hit else 0, now, cve_pub),
+             it["summary"][:500], reason, 1 if hit else 0, now, cve_pub, nvd_severity, nvd_cvss),
         )
         if not hit:
             skipped_filter += 1
