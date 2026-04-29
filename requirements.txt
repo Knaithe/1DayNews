@@ -2,3 +2,4 @@ feedparser>=6.0.10
 requests>=2.31.0
 flask>=3.0.0
 waitress>=3.0.0
+openai>=1.0.0

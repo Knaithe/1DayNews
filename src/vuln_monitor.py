@@ -863,32 +863,23 @@ _VERDICT_PUSH = {"1day_rce": 1, "1day_high": 1, "1day_low": 0, "nday": 0, "noise
 _MAX_TOOL_ROUNDS = 5
 
 
-def _llm_chat(messages, tools=None):
-    """Call OpenAI-compatible chat API. Returns response dict or None."""
+def _get_llm_client():
+    """Create OpenAI-compatible client. Returns (client, model) or (None, None)."""
+    from openai import OpenAI
     api_key = DEEPSEEK_API_KEY or OPENAI_API_KEY
     if not api_key:
-        return None
+        return None, None
     if DEEPSEEK_API_KEY:
         base_url = LLM_BASE_URL or "https://api.deepseek.com"
         model = LLM_MODEL or "deepseek-chat"
     else:
         base_url = LLM_BASE_URL or "https://api.openai.com"
         model = LLM_MODEL or "gpt-4o-mini"
-    payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 1024}
-    if tools:
-        payload["tools"] = tools
-    try:
-        r = requests.post(f"{base_url.rstrip('/')}/v1/chat/completions", json=payload,
-                          headers={"Authorization": f"Bearer {api_key}",
-                                   "Content-Type": "application/json"},
-                          timeout=30)
-        if r.status_code != 200:
-            log.warning(f"LLM API {r.status_code}: {r.text[:200]}")
-            return None
-        return r.json()
-    except Exception as ex:
-        log.warning(f"LLM API err: {ex}")
-        return None
+    client = OpenAI(api_key=api_key, base_url=f"{base_url.rstrip('/')}/v1", timeout=30)
+    return client, model
+
+_llm_client = None
+_llm_model = None
 
 
 def _tool_fetch_nvd_detail(cve_id):
@@ -947,6 +938,12 @@ _TOOL_DISPATCH = {
 
 def _enrich_one(record):
     """Run LLM agent loop on one vulnerability. Returns (verdict, notes) or (None, None)."""
+    global _llm_client, _llm_model
+    if _llm_client is None:
+        _llm_client, _llm_model = _get_llm_client()
+    if _llm_client is None:
+        return None, None
+
     key, cve_id, source, title, link, summary, reason, severity, cvss = record
     user_msg = (
         f"Assess this vulnerability:\n"
@@ -956,33 +953,37 @@ def _enrich_one(record):
     )
     messages = [{"role": "system", "content": _LLM_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg}]
-    for _ in range(_MAX_TOOL_ROUNDS):
-        resp = _llm_chat(messages, tools=_ENRICH_TOOLS)
-        if resp is None:
-            return None, None
-        msg = resp["choices"][0]["message"]
-        if msg.get("tool_calls"):
-            messages.append(msg)
-            for tc in msg["tool_calls"]:
-                fn = _TOOL_DISPATCH.get(tc["function"]["name"])
-                try:
-                    args = json.loads(tc["function"]["arguments"])
-                except (json.JSONDecodeError, TypeError):
-                    args = {}
-                result = fn(**args) if fn else json.dumps({"error": "unknown tool"})
-                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
-            continue
-        # final response
-        content = (msg.get("content") or "").strip()
-        content = re.sub(r"^```json\s*", "", content)
-        content = re.sub(r"```\s*$", "", content)
-        try:
-            data = json.loads(content)
-            return data.get("verdict"), data.get("notes", "")
-        except (json.JSONDecodeError, AttributeError):
-            log.warning(f"LLM unparseable for {cve_id}: {content[:200]}")
-            return None, None
-    log.warning(f"LLM exceeded {_MAX_TOOL_ROUNDS} rounds for {cve_id}")
+    try:
+        for _ in range(_MAX_TOOL_ROUNDS):
+            resp = _llm_client.chat.completions.create(
+                model=_llm_model, messages=messages,
+                tools=_ENRICH_TOOLS, temperature=0.1, max_tokens=1024,
+            )
+            choice = resp.choices[0]
+            if choice.message.tool_calls:
+                messages.append(choice.message)
+                for tc in choice.message.tool_calls:
+                    fn = _TOOL_DISPATCH.get(tc.function.name)
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                    result = fn(**args) if fn else json.dumps({"error": "unknown tool"})
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                continue
+            # final response
+            content = (choice.message.content or "").strip()
+            content = re.sub(r"^```json\s*", "", content)
+            content = re.sub(r"```\s*$", "", content)
+            try:
+                data = json.loads(content)
+                return data.get("verdict"), data.get("notes", "")
+            except (json.JSONDecodeError, AttributeError):
+                log.warning(f"LLM unparseable for {cve_id}: {content[:200]}")
+                return None, None
+        log.warning(f"LLM exceeded {_MAX_TOOL_ROUNDS} rounds for {cve_id}")
+    except Exception as ex:
+        log.warning(f"LLM err for {cve_id}: {ex}")
     return None, None
 
 
