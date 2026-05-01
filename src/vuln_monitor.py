@@ -840,7 +840,13 @@ def _backfill_nvd_severity(conn):
     ).fetchall()
     updated = 0
     for key, cve_id in rows:
-        detail = _nvd_detail(cve_id)
+        # cve_id may contain multiple CVEs space-separated — try each until one has data
+        cves = CVE_RE.findall(cve_id)
+        detail = None
+        for c in (cves or [cve_id]):
+            detail = _nvd_detail(c.upper())
+            if detail and detail.get("cvss"):
+                break
         if detail and detail.get("cvss"):
             conn.execute(
                 "UPDATE vulns SET severity=?, cvss=?, cve_published=COALESCE(cve_published,?) WHERE key=?",
