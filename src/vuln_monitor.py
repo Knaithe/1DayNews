@@ -882,6 +882,30 @@ def _backfill_nvd_severity(conn):
                 "cve_published=COALESCE(cve_published,?) WHERE key=?",
                 (detail.get("severity"), detail.get("cvss"), detail.get("published"), key))
             updated += 1
+    # backfill from summary text: Fortinet CVSSv3 Score, and created_at as published fallback
+    rows2 = conn.execute(
+        "SELECT key, summary, created_at FROM vulns "
+        "WHERE (cvss IS NULL OR cve_published IS NULL) "
+        "AND summary IS NOT NULL "
+        "LIMIT 200"
+    ).fetchall()
+    for key, summary, created_at in rows2:
+        parsed_cvss = None
+        parsed_sev = None
+        m = re.search(r"CVSS(?:v\d(?:\.\d)?)?\s*(?:Score|rating)?\s*(?:of|:|=)?\s*(\d+(?:\.\d+)?)", summary, re.I)
+        if m:
+            score = float(m.group(1))
+            if 0 <= score <= 10:
+                parsed_cvss = score
+                parsed_sev = "critical" if score >= 9 else "high" if score >= 7 else "medium" if score >= 4 else "low"
+        # use created_at as published fallback
+        pub_fallback = datetime.fromtimestamp(created_at, tz=timezone.utc).strftime("%Y-%m-%d") if created_at else None
+        if parsed_cvss or pub_fallback:
+            conn.execute(
+                "UPDATE vulns SET cvss=COALESCE(cvss,?), severity=COALESCE(severity,?), "
+                "cve_published=COALESCE(cve_published,?) WHERE key=?",
+                (parsed_cvss, parsed_sev, pub_fallback, key))
+            updated += 1
     if updated:
         conn.commit()
         log.info(f"backfill_nvd_severity: updated {updated} records")
