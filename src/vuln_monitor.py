@@ -1573,6 +1573,41 @@ def fetch_poc_in_github():
     return out
 
 
+def fetch_github_advisories():
+    """Fetch recent reviewed advisories from GitHub Advisory Database."""
+    out = []
+    headers = {"Accept": "application/vnd.github+json"}
+    if GH_TOKEN:
+        headers["Authorization"] = f"Bearer {GH_TOKEN}"
+    for severity in ("critical", "high"):
+        try:
+            r = SESS.get("https://api.github.com/advisories",
+                         params={"type": "reviewed", "severity": severity,
+                                 "sort": "published", "direction": "desc", "per_page": 30},
+                         headers=headers, timeout=15)
+            if r.status_code != 200:
+                log.warning(f"GitHub Advisory {severity} HTTP {r.status_code}")
+                continue
+            for adv in r.json():
+                cve = adv.get("cve_id") or adv.get("ghsa_id", "")
+                summary = adv.get("summary", "")
+                cvss = adv.get("cvss", {}).get("score")
+                sev = adv.get("severity", "")
+                cvss_str = f" (CVSS {cvss})" if cvss else ""
+                sev_str = f" [{sev.upper()}]" if sev else ""
+                out.append({
+                    "source": "GHSA",
+                    "title": f"{sev_str} {cve} {summary[:200]}".strip(),
+                    "link": adv.get("html_url", ""),
+                    "summary": f"{summary}{cvss_str}",
+                    "text": f"{cve} {summary}",
+                })
+        except Exception as ex:
+            log.warning(f"GitHub Advisory {severity} err: {ex}")
+        time.sleep(1)
+    return out
+
+
 def _fetch_all_sources():
     """Collect items from all configured sources. Used by _run() and cmd_rebuild()."""
     items = []
@@ -1583,7 +1618,8 @@ def _fetch_all_sources():
         items.extend(batch)
     for name, func in [("CISA_KEV", fetch_kev_json), ("Chaitin", fetch_chaitin),
                         ("ThreatBook", fetch_threatbook),
-                        ("GitHub", fetch_github_cve), ("PoC-GitHub", fetch_poc_in_github)]:
+                        ("GitHub", fetch_github_cve), ("PoC-GitHub", fetch_poc_in_github),
+                        ("GHSA", fetch_github_advisories)]:
         batch = func()
         counts[name] = len(batch)
         items.extend(batch)
