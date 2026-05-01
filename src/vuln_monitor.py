@@ -822,7 +822,35 @@ def _nvd_detail(cve_id):
         _nvd_detail_cache[cve_upper] = detail
         return detail
     except Exception:
-        _nvd_cache[cve_upper] = None
+        pass
+    # fallback: GitHub Advisory Database (often has data before NVD, especially for OSS)
+    try:
+        hdrs = {"Accept": "application/vnd.github+json"}
+        if GH_TOKEN:
+            hdrs["Authorization"] = f"Bearer {GH_TOKEN}"
+        r = requests.get("https://api.github.com/advisories",
+                         params={"cve_id": cve_upper}, headers=hdrs, timeout=10)
+        if r.status_code == 200 and r.json():
+            adv = r.json()[0]
+            pub_raw = adv.get("published_at", "")
+            pub_str = pub_raw[:10] if pub_raw else None
+            cvss = None
+            severity = None
+            if adv.get("cvss", {}).get("score"):
+                cvss = float(adv["cvss"]["score"])
+            sev_raw = adv.get("severity", "")
+            if sev_raw in ("critical", "high", "medium", "low"):
+                severity = sev_raw
+            if cvss and not severity:
+                severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
+            desc = adv.get("summary", "")
+            detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc}
+            _nvd_cache[cve_upper] = pub_str or ""
+            _nvd_detail_cache[cve_upper] = detail
+            return detail
+    except Exception:
+        pass
+    _nvd_cache[cve_upper] = None
     return None
 
 def _nvd_published_date(cve_id):
