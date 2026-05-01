@@ -110,9 +110,15 @@ def no_cache(response):
 def get_db():
     # quote() guards against rare special chars in DATA_DIR (operator-controlled env)
     db_uri = f"file:{urllib.parse.quote(str(DB_FILE), safe='/:')}?mode=ro"
-    conn = sqlite3.connect(db_uri, uri=True, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect(db_uri, uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.OperationalError:
+        # ro mode may fail if WAL files don't exist — fall back to normal read
+        conn = sqlite3.connect(str(DB_FILE), timeout=5)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 
 def _vulns_columns(conn):
