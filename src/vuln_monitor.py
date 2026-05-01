@@ -835,26 +835,27 @@ def _nvd_published_date(cve_id):
     return None, None
 
 def _backfill_nvd_severity(conn):
-    """Backfill severity and CVSS for records that have CVE but no severity."""
+    """Backfill severity, CVSS, and cve_published for records missing any of them."""
     batch = 100 if NVD_API_KEY else 20
     rows = conn.execute(
         "SELECT key, cve_id FROM vulns "
-        "WHERE cve_id IS NOT NULL AND cve_id LIKE 'CVE-%' AND severity IS NULL "
+        "WHERE cve_id IS NOT NULL AND cve_id LIKE 'CVE-%' "
+        "AND (severity IS NULL OR cve_published IS NULL) "
         f"LIMIT {batch}"
     ).fetchall()
     updated = 0
     for key, cve_id in rows:
-        # cve_id may contain multiple CVEs space-separated — try each until one has data
         cves = CVE_RE.findall(cve_id)
         detail = None
         for c in (cves or [cve_id]):
             detail = _nvd_detail(c.upper())
-            if detail and detail.get("cvss"):
+            if detail and (detail.get("cvss") or detail.get("published")):
                 break
-        if detail and detail.get("cvss"):
+        if detail:
             conn.execute(
-                "UPDATE vulns SET severity=?, cvss=?, cve_published=COALESCE(cve_published,?) WHERE key=?",
-                (detail["severity"], detail["cvss"], detail.get("published"), key))
+                "UPDATE vulns SET severity=COALESCE(severity,?), cvss=COALESCE(cvss,?), "
+                "cve_published=COALESCE(cve_published,?) WHERE key=?",
+                (detail.get("severity"), detail.get("cvss"), detail.get("published"), key))
             updated += 1
     if updated:
         conn.commit()
