@@ -12,11 +12,12 @@ ExecStart=/opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/web.py --publi
 Restart=on-failure
 RestartSec=5
 
-# sandboxing — web is read-only except token file
+# sandboxing — DB stays read-only, but SQLite WAL mode needs SHM/WAL files writable
+# (`-` prefix = ignore if missing, in case a fresh DB has not generated them yet)
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/vuln-monitor/.web_token
+ReadWritePaths=/opt/vuln-monitor/.web_token -/opt/vuln-monitor/vuln_cache.db-shm -/opt/vuln-monitor/vuln_cache.db-wal
 ReadOnlyPaths=/opt/vuln-monitor
 PrivateTmp=true
 
