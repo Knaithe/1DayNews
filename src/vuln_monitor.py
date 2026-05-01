@@ -770,8 +770,10 @@ def _nvd_detail(cve_id):
     # check date-only cache (from _warm_nvd_cache)
     if cve_upper in _nvd_cache:
         cached = _nvd_cache[cve_upper]
-        if cached is None or cached == "":
-            return None
+        if cached == "":
+            return None  # confirmed not in NVD, no point retrying
+        if cached is None:
+            pass  # rate-limited or not yet tried — fall through to query
         # have date but need full detail — query NVD
     # query NVD (rate limit: 50 req/30s with key, 5 req/30s without)
     _nvd_sleep = 0.7 if NVD_API_KEY else 6.5
@@ -789,38 +791,33 @@ def _nvd_detail(cve_id):
             _nvd_cache[cve_upper] = ""
             return None
         vulns = r.json().get("vulnerabilities", [])
-        if not vulns:
-            _nvd_cache[cve_upper] = ""
-            _nvd_detail_cache[cve_upper] = None
-            return None
-        cve_data = vulns[0]["cve"]
-        # published date
-        pub = cve_data.get("published", "")
-        pub_str = None
-        if pub:
-            dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            pub_str = dt.strftime("%Y-%m-%d")
-        # CVSS v3.1 (fallback to v3.0, then v2)
-        cvss = None
-        severity = None
-        for metric_key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
-            metrics = cve_data.get("metrics", {}).get(metric_key, [])
-            if metrics:
-                cvss_data = metrics[0].get("cvssData", {})
-                cvss = cvss_data.get("baseScore")
-                severity = cvss_data.get("baseSeverity", "").lower()
-                break
-        if cvss and not severity:
-            severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
-        # description
-        descs = cve_data.get("descriptions", [])
-        desc_en = next((d["value"] for d in descs if d.get("lang") == "en"), "")
-        detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc_en}
-        _nvd_cache[cve_upper] = pub_str or ""
-        _nvd_detail_cache[cve_upper] = detail
-        return detail
+        if vulns:
+            cve_data = vulns[0]["cve"]
+            pub = cve_data.get("published", "")
+            pub_str = None
+            if pub:
+                dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                pub_str = dt.strftime("%Y-%m-%d")
+            cvss = None
+            severity = None
+            for metric_key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                metrics = cve_data.get("metrics", {}).get(metric_key, [])
+                if metrics:
+                    cvss_data = metrics[0].get("cvssData", {})
+                    cvss = cvss_data.get("baseScore")
+                    severity = cvss_data.get("baseSeverity", "").lower()
+                    break
+            if cvss and not severity:
+                severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
+            descs = cve_data.get("descriptions", [])
+            desc_en = next((d["value"] for d in descs if d.get("lang") == "en"), "")
+            detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc_en}
+            _nvd_cache[cve_upper] = pub_str or ""
+            _nvd_detail_cache[cve_upper] = detail
+            return detail
+        # NVD has no data — fall through to GitHub Advisory fallback
     except Exception:
         pass
     # fallback: GitHub Advisory Database (often has data before NVD, especially for OSS)
