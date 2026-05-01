@@ -1116,16 +1116,14 @@ def _tool_fetch_source_page(url):
         if parsed.scheme not in ("http", "https"):
             return json.dumps({"error": "only http/https allowed"})
         # block internal/private IPs (SSRF protection)
-        import socket
+        import socket, ipaddress
         try:
-            ip = socket.gethostbyname(parsed.hostname or "")
-            if ip.startswith(("10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                              "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
-                              "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-                              "172.30.", "172.31.", "192.168.", "127.", "169.254.", "0.")):
-                return json.dumps({"error": "internal addresses not allowed"})
-        except socket.gaierror:
-            pass
+            for info in socket.getaddrinfo(parsed.hostname or "", None):
+                addr = ipaddress.ip_address(info[4][0])
+                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                    return json.dumps({"error": "internal addresses not allowed"})
+        except (socket.gaierror, ValueError):
+            return json.dumps({"error": "DNS resolution failed"})
         r = SESS.get(url, timeout=15, headers={"User-Agent": "vuln-monitor/1.0"})
         text = re.sub(r"<[^>]+>", " ", r.text)
         return re.sub(r"\s+", " ", text).strip()[:2000]
