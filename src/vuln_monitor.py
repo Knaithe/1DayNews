@@ -418,6 +418,7 @@ FRESH_SOURCES = frozenset({
     "ZDI", "watchTowr", "Horizon3", "Rapid7",        # Research teams
     "Chaitin", "ThreatBook",                           # Curated vuln databases
     "DailyCVE",                                        # Aggregator, but entries are day-of CVEs (not old rehash)
+    "GHSA",                                            # GitHub Advisory Database (reviewed by GitHub security team)
 })
 # Sources that aggregate/republish old vulns — need CVE year validation.
 # Sploitus_*, GitHub, PoC-GitHub are implicitly NOT in FRESH_SOURCES.
