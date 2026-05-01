@@ -1540,6 +1540,9 @@ def _run(no_push=False):
     _warm_nvd_cache(conn)
     now = datetime.now(timezone.utc).timestamp()
 
+    # detect cold start: if DB is empty, this is initial seeding — suppress push
+    _cold_start = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0] == 0
+
     items = _fetch_all_sources()
     log.info(f"collected {len(items)} items")
 
@@ -1606,6 +1609,14 @@ def _run(no_push=False):
             skipped_filter += 1
 
     conn.commit()
+
+    # cold start: mark all records as already sent to prevent initial flood
+    if _cold_start:
+        suppressed = conn.execute("UPDATE vulns SET tg_sent=1 WHERE pushed=1 AND tg_sent=0").rowcount
+        conn.commit()
+        if suppressed:
+            log.info(f"cold start: suppressed {suppressed} initial notifications (seeding run)")
+
     db_cleanup(conn)
     total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
     log.info(
