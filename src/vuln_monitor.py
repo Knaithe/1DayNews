@@ -383,6 +383,10 @@ EXCLUDE_PATTERNS = [
     r"\bDoS\b(?!.*(unauth|pre-?auth|chain|kernel))",
     r"denial of service(?!.*(unauth|pre-?auth|chain|kernel))",
     r"\bSSRF\b(?!.*(RCE|code exec|chain|bypass))",
+    # Linux kernel subsystem patches (not enterprise-exploitable)
+    r"\b(?:staging|ocfs2|fbdev|ALSA|media|usb: gadget|i2c:|s390/|rtnetlink|bcache|tracing):",
+    # Apache library-level crashes/bugs (not enterprise-exploitable RCE)
+    r"Apache Thrift:",
 ]
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.I)
