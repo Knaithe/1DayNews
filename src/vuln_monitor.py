@@ -504,7 +504,11 @@ class SingletonLock:
     def __exit__(self, *a):
         if self.fh:
             try:
-                if sys.platform != "win32":
+                if sys.platform == "win32":
+                    import msvcrt
+                    self.fh.seek(0)
+                    msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
                     import fcntl
                     fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
             except Exception:
@@ -521,6 +525,17 @@ def _get_conn():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
+
+import contextlib
+
+@contextlib.contextmanager
+def _db():
+    """Context manager for DB connections — guarantees close on exception."""
+    conn = _get_conn()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 def init_db(conn):
     conn.execute("""
@@ -689,31 +704,30 @@ def _auto_enrich():
 
     Returns number of records updated.
     """
-    conn = _get_conn()
-    init_db(conn)
-    # Match strong vuln types
-    type_clauses = []
-    type_params = []
-    for t in STRONG_VULN_TYPES:
-        type_clauses.append("vuln_type = ?")
-        type_params.append(t)
-    candidates = conn.execute(
-        f"SELECT key, cve_id, source, title, link FROM vulns "
-        f"WHERE (link IS NULL OR link = '') AND ({' OR '.join(type_clauses)})",
-        type_params,
-    ).fetchall()
-    updated = 0
-    for key, cve_id, source, title, link in candidates:
-        new_cve, new_src, new_link = _enrich_record(cve_id, source, title, link)
-        if new_link != link or new_src != source or new_cve != cve_id:
-            conn.execute(
-                "UPDATE vulns SET cve_id=COALESCE(cve_id,?), source=COALESCE(source,?), "
-                "link=COALESCE(link,?) WHERE key=?",
-                (new_cve, new_src, new_link, key),
-            )
-            updated += 1
-    conn.commit()
-    conn.close()
+    with _db() as conn:
+        init_db(conn)
+        # Match strong vuln types
+        type_clauses = []
+        type_params = []
+        for t in STRONG_VULN_TYPES:
+            type_clauses.append("vuln_type = ?")
+            type_params.append(t)
+        candidates = conn.execute(
+            f"SELECT key, cve_id, source, title, link FROM vulns "
+            f"WHERE (link IS NULL OR link = '') AND ({' OR '.join(type_clauses)})",
+            type_params,
+        ).fetchall()
+        updated = 0
+        for key, cve_id, source, title, link in candidates:
+            new_cve, new_src, new_link = _enrich_record(cve_id, source, title, link)
+            if new_link != link or new_src != source or new_cve != cve_id:
+                conn.execute(
+                    "UPDATE vulns SET cve_id=COALESCE(cve_id,?), source=COALESCE(source,?), "
+                    "link=COALESCE(link,?) WHERE key=?",
+                    (new_cve, new_src, new_link, key),
+                )
+                updated += 1
+        conn.commit()
     return updated
 
 def item_key(title, link, text):
@@ -771,10 +785,13 @@ def _nvd_detail(cve_id):
     if cve_upper in _nvd_cache:
         cached = _nvd_cache[cve_upper]
         if cached == "":
-            return None  # confirmed not in NVD, no point retrying
+            return None  # confirmed not in NVD/GitHub, no point retrying
         if cached is None:
-            pass  # rate-limited or not yet tried — fall through to query
-        # have date but need full detail — query NVD
+            pass  # rate-limited — fall through to query
+        elif isinstance(cached, str) and cached:
+            # have date in cache but no full detail yet — build partial detail, don't re-query NVD
+            _nvd_detail_cache[cve_upper] = {"published": cached, "cvss": None, "severity": None, "description": ""}
+            return _nvd_detail_cache[cve_upper]
     # query NVD (rate limit: 50 req/30s with key, 5 req/30s without)
     _nvd_sleep = 0.7 if NVD_API_KEY else 6.5
     time.sleep(_nvd_sleep)
@@ -782,7 +799,7 @@ def _nvd_detail(cve_id):
         hdrs = {"User-Agent": "vuln-monitor/1.0 (security research)"}
         if NVD_API_KEY:
             hdrs["apiKey"] = NVD_API_KEY
-        r = requests.get(_NVD_API, params={"cveId": cve_upper}, timeout=10, headers=hdrs)
+        r = SESS.get(_NVD_API, params={"cveId": cve_upper}, timeout=10, headers=hdrs)  # Fix #6: use SESS for proxy
         if r.status_code in (403, 429):
             # rate limited — DON'T cache, allow retry next cycle
             log.debug(f"NVD rate limited for {cve_upper}")
@@ -821,12 +838,13 @@ def _nvd_detail(cve_id):
     except Exception:
         pass
     # fallback: GitHub Advisory Database (often has data before NVD, especially for OSS)
+    time.sleep(1)  # Fix #11: rate limit coordination
     try:
         hdrs = {"Accept": "application/vnd.github+json"}
         if GH_TOKEN:
             hdrs["Authorization"] = f"Bearer {GH_TOKEN}"
-        r = requests.get("https://api.github.com/advisories",
-                         params={"cve_id": cve_upper}, headers=hdrs, timeout=10)
+        r = SESS.get("https://api.github.com/advisories",  # Fix #6: use SESS for proxy
+                     params={"cve_id": cve_upper}, headers=hdrs, timeout=10)
         if r.status_code == 200 and r.json():
             adv = r.json()[0]
             pub_raw = adv.get("published_at", "")
@@ -847,7 +865,9 @@ def _nvd_detail(cve_id):
             return detail
     except Exception:
         pass
-    _nvd_cache[cve_upper] = None
+    # both NVD and GitHub failed — mark as empty to stop retrying (Fix #3)
+    _nvd_cache[cve_upper] = ""
+    _nvd_detail_cache[cve_upper] = None
     return None
 
 def _nvd_published_date(cve_id):
@@ -920,10 +940,15 @@ def _backfill_zdi(conn):
 
 
 def _backfill_published_fallback(conn):
-    """Use created_at as cve_published fallback for records with no NVD/GitHub data."""
+    """Use created_at as cve_published fallback — only for records older than 7 days.
+
+    Gives NVD/GitHub 7 days to populate real data before falling back.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
     rows = conn.execute(
         "SELECT key, created_at FROM vulns "
-        "WHERE cve_published IS NULL AND created_at IS NOT NULL"
+        "WHERE cve_published IS NULL AND created_at IS NOT NULL AND created_at < ?",
+        (cutoff,)
     ).fetchall()
     if not rows:
         return
@@ -1086,7 +1111,22 @@ def _tool_fetch_nvd_detail(cve_id):
 
 def _tool_fetch_source_page(url):
     try:
-        r = requests.get(url, timeout=15, headers={"User-Agent": "vuln-monitor/1.0"})
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return json.dumps({"error": "only http/https allowed"})
+        # block internal/private IPs (SSRF protection)
+        import socket
+        try:
+            ip = socket.gethostbyname(parsed.hostname or "")
+            if ip.startswith(("10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                              "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+                              "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+                              "172.30.", "172.31.", "192.168.", "127.", "169.254.", "0.")):
+                return json.dumps({"error": "internal addresses not allowed"})
+        except socket.gaierror:
+            pass
+        r = SESS.get(url, timeout=15, headers={"User-Agent": "vuln-monitor/1.0"})
         text = re.sub(r"<[^>]+>", " ", r.text)
         return re.sub(r"\s+", " ", text).strip()[:2000]
     except Exception as ex:
@@ -1231,6 +1271,7 @@ def _enrich_one(record):
 def _warm_nvd_cache(conn):
     """Pre-load DB cve_published values into in-memory cache at startup."""
     _nvd_cache.clear()
+    _nvd_detail_cache.clear()  # Fix #9: prevent unbounded memory growth
     try:
         rows = conn.execute("SELECT cve_id, cve_published FROM vulns WHERE cve_published IS NOT NULL").fetchall()
         for cve_id, pub in rows:
@@ -1643,100 +1684,99 @@ def send_failure_alert(msg):
 
 # ================== MAIN ==================
 def _run(no_push=False):
-    conn = _get_conn()
-    init_db(conn)
-    migrate_json_cache(conn)
-    _warm_nvd_cache(conn)
-    now = datetime.now(timezone.utc).timestamp()
+    with _db() as conn:
+        init_db(conn)
+        migrate_json_cache(conn)
+        _warm_nvd_cache(conn)
+        now = datetime.now(timezone.utc).timestamp()
 
-    # detect cold start: if DB is empty, this is initial seeding — suppress push
-    _cold_start = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0] == 0
+        # detect cold start: if DB is empty, this is initial seeding — suppress push
+        _cold_start = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0] == 0
 
-    items = _fetch_all_sources()
-    log.info(f"collected {len(items)} items")
+        items = _fetch_all_sources()
+        log.info(f"collected {len(items)} items")
 
-    seen_this_run = set()
-    pushed = 0
-    skipped_seen = 0
-    skipped_filter = 0
-    backfilled = 0
+        seen_this_run = set()
+        pushed = 0
+        skipped_seen = 0
+        skipped_filter = 0
+        backfilled = 0
 
-    for it in items:
-        key = item_key(it["title"], it["link"], it["text"])
-        if key in seen_this_run:
-            skipped_seen += 1
-            continue
+        for it in items:
+            key = item_key(it["title"], it["link"], it["text"])
+            if key in seen_this_run:
+                skipped_seen += 1
+                continue
 
-        row = conn.execute("SELECT source, link FROM vulns WHERE key=?", (key,)).fetchone()
-        if row:
-            if row[0] is None or row[1] is None:
-                _backfill_row(conn, key, it)
-                backfilled += 1
-            skipped_seen += 1
+            row = conn.execute("SELECT source, link FROM vulns WHERE key=?", (key,)).fetchone()
+            if row:
+                if row[0] is None or row[1] is None:
+                    _backfill_row(conn, key, it)
+                    backfilled += 1
+                skipped_seen += 1
+                seen_this_run.add(key)
+                continue
             seen_this_run.add(key)
-            continue
-        seen_this_run.add(key)
 
-        # ── Exploitability (severity) ──
-        hit, reason, vuln_type = score(it["text"])
+            # ── Exploitability (severity) ──
+            hit, reason, vuln_type = score(it["text"])
 
-        # ── Freshness — ALL records with CVE get cve_published + freshness ──
-        cve_pub = None
-        freshness = None
-        fresh_reason = None
-        if CVE_RE.search(it["text"]):
-            fresh, cve_pub, fresh_reason = _is_fresh(it["source"], it["text"])
-            freshness = "1day" if fresh else "nday"
-            if hit and not fresh:
+            # ── Freshness — ALL records with CVE get cve_published + freshness ──
+            cve_pub = None
+            freshness = None
+            fresh_reason = None
+            if CVE_RE.search(it["text"]):
+                fresh, cve_pub, fresh_reason = _is_fresh(it["source"], it["text"])
+                freshness = "1day" if fresh else "nday"
+                if hit and not fresh:
+                    hit = False
+            elif it["source"] in FRESH_SOURCES:
+                # high-trust source without CVE (e.g. Fortinet FG-IR)
+                freshness = "1day"
+                fresh_reason = "high_trust_source"
+            elif hit:
+                # low-trust source, no CVE → can't verify freshness
+                freshness = "nday"
+                fresh_reason = "no_cve_low_trust"
                 hit = False
-        elif it["source"] in FRESH_SOURCES:
-            # high-trust source without CVE (e.g. Fortinet FG-IR)
-            freshness = "1day"
-            fresh_reason = "high_trust_source"
-        elif hit:
-            # low-trust source, no CVE → can't verify freshness
-            freshness = "nday"
-            fresh_reason = "no_cve_low_trust"
-            hit = False
 
-        tag = _extract_id(it["text"], it["link"])
-        cve_id = tag if tag != "N/A" else None
-        nvd = _nvd_detail_cache.get(cve_id.upper()) if cve_id and cve_id.startswith("CVE-") else None
-        nvd_severity = nvd["severity"] if nvd else None
-        nvd_cvss = nvd["cvss"] if nvd else None
-        should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES
-        conn.execute(
-            "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (key, cve_id, it["source"], it["title"][:300], it["link"],
-             it["summary"][:500], reason, vuln_type, freshness, fresh_reason,
-             1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss),
-        )
-        if should_push:
-            pushed += 1
-        else:
-            skipped_filter += 1
+            tag = _extract_id(it["text"], it["link"])
+            cve_id = tag if tag != "N/A" else None
+            nvd = _nvd_detail_cache.get(cve_id.upper()) if cve_id and cve_id.startswith("CVE-") else None
+            nvd_severity = nvd["severity"] if nvd else None
+            nvd_cvss = nvd["cvss"] if nvd else None
+            should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES
+            conn.execute(
+                "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (key, cve_id, it["source"], it["title"][:300], it["link"],
+                 it["summary"][:500], reason, vuln_type, freshness, fresh_reason,
+                 1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss),
+            )
+            if should_push:
+                pushed += 1
+            else:
+                skipped_filter += 1
 
-    conn.commit()
-
-    # cold start: mark all records as already sent to prevent initial flood
-    if _cold_start:
-        suppressed = conn.execute("UPDATE vulns SET tg_sent=1 WHERE pushed=1 AND tg_sent=0").rowcount
         conn.commit()
-        if suppressed:
-            log.info(f"cold start: suppressed {suppressed} initial notifications (seeding run)")
 
-    db_cleanup(conn)
-    total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
-    log.info(
-        f"done: pushed={pushed}  filtered={skipped_filter}  already_seen={skipped_seen}  "
-        f"backfilled={backfilled}  db_size={total}"
-    )
+        # cold start: mark all records as already sent to prevent initial flood
+        if _cold_start:
+            suppressed = conn.execute("UPDATE vulns SET tg_sent=1 WHERE pushed=1 AND tg_sent=0").rowcount
+            conn.commit()
+            if suppressed:
+                log.info(f"cold start: suppressed {suppressed} initial notifications (seeding run)")
 
-    # Send pending Telegram notifications (unless --no-push)
-    if not no_push:
-        _push_pending(conn)
-    conn.close()
+        db_cleanup(conn)
+        total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
+        log.info(
+            f"done: pushed={pushed}  filtered={skipped_filter}  already_seen={skipped_seen}  "
+            f"backfilled={backfilled}  db_size={total}"
+        )
+
+        # Send pending Telegram notifications (unless --no-push)
+        if not no_push:
+            _push_pending(conn)
 
 
 def _push_pending(conn):
@@ -1784,37 +1824,36 @@ def _query_rows(args, quality_filter=False):
     quality_filter=True adds SQL-level gates for notification views:
       link IS NOT NULL, source IS NOT NULL, reason not in (no hit, excluded).
     """
-    conn = _get_conn()
-    init_db(conn)
-    where, params = [], []
-    if args.cve:
-        where.append("cve_id LIKE ?"); params.append(f"%{args.cve}%")
-    if args.source:
-        where.append("source LIKE ?"); params.append(f"%{args.source}%")
-    if args.keyword:
-        where.append("(title LIKE ? OR summary LIKE ?)")
-        params.extend([f"%{args.keyword}%"] * 2)
-    if args.days:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=args.days)).timestamp()
-        where.append("created_at > ?"); params.append(cutoff)
-    if args.pushed:
-        where.append("pushed = 1")
-    if args.reason:
-        where.append("reason LIKE ?"); params.append(f"%{args.reason}%")
-    if quality_filter:
-        where.append("link IS NOT NULL AND link != ''")
-        where.append("source IS NOT NULL AND source != ''")
-        if not args.reason:
-            where.append("reason NOT IN ('no hit','excluded') AND freshness != 'nday'")
+    with _db() as conn:
+        init_db(conn)
+        where, params = [], []
+        if args.cve:
+            where.append("cve_id LIKE ?"); params.append(f"%{args.cve}%")
+        if args.source:
+            where.append("source LIKE ?"); params.append(f"%{args.source}%")
+        if args.keyword:
+            where.append("(title LIKE ? OR summary LIKE ?)")
+            params.extend([f"%{args.keyword}%"] * 2)
+        if args.days:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=args.days)).timestamp()
+            where.append("created_at > ?"); params.append(cutoff)
+        if args.pushed:
+            where.append("pushed = 1")
+        if args.reason:
+            where.append("reason LIKE ?"); params.append(f"%{args.reason}%")
+        if quality_filter:
+            where.append("link IS NOT NULL AND link != ''")
+            where.append("source IS NOT NULL AND source != ''")
+            if not args.reason:
+                where.append("reason NOT IN ('no hit','excluded') AND freshness != 'nday'")
 
-    sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at DESC LIMIT ?"
-    params.append(args.limit)
+        sql = "SELECT cve_id,source,title,link,summary,reason,pushed,created_at FROM vulns"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(args.limit)
 
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
+        rows = conn.execute(sql, params).fetchall()
     return rows
 
 def cmd_query(args):
@@ -1865,16 +1904,15 @@ def cmd_brief(args):
     enriched = _auto_enrich()
     explain = getattr(args, "explain", False)
     if explain:
-        conn = _get_conn()
-        init_db(conn)
-        total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
-        no_link = conn.execute("SELECT COUNT(*) FROM vulns WHERE link IS NULL OR link=''").fetchone()[0]
-        placeholders = ",".join("?" for _ in STRONG_VULN_TYPES)
-        strong_no_link = conn.execute(
-            f"SELECT COUNT(*) FROM vulns WHERE (link IS NULL OR link='') AND vuln_type IN ({placeholders})",
-            tuple(STRONG_VULN_TYPES),
-        ).fetchone()[0]
-        conn.close()
+        with _db() as conn:
+            init_db(conn)
+            total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
+            no_link = conn.execute("SELECT COUNT(*) FROM vulns WHERE link IS NULL OR link=''").fetchone()[0]
+            placeholders = ",".join("?" for _ in STRONG_VULN_TYPES)
+            strong_no_link = conn.execute(
+                f"SELECT COUNT(*) FROM vulns WHERE (link IS NULL OR link='') AND vuln_type IN ({placeholders})",
+                tuple(STRONG_VULN_TYPES),
+            ).fetchone()[0]
         print(f"[explain] enriched {enriched} records this pass")
         print(f"[explain] db total={total}  still_no_link={no_link}  strong_without_link={strong_no_link}")
         if strong_no_link:
@@ -1899,27 +1937,26 @@ def cmd_brief(args):
 
 # ================== CLI: stats ==================
 def cmd_stats(args):
-    conn = _get_conn()
-    init_db(conn)
-    total   = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
-    pushed  = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
-    day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).timestamp()
-    recent  = conn.execute("SELECT COUNT(*) FROM vulns WHERE created_at>?", (day_ago,)).fetchone()[0]
-    last_ts = conn.execute("SELECT MAX(created_at) FROM vulns").fetchone()[0]
-    last_dt = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if last_ts else "-"
-    print(f"Total: {total}  |  Pushed: {pushed}  |  Last 24h: {recent}  |  Last update: {last_dt}\n")
+    with _db() as conn:
+        init_db(conn)
+        total   = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
+        pushed  = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
+        day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).timestamp()
+        recent  = conn.execute("SELECT COUNT(*) FROM vulns WHERE created_at>?", (day_ago,)).fetchone()[0]
+        last_ts = conn.execute("SELECT MAX(created_at) FROM vulns").fetchone()[0]
+        last_dt = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if last_ts else "-"
+        print(f"Total: {total}  |  Pushed: {pushed}  |  Last 24h: {recent}  |  Last update: {last_dt}\n")
 
-    sources = conn.execute("SELECT source,COUNT(*) FROM vulns GROUP BY source ORDER BY COUNT(*) DESC").fetchall()
-    print("── By Source ──")
-    fmt_table(["Source", "Count"], [[s or "(migrated)", str(n)] for s, n in sources])
+        sources = conn.execute("SELECT source,COUNT(*) FROM vulns GROUP BY source ORDER BY COUNT(*) DESC").fetchall()
+        print("── By Source ──")
+        fmt_table(["Source", "Count"], [[s or "(migrated)", str(n)] for s, n in sources])
 
-    print()
-    reasons = conn.execute(
-        "SELECT reason,COUNT(*) FROM vulns WHERE pushed=1 GROUP BY reason ORDER BY COUNT(*) DESC"
-    ).fetchall()
-    print("── By Reason (pushed only) ──")
-    fmt_table(["Reason", "Count"], [[r, str(n)] for r, n in reasons])
-    conn.close()
+        print()
+        reasons = conn.execute(
+            "SELECT reason,COUNT(*) FROM vulns WHERE pushed=1 GROUP BY reason ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        print("── By Reason (pushed only) ──")
+        fmt_table(["Reason", "Count"], [[r, str(n)] for r, n in reasons])
 
 
 # ================== CLI: rebuild ==================
@@ -1929,47 +1966,46 @@ def cmd_rescore(args):
         _cmd_rescore_inner()
 
 def _cmd_rescore_inner():
-    conn = _get_conn()
-    init_db(conn)
-    _warm_nvd_cache(conn)
-    # only rescore records NOT yet verified by LLM — don't override LLM verdicts
-    rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed FROM vulns WHERE llm_verified=0").fetchall()
-    upgraded = downgraded = unchanged = 0
-    for key, cve_id, source, title, link, summary, old_reason, old_pushed in rows:
-        text = f"{title or ''}\n{summary or ''}"
+    with _db() as conn:
+        init_db(conn)
+        _warm_nvd_cache(conn)
+        # only rescore records NOT yet verified by LLM — don't override LLM verdicts
+        rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed FROM vulns WHERE llm_verified=0").fetchall()
+        upgraded = downgraded = unchanged = 0
+        for key, cve_id, source, title, link, summary, old_reason, old_pushed in rows:
+            text = f"{title or ''}\n{summary or ''}"
 
-        hit, reason, vuln_type = score(text)
-        cve_pub = None
-        freshness = None
-        fresh_reason = None
-        if CVE_RE.search(text):
-            fresh, cve_pub, fresh_reason = _is_fresh(source or "", text)
-            freshness = "1day" if fresh else "nday"
-            if hit and not fresh:
+            hit, reason, vuln_type = score(text)
+            cve_pub = None
+            freshness = None
+            fresh_reason = None
+            if CVE_RE.search(text):
+                fresh, cve_pub, fresh_reason = _is_fresh(source or "", text)
+                freshness = "1day" if fresh else "nday"
+                if hit and not fresh:
+                    hit = False
+            elif source in FRESH_SOURCES:
+                freshness = "1day"
+                fresh_reason = "high_trust_source"
+            elif hit:
+                freshness = "nday"
+                fresh_reason = "no_cve_low_trust"
                 hit = False
-        elif source in FRESH_SOURCES:
-            freshness = "1day"
-            fresh_reason = "high_trust_source"
-        elif hit:
-            freshness = "nday"
-            fresh_reason = "no_cve_low_trust"
-            hit = False
 
-        new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES) else 0
-        if reason != old_reason or new_pushed != old_pushed or cve_pub:
-            conn.execute("UPDATE vulns SET reason=?, vuln_type=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
-                        (reason, vuln_type, freshness, fresh_reason, new_pushed, cve_pub, key))
-            if new_pushed > old_pushed:
-                upgraded += 1
-            elif new_pushed < old_pushed:
-                downgraded += 1
-            else:
-                unchanged += 1  # reason changed but pushed same
+            new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES) else 0
+            if reason != old_reason or new_pushed != old_pushed or cve_pub:
+                conn.execute("UPDATE vulns SET reason=?, vuln_type=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
+                            (reason, vuln_type, freshness, fresh_reason, new_pushed, cve_pub, key))
+                if new_pushed > old_pushed:
+                    upgraded += 1
+                elif new_pushed < old_pushed:
+                    downgraded += 1
+                else:
+                    unchanged += 1  # reason changed but pushed same
 
-    conn.commit()
-    total = len(rows)
-    same = total - upgraded - downgraded - unchanged
-    conn.close()
+        conn.commit()
+        total = len(rows)
+        same = total - upgraded - downgraded - unchanged
     print(f"rescored {total} records: {upgraded} upgraded, {downgraded} downgraded, {unchanged} reason-changed, {same} unchanged")
 
 
@@ -1979,99 +2015,98 @@ def cmd_enrich(args):
         _cmd_enrich_inner(getattr(args, 'dry', False))
 
 def _cmd_enrich_inner(dry=False):
-    conn = _get_conn()
-    init_db(conn)
-    _warm_nvd_cache(conn)
+    with _db() as conn:
+        init_db(conn)
+        _warm_nvd_cache(conn)
 
-    # Phase 1: NVD severity/CVSS backfill
-    _backfill_nvd_severity(conn)
+        # Phase 1: NVD severity/CVSS backfill
+        _backfill_nvd_severity(conn)
 
-    # Phase 2: LLM enrichment
-    api_key = DEEPSEEK_API_KEY or OPENAI_API_KEY
-    if not api_key:
-        log.info("enrich: no LLM API key, skipping LLM enrichment")
-    else:
-        candidates = conn.execute(
-            "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss, freshness "
-            "FROM vulns WHERE llm_verified = 0 "
-            "AND reason NOT IN ('excluded', 'no hit') "
-            "ORDER BY created_at DESC LIMIT 500"
-        ).fetchall()
+        # Phase 2: LLM enrichment
+        api_key = DEEPSEEK_API_KEY or OPENAI_API_KEY
+        if not api_key:
+            log.info("enrich: no LLM API key, skipping LLM enrichment")
+        else:
+            candidates = conn.execute(
+                "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss, freshness "
+                "FROM vulns WHERE llm_verified = 0 "
+                "AND reason NOT IN ('excluded', 'no hit') "
+                "ORDER BY created_at DESC LIMIT 500"
+            ).fetchall()
 
-        if candidates:
-            # group by CVE to avoid duplicate LLM calls
-            by_cve = {}
-            no_cve = []
-            for rec in candidates:
-                cve_id = rec[1]
-                if cve_id and cve_id.startswith("CVE-"):
-                    by_cve.setdefault(cve_id, []).append(rec)
-                else:
-                    no_cve.append(rec)
+            if candidates:
+                # group by CVE to avoid duplicate LLM calls
+                by_cve = {}
+                no_cve = []
+                for rec in candidates:
+                    cve_id = rec[1]
+                    if cve_id and cve_id.startswith("CVE-"):
+                        by_cve.setdefault(cve_id, []).append(rec)
+                    else:
+                        no_cve.append(rec)
 
-            auto_approved = llm_processed = llm_errors = 0
+                auto_approved = llm_processed = llm_errors = 0
 
-            # auto-approve: any record from high-trust source + critical CVSS
-            for cve_id, records in by_cve.items():
-                rep = records[0]
-                any_high_trust = any(r[2] in HIGH_PRIORITY_SOURCES for r in records)
-                best_cvss = max((r[8] for r in records if r[8]), default=None)
-                if any_high_trust and best_cvss and best_cvss >= 9.0:
+                # auto-approve: any record from high-trust source + critical CVSS
+                for cve_id, records in by_cve.items():
+                    rep = records[0]
+                    any_high_trust = any(r[2] in HIGH_PRIORITY_SOURCES for r in records)
+                    best_cvss = max((r[8] for r in records if r[8]), default=None)
+                    if any_high_trust and best_cvss and best_cvss >= 9.0:
+                        for rec in records:
+                            pushed_val = _resolve_pushed("confirmed", rec[9], rec[2])
+                            conn.execute(
+                                "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', "
+                                "llm_notes='auto: high-trust + CVSS>=9.0', pushed=? WHERE key=?",
+                                (pushed_val, rec[0]))
+                        auto_approved += len(records)
+                        continue
+
+                    # LLM enrichment
+                    verdict, notes = _enrich_one(rep)
+                    if verdict is None:
+                        llm_errors += 1
+                        continue
                     for rec in records:
-                        pushed_val = _resolve_pushed("confirmed", rec[9], rec[2])
+                        pushed_val = _resolve_pushed(verdict, rec[9], rec[2])
                         conn.execute(
-                            "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', "
-                            "llm_notes='auto: high-trust + CVSS>=9.0', pushed=? WHERE key=?",
-                            (pushed_val, rec[0]))
-                    auto_approved += len(records)
-                    continue
+                            "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
+                            (verdict, (notes or "")[:500], pushed_val, rec[0]))
+                    llm_processed += 1
+                    time.sleep(0.5)
 
-                # LLM enrichment
-                verdict, notes = _enrich_one(rep)
-                if verdict is None:
-                    llm_errors += 1
-                    continue
-                for rec in records:
+                # non-CVE records
+                for rec in no_cve:
+                    verdict, notes = _enrich_one(rec)
+                    if verdict is None:
+                        llm_errors += 1
+                        continue
                     pushed_val = _resolve_pushed(verdict, rec[9], rec[2])
                     conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                         (verdict, (notes or "")[:500], pushed_val, rec[0]))
-                llm_processed += 1
-                time.sleep(0.5)
+                    llm_processed += 1
+                    time.sleep(0.5)
 
-            # non-CVE records
-            for rec in no_cve:
-                verdict, notes = _enrich_one(rec)
-                if verdict is None:
-                    llm_errors += 1
-                    continue
-                pushed_val = _resolve_pushed(verdict, rec[9], rec[2])
-                conn.execute(
-                    "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
-                    (verdict, (notes or "")[:500], pushed_val, rec[0]))
-                llm_processed += 1
-                time.sleep(0.5)
-
-            conn.commit()
-            log.info(f"enrich: auto={auto_approved} llm={llm_processed} errors={llm_errors}")
-
-            # fallback: too many LLM errors → push regex-scored items
-            if llm_errors > 3:
-                fallback = conn.execute(
-                    "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', llm_notes='fallback: LLM errors, regex-scored', pushed=1 "
-                    "WHERE llm_verified=0 AND vuln_type IN ('RCE','other') "
-                    "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub')"
-                ).rowcount
                 conn.commit()
-                if fallback:
-                    log.warning(f"enrich: LLM errors, fell back to regex for {fallback} records")
-        else:
-            log.info("enrich: no unverified candidates")
+                log.info(f"enrich: auto={auto_approved} llm={llm_processed} errors={llm_errors}")
 
-    # Phase 3: push pending
-    if not dry:
-        _push_pending(conn)
-    conn.close()
+                # fallback: too many LLM errors → push regex-scored items
+                if llm_errors > 3:
+                    fallback = conn.execute(
+                        "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', llm_notes='fallback: LLM errors, regex-scored', pushed=1 "
+                        "WHERE llm_verified=0 AND vuln_type IN ('RCE','other') "
+                        "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub')"
+                    ).rowcount
+                    conn.commit()
+                    if fallback:
+                        log.warning(f"enrich: LLM errors, fell back to regex for {fallback} records")
+            else:
+                log.info("enrich: no unverified candidates")
+
+        # Phase 3: push pending
+        if not dry:
+            _push_pending(conn)
 
 
 def cmd_rebuild(args):
@@ -2080,26 +2115,25 @@ def cmd_rebuild(args):
         _cmd_rebuild_inner()
 
 def _cmd_rebuild_inner():
-    conn = _get_conn()
-    init_db(conn)
+    with _db() as conn:
+        init_db(conn)
 
-    items = _fetch_all_sources()
-    print(f"fetched {len(items)} items from sources")
+        items = _fetch_all_sources()
+        print(f"fetched {len(items)} items from sources")
 
-    updated = 0
-    for it in items:
-        key = item_key(it["title"], it["link"], it["text"])
-        row = conn.execute("SELECT source, link FROM vulns WHERE key=?", (key,)).fetchone()
-        if row and (row[0] is None or row[1] is None):
-            _backfill_row(conn, key, it)
-            updated += 1
+        updated = 0
+        for it in items:
+            key = item_key(it["title"], it["link"], it["text"])
+            row = conn.execute("SELECT source, link FROM vulns WHERE key=?", (key,)).fetchone()
+            if row and (row[0] is None or row[1] is None):
+                _backfill_row(conn, key, it)
+                updated += 1
 
-    conn.commit()
-    # report remaining incomplete records
-    incomplete = conn.execute(
-        "SELECT COUNT(*) FROM vulns WHERE source IS NULL OR link IS NULL"
-    ).fetchone()[0]
-    conn.close()
+        conn.commit()
+        # report remaining incomplete records
+        incomplete = conn.execute(
+            "SELECT COUNT(*) FROM vulns WHERE source IS NULL OR link IS NULL"
+        ).fetchone()[0]
     print(f"backfilled {updated} records")
     if incomplete:
         print(f"note: {incomplete} records still have NULL fields (source no longer in feeds)")

@@ -107,18 +107,21 @@ def no_cache(response):
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
 
+import contextlib
+
+@contextlib.contextmanager
 def get_db():
-    # quote() guards against rare special chars in DATA_DIR (operator-controlled env)
+    """Context manager for read-only DB access — guarantees close on exception."""
     db_uri = f"file:{urllib.parse.quote(str(DB_FILE), safe='/:')}?mode=ro"
     try:
         conn = sqlite3.connect(db_uri, uri=True, timeout=5)
-        conn.row_factory = sqlite3.Row
-        return conn
     except sqlite3.OperationalError:
-        # ro mode may fail if WAL files don't exist — fall back to normal read
         conn = sqlite3.connect(str(DB_FILE), timeout=5)
-        conn.row_factory = sqlite3.Row
-        return conn
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _vulns_columns(conn):
@@ -136,47 +139,46 @@ def _int_arg(name, default, lo, hi):
 # ── API ──
 @app.route("/api/vulns")
 def api_vulns():
-    conn = get_db()
-    cols_avail = _vulns_columns(conn)
-    where, params = [], []
-    q = request.args.get("q", "").strip()
-    if q:
-        where.append("(cve_id LIKE ? OR title LIKE ? OR summary LIKE ?)")
-        params.extend([f"%{q}%"] * 3)
-    source = request.args.get("source", "").strip()
-    if source:
-        where.append("source = ?"); params.append(source)
-    vuln_type = request.args.get("vuln_type", "").strip()
-    if vuln_type and "vuln_type" in cols_avail:
-        where.append("vuln_type = ?"); params.append(vuln_type)
-    reason = request.args.get("reason", "").strip()
-    if reason:
-        where.append("reason = ?"); params.append(reason)
-    pushed = request.args.get("pushed", "").strip()
-    if pushed == "1":
-        where.append("pushed = 1")
-    days = _int_arg("days", 0, 0, 3650)
-    if days > 0:
-        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-        cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
-        where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
-        params.extend([cutoff_date, cutoff_ts])
+    with get_db() as conn:
+        cols_avail = _vulns_columns(conn)
+        where, params = [], []
+        q = request.args.get("q", "").strip()
+        if q:
+            where.append("(cve_id LIKE ? OR title LIKE ? OR summary LIKE ?)")
+            params.extend([f"%{q}%"] * 3)
+        source = request.args.get("source", "").strip()
+        if source:
+            where.append("source = ?"); params.append(source)
+        vuln_type = request.args.get("vuln_type", "").strip()
+        if vuln_type and "vuln_type" in cols_avail:
+            where.append("vuln_type = ?"); params.append(vuln_type)
+        reason = request.args.get("reason", "").strip()
+        if reason:
+            where.append("reason = ?"); params.append(reason)
+        pushed = request.args.get("pushed", "").strip()
+        if pushed == "1":
+            where.append("pushed = 1")
+        days = _int_arg("days", 0, 0, 3650)
+        if days > 0:
+            cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+            cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+            where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
+            params.extend([cutoff_date, cutoff_ts])
 
-    # column list — drop optional ones missing in pre-migration DBs
-    base_cols = ["cve_id", "source", "title", "link", "summary", "reason", "pushed",
-                 "created_at", "cve_published", "severity", "cvss", "llm_verdict",
-                 "llm_notes", "tg_sent"]
-    optional_cols = ["vuln_type", "freshness"]
-    cols = base_cols + [c for c in optional_cols if c in cols_avail]
-    sql = f"SELECT {','.join(cols)} FROM vulns"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
-    limit = _int_arg("limit", 100, 1, LIMIT_MAX)
-    params.append(limit)
+        # column list — drop optional ones missing in pre-migration DBs
+        base_cols = ["cve_id", "source", "title", "link", "summary", "reason", "pushed",
+                     "created_at", "cve_published", "severity", "cvss", "llm_verdict",
+                     "llm_notes", "tg_sent"]
+        optional_cols = ["vuln_type", "freshness"]
+        cols = base_cols + [c for c in optional_cols if c in cols_avail]
+        sql = f"SELECT {','.join(cols)} FROM vulns"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
+        limit = _int_arg("limit", 100, 1, LIMIT_MAX)
+        params.append(limit)
 
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
+        rows = conn.execute(sql, params).fetchall()
     has_vt = "vuln_type" in cols_avail
     has_fr = "freshness" in cols_avail
     return jsonify([{
@@ -197,11 +199,10 @@ def api_vulns():
 
 @app.route("/api/stats")
 def api_stats():
-    conn = get_db()
-    total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
-    pushed = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
-    sources = conn.execute("SELECT source, COUNT(*) as n FROM vulns WHERE source IS NOT NULL GROUP BY source ORDER BY n DESC").fetchall()
-    conn.close()
+    with get_db() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
+        pushed = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
+        sources = conn.execute("SELECT source, COUNT(*) as n FROM vulns WHERE source IS NOT NULL GROUP BY source ORDER BY n DESC").fetchall()
     return jsonify({
         "total": total, "pushed": pushed,
         "sources": {r["source"]: r["n"] for r in sources},
@@ -210,9 +211,8 @@ def api_stats():
 
 @app.route("/api/sources")
 def api_sources():
-    conn = get_db()
-    rows = conn.execute("SELECT DISTINCT source FROM vulns WHERE source IS NOT NULL ORDER BY source").fetchall()
-    conn.close()
+    with get_db() as conn:
+        rows = conn.execute("SELECT DISTINCT source FROM vulns WHERE source IS NOT NULL ORDER BY source").fetchall()
     return jsonify([r["source"] for r in rows])
 
 
