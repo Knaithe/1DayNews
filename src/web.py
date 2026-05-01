@@ -152,6 +152,9 @@ def api_vulns():
         vuln_type = request.args.get("vuln_type", "").strip()
         if vuln_type and "vuln_type" in cols_avail:
             where.append("vuln_type = ?"); params.append(vuln_type)
+        severity = request.args.get("severity", "").strip().lower()
+        if severity in ("critical", "high", "medium", "low"):
+            where.append("LOWER(severity) = ?"); params.append(severity)
         reason = request.args.get("reason", "").strip()
         if reason:
             where.append("reason = ?"); params.append(reason)
@@ -474,6 +477,14 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill" data-vtype="other">other</button>
 </div>
 
+<div class="filter-row" id="sevRow" role="group" aria-label="Filter by severity">
+  <button type="button" class="cat-pill active" data-sev="">All</button>
+  <button type="button" class="cat-pill" data-sev="critical">Critical</button>
+  <button type="button" class="cat-pill" data-sev="high">High</button>
+  <button type="button" class="cat-pill" data-sev="medium">Medium</button>
+  <button type="button" class="cat-pill" data-sev="low">Low</button>
+</div>
+
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
 
 <div class="grid" id="cardList" aria-live="polite" aria-busy="false"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
@@ -499,7 +510,7 @@ const TYPE_STYLE = {
   "other": {bg:"#FEF3C7",fg:"#92400e"},
 };
 
-let debounceTimer, activeCat = '', activeType = '', activeDays = '7';
+let debounceTimer, activeCat = '', activeType = '', activeDays = '7', activeSeverity = '';
 let currentLimit = 100;
 const MAX_LIMIT = __LIMIT_MAX__;
 document.getElementById('loadMoreBtn').addEventListener('click', () => {
@@ -521,6 +532,9 @@ document.querySelectorAll('#timeRow .cat-pill').forEach(p => p.addEventListener(
 }));
 document.querySelectorAll('#typeRow .cat-pill').forEach(p => p.addEventListener('click', () => {
   activeType = p.dataset.vtype; setActive('#typeRow', 'vtype', activeType); loadVulns();
+}));
+document.querySelectorAll('#sevRow .cat-pill').forEach(p => p.addEventListener('click', () => {
+  activeSeverity = p.dataset.sev; setActive('#sevRow', 'sev', activeSeverity); loadVulns();
 }));
 
 async function loadSources() {
@@ -615,6 +629,7 @@ async function loadVulns(append=false) {
   if (q) params.set('q', q);
   if (activeCat) params.set('source', activeCat);
   if (activeType) params.set('vuln_type', activeType);
+  if (activeSeverity) params.set('severity', activeSeverity);
   if (activeDays) params.set('days', activeDays);
   if (document.getElementById('pushedFilter').checked) params.set('pushed', '1');
   params.set('limit', String(currentLimit));
