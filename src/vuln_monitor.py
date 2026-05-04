@@ -2041,9 +2041,9 @@ def _cmd_rescore_inner():
         init_db(conn)
         _warm_nvd_cache(conn)
         # only rescore records NOT yet verified by LLM — don't override LLM verdicts
-        rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed FROM vulns WHERE llm_verified=0").fetchall()
+        rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed, cve_published FROM vulns WHERE llm_verified=0").fetchall()
         upgraded = downgraded = unchanged = 0
-        for key, cve_id, source, title, link, summary, old_reason, old_pushed in rows:
+        for key, cve_id, source, title, link, summary, old_reason, old_pushed, existing_pub in rows:
             text = f"{title or ''}\n{summary or ''}"
 
             hit, reason, vuln_type = score(text)
@@ -2056,15 +2056,31 @@ def _cmd_rescore_inner():
                 if hit and not fresh:
                     hit = False
             elif source in FRESH_SOURCES:
-                year = datetime.now(timezone.utc).year
-                id_year_m = re.search(r'(?:XVE|FG-IR|ZDI|PAN-SA)-(\d{4})', text)
-                if id_year_m and int(id_year_m.group(1)) < year - 1:
-                    freshness = "nday"
-                    fresh_reason = "old_advisory_id"
-                    hit = False
+                # use existing cve_published from DB if available (same as _run's _pub_date)
+                if existing_pub:
+                    try:
+                        pub_dt = datetime.fromisoformat(existing_pub[:10]).replace(tzinfo=timezone.utc)
+                        cutoff = datetime.now(timezone.utc) - timedelta(days=_FRESHNESS_DAYS)
+                        if pub_dt >= cutoff:
+                            freshness = "1day"
+                            fresh_reason = "source_pub_date"
+                        else:
+                            freshness = "nday"
+                            fresh_reason = "source_pub_date"
+                            hit = False
+                    except ValueError:
+                        freshness = "1day"
+                        fresh_reason = "high_trust_source"
                 else:
-                    freshness = "1day"
-                    fresh_reason = "high_trust_source"
+                    year = datetime.now(timezone.utc).year
+                    id_year_m = re.search(r'(?:XVE|FG-IR|ZDI|PAN-SA)-(\d{4})', text)
+                    if id_year_m and int(id_year_m.group(1)) < year - 1:
+                        freshness = "nday"
+                        fresh_reason = "old_advisory_id"
+                        hit = False
+                    else:
+                        freshness = "1day"
+                        fresh_reason = "high_trust_source"
             elif hit:
                 freshness = "nday"
                 fresh_reason = "no_cve_low_trust"
