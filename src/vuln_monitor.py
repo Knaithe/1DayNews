@@ -438,7 +438,7 @@ VENDOR_URL_FALLBACK = {
     "Horizon3":     "https://www.horizon3.ai/attack-research/",
     "Rapid7":       "https://www.rapid7.com/blog/",
     "Chaitin":      "https://stack.chaitin.com/vuldb/index",
-    "ThreatBook":   "https://x.threatbook.com/nodev4/vul_intelligence/recentvuln",
+    "ThreatBook":   "https://x.threatbook.com/v5/vul",
     "GitHub":       "https://github.com",
 }
 
@@ -1455,7 +1455,7 @@ def fetch_threatbook():
     try:
         s.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://x.threatbook.com/nodev4/vul_intelligence/recentvuln",
+            "Referer": "https://x.threatbook.com/v5/vul",
             "Origin": "https://x.threatbook.com",
             "Accept": "application/json",
         })
