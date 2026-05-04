@@ -1477,12 +1477,15 @@ def fetch_threatbook():
                 summary = f"affects: {affects}" if affects else ""
                 if poc:
                     summary = f"PoC available. {summary}"
+                if pub_date:
+                    summary = f"published: {pub_date}. {summary}"
                 out.append({
                     "source": "ThreatBook",
                     "title": title[:300],
                     "link": link,
                     "summary": summary[:500],
                     "text": f"{title}\n{summary}\n{affects}",
+                    "_pub_date": pub_date,  # used by _run() to set cve_published
                 })
     except Exception as ex:
         log.warning(f"ThreatBook err: {ex}")
@@ -1773,16 +1776,34 @@ def _run(no_push=False):
                 if hit and not fresh:
                     hit = False
             elif it["source"] in FRESH_SOURCES:
-                # high-trust source without CVE — check for old advisory IDs (XVE-2023, FG-IR-24, etc.)
-                year = datetime.now(timezone.utc).year
-                id_year_m = re.search(r'(?:XVE|FG-IR|ZDI|PAN-SA)-(\d{4})', it["text"])
-                if id_year_m and int(id_year_m.group(1)) < year - 1:
-                    freshness = "nday"
-                    fresh_reason = "old_advisory_id"
-                    hit = False
+                # check source-provided publish date first (e.g. ThreatBook vuln_publish_time)
+                src_pub = it.get("_pub_date", "")
+                if src_pub:
+                    cve_pub = src_pub[:10]
+                    try:
+                        pub_dt = datetime.fromisoformat(src_pub[:10]).replace(tzinfo=timezone.utc)
+                        cutoff = datetime.now(timezone.utc) - timedelta(days=_FRESHNESS_DAYS)
+                        if pub_dt >= cutoff:
+                            freshness = "1day"
+                            fresh_reason = "source_pub_date"
+                        else:
+                            freshness = "nday"
+                            fresh_reason = "source_pub_date"
+                            hit = False
+                    except ValueError:
+                        freshness = "1day"
+                        fresh_reason = "high_trust_source"
                 else:
-                    freshness = "1day"
-                    fresh_reason = "high_trust_source"
+                    # fallback: check advisory ID year (XVE-2023, FG-IR-24, etc.)
+                    year = datetime.now(timezone.utc).year
+                    id_year_m = re.search(r'(?:XVE|FG-IR|ZDI|PAN-SA)-(\d{4})', it["text"])
+                    if id_year_m and int(id_year_m.group(1)) < year - 1:
+                        freshness = "nday"
+                        fresh_reason = "old_advisory_id"
+                        hit = False
+                    else:
+                        freshness = "1day"
+                        fresh_reason = "high_trust_source"
             elif hit:
                 # low-trust source, no CVE → can't verify freshness
                 freshness = "nday"
