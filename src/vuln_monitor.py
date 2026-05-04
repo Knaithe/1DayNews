@@ -156,6 +156,8 @@ RCE_PATTERNS = [
     r"\bRCE\b", r"remote code execution", r"arbitrary (code|command) execution",
     r"execute arbitrary (code|command)", r"execution of arbitrary (code|command)",
     r"code injection", r"command injection", r"OS command injection",
+    # Chinese
+    r"远程代码执行", r"远程命令执行", r"代码执行漏洞", r"命令执行漏洞", r"任意代码执行", r"反序列化漏洞",
     # auth prerequisite
     r"unauthenticated", r"pre[- ]?auth(entication)?", r"\bunauth\b",
     r"no authentication (required|needed)", r"anonymous\s+(access|rce|exec)",
@@ -762,6 +764,8 @@ def score(text):
         return True, "RCE+asset", "RCE"
     if rce and cve:
         return True, "RCE+CVE", "RCE"
+    if rce:
+        return True, "RCE", "RCE"
     if asset and cve:
         return True, "asset+CVE", "other"
     return False, "no hit", None
