@@ -176,7 +176,8 @@ RCE_PATTERNS = [
     r"integer overflow.*(exec|RCE|oob)",
     r"race condition.*(exec|RCE|kernel)",
     # file upload / traversal escalating to exec
-    r"(unrestricted|arbitrary) file upload.*(exec|shell|webshell|RCE)",
+    r"(unrestricted|arbitrary) file upload",
+    r"任意文件上传", r"文件上传漏洞",
     r"(path|directory) traversal.*(write|overwrite|exec|upload|RCE)",
     r"webshell", r"arbitrary file write.*(exec|RCE|service)",
     # in-the-wild / value tags
