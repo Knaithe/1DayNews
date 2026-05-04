@@ -1472,7 +1472,7 @@ def fetch_threatbook():
                 poc = v.get("pocExist", False)
                 affects = ", ".join(v.get("affects", []))
                 pub_date = v.get("vuln_publish_time", "")
-                link = f"https://x.threatbook.com/nodev4/vul_intelligence/{xve}" if xve else ""
+                link = f"https://x.threatbook.com/v5/vul/{xve}" if xve else ""
                 title = f"[{risk}] {xve} {name}"
                 summary = f"affects: {affects}" if affects else ""
                 if poc:
@@ -1773,9 +1773,16 @@ def _run(no_push=False):
                 if hit and not fresh:
                     hit = False
             elif it["source"] in FRESH_SOURCES:
-                # high-trust source without CVE (e.g. Fortinet FG-IR)
-                freshness = "1day"
-                fresh_reason = "high_trust_source"
+                # high-trust source without CVE — check for old advisory IDs (XVE-2023, FG-IR-24, etc.)
+                year = datetime.now(timezone.utc).year
+                id_year_m = re.search(r'(?:XVE|FG-IR|ZDI|PAN-SA)-(\d{4})', it["text"])
+                if id_year_m and int(id_year_m.group(1)) < year - 1:
+                    freshness = "nday"
+                    fresh_reason = "old_advisory_id"
+                    hit = False
+                else:
+                    freshness = "1day"
+                    fresh_reason = "high_trust_source"
             elif hit:
                 # low-trust source, no CVE → can't verify freshness
                 freshness = "nday"
@@ -2027,8 +2034,15 @@ def _cmd_rescore_inner():
                 if hit and not fresh:
                     hit = False
             elif source in FRESH_SOURCES:
-                freshness = "1day"
-                fresh_reason = "high_trust_source"
+                year = datetime.now(timezone.utc).year
+                id_year_m = re.search(r'(?:XVE|FG-IR|ZDI|PAN-SA)-(\d{4})', text)
+                if id_year_m and int(id_year_m.group(1)) < year - 1:
+                    freshness = "nday"
+                    fresh_reason = "old_advisory_id"
+                    hit = False
+                else:
+                    freshness = "1day"
+                    fresh_reason = "high_trust_source"
             elif hit:
                 freshness = "nday"
                 fresh_reason = "no_cve_low_trust"
