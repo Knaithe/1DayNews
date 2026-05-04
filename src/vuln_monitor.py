@@ -737,6 +737,9 @@ def item_key(title, link, text):
     cves = sorted(set(c.upper() for c in CVE_RE.findall(text)))
     if cves:
         return "cve:" + cves[0]
+    # prefer link-only key to avoid duplicates when title varies (e.g. ThreatBook [] vs [高风险])
+    if link:
+        return "u:" + hashlib.sha1(link.encode("utf-8")).hexdigest()[:16]
     return "h:" + hashlib.sha1((title + "|" + (link or "")).encode("utf-8")).hexdigest()[:16]
 
 
