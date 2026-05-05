@@ -734,11 +734,19 @@ def _auto_enrich():
         conn.commit()
     return updated
 
+_ADVISORY_ID_RE = re.compile(
+    r"(XVE-\d{4}-\d+|FG-IR-\d+-\d+|ZDI-\d+-\d+|GHSA-[\w-]+|PAN-SA-\d+-\d+|CT-\d+)", re.I
+)
+
 def item_key(title, link, text):
     cves = sorted(set(c.upper() for c in CVE_RE.findall(text)))
     if cves:
         return "cve:" + cves[0]
-    # prefer link-only key to avoid duplicates when title varies (e.g. ThreatBook [] vs [高风险])
+    # advisory IDs (XVE/FG-IR/ZDI/GHSA/CT) — stable across link/title changes
+    adv_ids = sorted(set(m.upper() for m in _ADVISORY_ID_RE.findall(text)))
+    if adv_ids:
+        return "adv:" + adv_ids[0]
+    # fallback: link-only hash
     if link:
         return "u:" + hashlib.sha1(link.encode("utf-8")).hexdigest()[:16]
     return "h:" + hashlib.sha1((title + "|" + (link or "")).encode("utf-8")).hexdigest()[:16]
