@@ -419,7 +419,9 @@ FRESH_SOURCES = frozenset({
     "Fortinet", "PaloAlto", "Cisco", "MSRC",        # Vendor PSIRT
     "CISA_KEV",                                       # In-the-wild confirmation
     "ZDI", "watchTowr", "Horizon3", "Rapid7",        # Research teams
-    "Chaitin", "ThreatBook",                           # Curated vuln databases
+    "Chaitin",                                            # Curated vuln database
+    # ThreatBook: NOT in FRESH_SOURCES — premium section lacks vuln_publish_time,
+    # mixes old vulns (XVE-2025 with 2025-04 pub date) into current listings.
     "DailyCVE",                                        # Aggregator, but entries are day-of CVEs (not old rehash)
     "GHSA",                                            # GitHub Advisory Database (reviewed by GitHub security team)
 })
