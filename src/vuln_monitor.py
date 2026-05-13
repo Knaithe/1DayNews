@@ -1608,7 +1608,7 @@ def fetch_github_advisories():
         for page in (1, 2):
             try:
                 r = SESS.get("https://api.github.com/advisories",
-                             params={"type": "reviewed", "severity": severity,
+                             params={"severity": severity,
                                      "sort": "published", "direction": "desc",
                                      "per_page": 100, "page": page},
                              headers=headers, timeout=15)
