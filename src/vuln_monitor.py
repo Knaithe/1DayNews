@@ -170,7 +170,7 @@ RCE_PATTERNS = [
     r"prototype pollution.*(RCE|exec|gadget|chain)",
     r"\bJNDI\b", r"\bOGNL\b",
     # memory corruption
-    r"memory corruption", r"stack[- ]?(buffer )?overflow", r"heap[- ]?overflow",
+    r"memory corruption", r"stack[- ]?(based )?(buffer )?overflow", r"heap[- ]?(based )?(buffer )?overflow",
     r"use[- ]after[- ]free\b", r"\bUAF\b", r"double free",
     r"type confusion", r"out[- ]of[- ]bounds? (read|write)", r"\bOOB\b",
     r"integer overflow.*(exec|RCE|oob)",
