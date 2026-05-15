@@ -984,7 +984,7 @@ def _backfill_nvd_severity(conn):
     rows = conn.execute(
         "SELECT key, cve_id FROM vulns "
         "WHERE cve_id IS NOT NULL AND cve_id LIKE 'CVE-%' "
-        "AND (severity IS NULL OR cve_published IS NULL) "
+        "AND (severity IS NULL OR cve_published IS NULL OR (vuln_type != 'RCE' AND vuln_type IS NOT NULL)) "
         f"LIMIT {batch}"
     ).fetchall()
     updated = 0
@@ -1608,46 +1608,55 @@ def fetch_poc_in_github():
 
 
 def fetch_github_advisories():
-    """Fetch recent reviewed advisories from GitHub Advisory Database.
+    """Fetch recent advisories from GitHub Advisory Database.
 
-    Pulls critical + high severity, 100 per page × 2 pages = up to 400 advisories.
+    Uses date-range windowing to cover the last 30 days, avoiding pagination limits.
+    Pulls critical + high severity in weekly windows.
     """
     out = []
     headers = {"Accept": "application/vnd.github+json"}
     if GH_TOKEN:
         headers["Authorization"] = f"Bearer {GH_TOKEN}"
+    now = datetime.now(timezone.utc)
     for severity in ("critical", "high"):
-        for page in (1, 2):
-            try:
-                r = SESS.get("https://api.github.com/advisories",
-                             params={"severity": severity,
-                                     "sort": "published", "direction": "desc",
-                                     "per_page": 100, "page": page},
-                             headers=headers, timeout=15)
-                if r.status_code != 200:
-                    log.warning(f"GitHub Advisory {severity} p{page} HTTP {r.status_code}")
+        # slide 7-day windows over last 30 days
+        for weeks_ago in range(5):
+            end = now - timedelta(days=weeks_ago * 7)
+            start = end - timedelta(days=7)
+            date_range = f"{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
+            for page in (1, 2):
+                try:
+                    r = SESS.get("https://api.github.com/advisories",
+                                 params={"severity": severity, "published": date_range,
+                                         "sort": "published", "direction": "desc",
+                                         "per_page": 100, "page": page},
+                                 headers=headers, timeout=15)
+                    if r.status_code != 200:
+                        break
+                    advs = r.json()
+                    if not isinstance(advs, list) or not advs:
+                        break
+                    for adv in advs:
+                        cve = adv.get("cve_id") or adv.get("ghsa_id", "")
+                        summary = adv.get("summary", "")
+                        cvss = adv.get("cvss", {}).get("score")
+                        sev = adv.get("severity", "")
+                        cvss_str = f" (CVSS {cvss})" if cvss else ""
+                        sev_str = f" [{sev.upper()}]" if sev else ""
+                        out.append({
+                            "source": "GHSA",
+                            "title": f"{sev_str} {cve} {summary[:200]}".strip(),
+                            "link": adv.get("html_url", ""),
+                            "summary": f"{summary}{cvss_str}",
+                            "text": f"{cve} {summary}",
+                        })
+                    if len(advs) < 100:
+                        break  # no more pages for this window
+                except Exception as ex:
+                    log.warning(f"GHSA {severity} {date_range} p{page}: {ex}")
                     break
-                advs = r.json()
-                if not advs:
-                    break
-                for adv in advs:
-                    cve = adv.get("cve_id") or adv.get("ghsa_id", "")
-                    summary = adv.get("summary", "")
-                    cvss = adv.get("cvss", {}).get("score")
-                    sev = adv.get("severity", "")
-                    cvss_str = f" (CVSS {cvss})" if cvss else ""
-                    sev_str = f" [{sev.upper()}]" if sev else ""
-                    out.append({
-                        "source": "GHSA",
-                        "title": f"{sev_str} {cve} {summary[:200]}".strip(),
-                        "link": adv.get("html_url", ""),
-                        "summary": f"{summary}{cvss_str}",
-                        "text": f"{cve} {summary}",
-                    })
-            except Exception as ex:
-                log.warning(f"GitHub Advisory {severity} p{page} err: {ex}")
-                break
-            time.sleep(1)
+                time.sleep(0.5)
+            time.sleep(0.5)
     return out
 
 
