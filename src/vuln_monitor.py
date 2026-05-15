@@ -996,10 +996,22 @@ def _backfill_nvd_severity(conn):
             if detail and (detail.get("cvss") or detail.get("published")):
                 break
         if detail:
-            conn.execute(
-                "UPDATE vulns SET severity=COALESCE(severity,?), cvss=COALESCE(cvss,?), "
-                "cve_published=COALESCE(cve_published,?) WHERE key=?",
-                (detail.get("severity"), detail.get("cvss"), detail.get("published"), key))
+            # re-score with NVD description to upgrade vuln_type (e.g. other → RCE)
+            desc = detail.get("description", "")
+            vtype_upgrade = None
+            if desc:
+                hit, _, vt = score(desc)
+                if hit and vt == "RCE":
+                    vtype_upgrade = "RCE"
+            sql = ("UPDATE vulns SET severity=COALESCE(severity,?), cvss=COALESCE(cvss,?), "
+                   "cve_published=COALESCE(cve_published,?)")
+            params = [detail.get("severity"), detail.get("cvss"), detail.get("published")]
+            if vtype_upgrade:
+                sql += ", vuln_type=?"
+                params.append(vtype_upgrade)
+            sql += " WHERE key=?"
+            params.append(key)
+            conn.execute(sql, params)
             updated += 1
     if updated:
         conn.commit()
