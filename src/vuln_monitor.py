@@ -1140,22 +1140,39 @@ def _tool_fetch_nvd_detail(cve_id):
         detail["description"] = detail["description"][:1000]
     return json.dumps(detail, ensure_ascii=False)[:_TOOL_MAX_OUTPUT]
 
+def _ssrf_check_url(url):
+    """Validate URL scheme and resolved IPs against SSRF. Returns error string or None."""
+    from urllib.parse import urlparse
+    import socket, ipaddress
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return "only http/https allowed"
+    try:
+        for info in socket.getaddrinfo(parsed.hostname or "", None):
+            addr = ipaddress.ip_address(info[4][0])
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                return "internal addresses not allowed"
+    except (socket.gaierror, ValueError):
+        return "DNS resolution failed"
+    return None
+
 def _tool_fetch_source_page(url):
     try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return json.dumps({"error": "only http/https allowed"})
-        # block internal/private IPs (SSRF protection)
-        import socket, ipaddress
-        try:
-            for info in socket.getaddrinfo(parsed.hostname or "", None):
-                addr = ipaddress.ip_address(info[4][0])
-                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-                    return json.dumps({"error": "internal addresses not allowed"})
-        except (socket.gaierror, ValueError):
-            return json.dumps({"error": "DNS resolution failed"})
-        r = SESS.get(url, timeout=15, headers={"User-Agent": "vuln-monitor/1.0"})
+        from urllib.parse import urljoin
+        err = _ssrf_check_url(url)
+        if err:
+            return json.dumps({"error": err})
+        cur_url = url
+        for _ in range(5):
+            r = SESS.get(cur_url, timeout=15, allow_redirects=False,
+                         headers={"User-Agent": "vuln-monitor/1.0"})
+            if r.is_redirect and "location" in r.headers:
+                cur_url = urljoin(cur_url, r.headers["location"])
+                err = _ssrf_check_url(cur_url)
+                if err:
+                    return json.dumps({"error": f"redirect blocked: {err}"})
+                continue
+            break
         text = re.sub(r"<[^>]+>", " ", r.text)
         return re.sub(r"\s+", " ", text).strip()[:2000]
     except Exception as ex:

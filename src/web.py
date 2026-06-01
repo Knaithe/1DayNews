@@ -736,10 +736,15 @@ if __name__ == "__main__":
         print(f"  token:      {_MAGIC_TOKEN}")
         print(f"  token file: {TOKEN_FILE}")
         print(f"  database:   {DB_FILE}")
+    elif args.host not in ("127.0.0.1", "localhost", "::1"):
+        _MAGIC_TOKEN = _load_or_create_token()
+        print(f"vuln-monitor dashboard (non-loopback, token enforced)")
+        print(f"  bind:       {args.host}:{args.port}")
+        print(f"  token:      {_MAGIC_TOKEN}")
+        print(f"  database:   {DB_FILE}")
     else:
         print(f"vuln-monitor dashboard: http://{args.host}:{args.port}")
         print(f"database: {DB_FILE}")
-        if args.host == "127.0.0.1":
-            print(f"localhost only (use --public for external access, or SSH tunnel)")
+        print(f"localhost only (use --public for external access, or SSH tunnel)")
 
     serve(app, host=args.host, port=args.port)
