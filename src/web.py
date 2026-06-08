@@ -155,9 +155,12 @@ def api_vulns():
         severity = request.args.get("severity", "").strip().lower()
         if severity in ("critical", "high", "medium", "low"):
             where.append("LOWER(severity) = ?"); params.append(severity)
-        pr = request.args.get("pr", "").strip().upper()
-        if pr in ("N", "L", "H") and "cvss_pr" in cols_avail:
-            where.append("cvss_pr = ?"); params.append(pr)
+        pr = request.args.get("pr", "").strip()
+        if pr and "cvss_pr" in cols_avail:
+            if pr.upper() in ("N", "L", "H"):
+                where.append("cvss_pr = ?"); params.append(pr.upper())
+            elif pr == "!N":
+                where.append("cvss_pr IS NOT NULL AND cvss_pr != 'N'")
         reason = request.args.get("reason", "").strip()
         if reason:
             where.append("reason = ?"); params.append(reason)
@@ -498,8 +501,7 @@ a:hover { text-decoration: underline; }
 <div class="filter-row" id="prRow" role="group" aria-label="Filter by privileges required">
   <button type="button" class="cat-pill active" data-pr="">All</button>
   <button type="button" class="cat-pill" data-pr="N">Unauth</button>
-  <button type="button" class="cat-pill" data-pr="L">Low Priv</button>
-  <button type="button" class="cat-pill" data-pr="H">High Priv</button>
+  <button type="button" class="cat-pill" data-pr="!N">Auth Required</button>
 </div>
 
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
