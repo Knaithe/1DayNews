@@ -1043,7 +1043,7 @@ def _backfill_nvd_severity(conn):
 # ================== LLM ENRICHMENT ==================
 # System prompt: load from DATA_DIR/llm_prompt.txt if exists, else use default.
 _LLM_PROMPT_FILE = DATA_DIR / "llm_prompt.txt"
-_LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. Determine whether a vulnerability is genuine and worth alerting on.
+_LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. Today is {today}. Determine whether a vulnerability is genuine and worth alerting on.
 
 ## Verdict categories:
 - confirmed: Genuine vulnerability affecting real, widely-deployed products. Worth pushing.
@@ -1065,14 +1065,15 @@ Output ONLY JSON (no markdown):
 
 def _get_llm_prompt():
     """Load system prompt from file (if exists) or use default."""
+    today = datetime.now().strftime("%Y-%m-%d")
     if _LLM_PROMPT_FILE.exists():
         try:
             custom = _LLM_PROMPT_FILE.read_text(encoding="utf-8").strip()
             if custom:
-                return custom
+                return custom.replace("{today}", today)
         except Exception:
             pass
-    return _LLM_SYSTEM_PROMPT_DEFAULT
+    return _LLM_SYSTEM_PROMPT_DEFAULT.replace("{today}", today)
 
 _ENRICH_TOOLS = [
     {"type": "function", "function": {
