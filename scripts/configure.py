@@ -89,6 +89,10 @@ def do_interactive(path: Path) -> None:
         "tg_bot_token": prompt("Telegram Bot Token",       existing.get("tg_bot_token", ""),  required=True),
         "tg_chat_id":   prompt("Telegram Chat/Channel ID", existing.get("tg_chat_id", ""),    required=True),
         "gh_token":     prompt("GitHub PAT",               existing.get("gh_token", ""),      required=False),
+        "wecom_webhook_key":      prompt("WeCom Webhook Key",         existing.get("wecom_webhook_key", ""),      required=False),
+        "dingtalk_webhook_token":  prompt("DingTalk Webhook Token",    existing.get("dingtalk_webhook_token", ""),  required=False),
+        "dingtalk_webhook_secret": prompt("DingTalk Webhook Secret",   existing.get("dingtalk_webhook_secret", ""), required=False),
+        "feishu_webhook_url":      prompt("Feishu Webhook URL",        existing.get("feishu_webhook_url", ""),      required=False),
         "https_proxy":  prompt("HTTPS proxy",              existing.get("https_proxy", ""),   required=False),
     }
 
@@ -104,13 +108,16 @@ def do_show(path: Path) -> None:
         return
     cfg = load(path)
     print(f"path: {path}\n")
-    for k in ("tg_bot_token", "tg_chat_id", "gh_token", "https_proxy"):
+    _ALL_KEYS = [
+        "tg_bot_token", "tg_chat_id", "gh_token",
+        "wecom_webhook_key", "dingtalk_webhook_token", "dingtalk_webhook_secret",
+        "feishu_webhook_url", "https_proxy",
+    ]
+    _PLAIN_KEYS = {"tg_chat_id", "https_proxy"}
+    for k in _ALL_KEYS:
         v = cfg.get(k, "")
-        # chat_id and proxy are not secrets — show them in full
-        if k in ("tg_chat_id", "https_proxy"):
-            print(f"  {k:15s} = {v or '(empty)'}")
-        else:
-            print(f"  {k:15s} = {mask(v)}")
+        display = (v or "(empty)") if k in _PLAIN_KEYS else mask(v)
+        print(f"  {k:25s} = {display}")
 
 
 def main():

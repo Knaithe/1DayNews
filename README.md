@@ -1,6 +1,6 @@
 # vuln-monitor
 
-聚合多源 0day/1day RCE 情报，关键词过滤后推 Telegram + Web 仪表盘。面向安全研究员的个人订阅器。
+聚合多源 0day/1day RCE 情报，关键词过滤后多通道推送（Telegram / 企业微信 / 钉钉 / 飞书）+ Web 仪表盘。面向安全研究员的个人订阅器。
 
 ## 核心特性
 
@@ -52,23 +52,43 @@ ssh -L 8001:127.0.0.1:8001 user@srv  # 远程 SSH 隧道访问
 
 Pluto Security 风格暖色卡片布局，实时搜索，药丸式源/原因/时间筛选，严重性颜色编码。默认只显示精选（pushed），可切换全量。安全加固（CSP/X-Frame-Options/nosniff），只读 SQLite + waitress，只绑 127.0.0.1。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
 
-## Telegram 推送
+## 推送通道
+
+支持 4 个推送通道，按需配置，不配则跳过（dry mode）。每个通道独立跟踪发送状态，互不影响。
 
 ```bash
-python scripts/configure.py          # 交互式配置 TG_BOT_TOKEN / TG_CHAT_ID
-python src/vuln_monitor.py fetch     # 配置后自动推送
+python scripts/configure.py          # 交互式配置所有凭证
+python src/vuln_monitor.py fetch     # 配置后自动推送到已启用通道
 ```
 
-支持多频道/群/个人同时推送：`TG_CHAT_ID=-100xxx,-100yyy,123456`
-
 优先级：环境变量 > 配置文件 > 空（dry mode）。
+
+### Telegram
+
+`TG_CHAT_ID` 支持多频道/群/个人同时推送：`-100xxx,-100yyy,123456`
+
+### 企业微信（WeCom）
+
+群聊 → 右键 → 添加群机器人 → 复制 Webhook URL 中的 `key` 参数。频率限制 20 条/分钟。
+
+### 钉钉（DingTalk）
+
+群设置 → 智能群助手 → 添加机器人 → 自定义 Webhook → 复制 `access_token`。建议开启「加签」安全设置并填写 `DINGTALK_WEBHOOK_SECRET`。频率限制 20 条/分钟。
+
+### 飞书（Feishu）
+
+群设置 → 群机器人 → 添加自定义机器人 → 复制完整 Webhook URL。频率限制 100 条/分钟。
 
 ### 凭证配置
 
 | 变量 | 用途 | 获取 |
 |---|---|---|
 | `TG_BOT_TOKEN` | Telegram 推送 | @BotFather |
-| `TG_CHAT_ID` | 推送目标（逗号分隔多个） | @userinfobot / @RawDataBot |
+| `TG_CHAT_ID` | Telegram 目标（逗号分隔多个） | @userinfobot / @RawDataBot |
+| `WECOM_WEBHOOK_KEY` | 企业微信群机器人 | 群聊 → 添加群机器人 → Webhook URL 中的 key |
+| `DINGTALK_WEBHOOK_TOKEN` | 钉钉群机器人 | 群设置 → 智能群助手 → Webhook URL 中的 access_token |
+| `DINGTALK_WEBHOOK_SECRET` | 钉钉加签密钥（可选） | 创建机器人时勾选「加签」→ 复制 SEC 开头的密钥 |
+| `FEISHU_WEBHOOK_URL` | 飞书群机器人 | 群设置 → 群机器人 → 复制完整 Webhook URL |
 | `GH_TOKEN` | GitHub API 限频 60→5000 次/小时 | GitHub → Settings → Developer settings → PAT |
 | `NVD_API_KEY` | NVD API 限频 5→50 次/30 秒 | https://nvd.nist.gov/developers/request-an-api-key |
 | `DEEPSEEK_API_KEY` | LLM 研判（推荐，便宜） | https://platform.deepseek.com |
@@ -189,7 +209,7 @@ LLM_TOP_P=0.9
 │     ├─ GitHub/PoC-GitHub → 锁 0
 │     └─ 其他 → LLM 决定（只能降级）
 │
-└─ 5. pushed=1 AND tg_sent=0 → Telegram 推送
+└─ 5. pushed=1 → 多通道推送（Telegram / 企业微信 / 钉钉 / 飞书，各通道独立跟踪）
 ```
 
 **核心规则：** freshness 必须为 1day 才推送（nday/NULL 都锁 0）· GitHub 源 → 仅候选 · 低信任源必须 NVD 确认（不回退年份）· LLM 只能降级 · LLM 不可推翻 freshness

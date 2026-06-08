@@ -8,7 +8,8 @@ Sources (17):
     + vuln databases (Chaitin/ThreatBook) + GitHub PoC search
 
 Flow:
-    fetch → dedup (SQLite, CVE/hash key) → RCE keyword score → Telegram push
+    fetch → dedup (SQLite, CVE/hash key) → RCE keyword score
+    → multi-channel push (Telegram / WeCom / DingTalk / Feishu)
 
 CLI:
     python vuln_monitor.py              # fetch (default)
@@ -84,6 +85,11 @@ LLM_MAX_CONTEXT = int(os.getenv("LLM_MAX_CONTEXT")    or _user_cfg.get("llm_max_
 LLM_REASONING   = os.getenv("LLM_REASONING_EFFORT")   or _user_cfg.get("llm_reasoning_effort", "high")
 LLM_TOP_P       = float(os.getenv("LLM_TOP_P")        or _user_cfg.get("llm_top_p", "0.9"))
 PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
+
+WECOM_WEBHOOK_KEY      = os.getenv("WECOM_WEBHOOK_KEY")      or _user_cfg.get("wecom_webhook_key", "")
+DINGTALK_WEBHOOK_TOKEN  = os.getenv("DINGTALK_WEBHOOK_TOKEN")  or _user_cfg.get("dingtalk_webhook_token", "")
+DINGTALK_WEBHOOK_SECRET = os.getenv("DINGTALK_WEBHOOK_SECRET") or _user_cfg.get("dingtalk_webhook_secret", "")
+FEISHU_WEBHOOK_URL      = os.getenv("FEISHU_WEBHOOK_URL")      or _user_cfg.get("feishu_webhook_url", "")
 
 SCRIPT_DIR     = Path(__file__).resolve().parent
 # Runtime state (cache / lock / alert-state / log) lives in DATA_DIR.
@@ -564,7 +570,10 @@ def init_db(conn):
             llm_verified  INTEGER DEFAULT 0,
             llm_verdict   TEXT,
             llm_notes     TEXT,
-            tg_sent       INTEGER DEFAULT 0
+            tg_sent       INTEGER DEFAULT 0,
+            wecom_sent    INTEGER DEFAULT 0,
+            dingtalk_sent INTEGER DEFAULT 0,
+            feishu_sent   INTEGER DEFAULT 0
         )
     """)
     # migrate: add columns if missing (existing databases)
@@ -577,6 +586,9 @@ def init_db(conn):
         ("llm_verdict",   "TEXT"),
         ("llm_notes",     "TEXT"),
         ("tg_sent",       "INTEGER DEFAULT 0"),
+        ("wecom_sent",    "INTEGER DEFAULT 0"),
+        ("dingtalk_sent", "INTEGER DEFAULT 0"),
+        ("feishu_sent",   "INTEGER DEFAULT 0"),
         ("freshness",     "TEXT"),
         ("freshness_reason", "TEXT"),
         ("vuln_type",     "TEXT"),
@@ -586,9 +598,15 @@ def init_db(conn):
             _new_cols.append(col)
         except sqlite3.OperationalError:
             pass
-    # backfill tg_sent: mark already-pushed records as sent (only on first migration)
+    # backfill sent columns: mark already-pushed records as sent (only on first migration)
     if "tg_sent" in _new_cols:
         conn.execute("UPDATE vulns SET tg_sent = 1 WHERE pushed = 1")
+    if "wecom_sent" in _new_cols:
+        conn.execute("UPDATE vulns SET wecom_sent = 1 WHERE pushed = 1")
+    if "dingtalk_sent" in _new_cols:
+        conn.execute("UPDATE vulns SET dingtalk_sent = 1 WHERE pushed = 1")
+    if "feishu_sent" in _new_cols:
+        conn.execute("UPDATE vulns SET feishu_sent = 1 WHERE pushed = 1")
     # backfill freshness + vuln_type + migrate legacy values (only on first migration)
     if "freshness" in _new_cols:
         conn.execute("UPDATE vulns SET freshness='nday', reason=SUBSTR(reason,6) WHERE reason LIKE 'nday:%'")
@@ -1700,6 +1718,13 @@ def _fetch_all_sources():
 def tg_escape(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+def _md_escape(s):
+    """Escape markdown metacharacters for WeCom/DingTalk webhook messages."""
+    s = (s or "").replace("\n", " ")
+    for ch in ("\\", "*", "_", "[", "]", "(", ")", ">", "#", "`"):
+        s = s.replace(ch, f"\\{ch}")
+    return s
+
 def _extract_id(text, link):
     """Extract CVE or vendor advisory ID from text+link."""
     cves = sorted(set(c.upper() for c in CVE_RE.findall(text)))
@@ -1743,9 +1768,116 @@ def send_telegram(msg):
                 log.warning(f"TG push {chat_id} {r.status_code}: {r.text[:200]}")
                 ok = False
         except Exception as ex:
-            log.warning(f"TG err {chat_id}: {ex}")
+            log.warning(f"TG err {chat_id}: {type(ex).__name__}")
             ok = False
     return ok
+
+
+def format_msg_wecom(it, reason):
+    tag = _md_escape(_extract_id(it["text"], it["link"]))
+    src = _md_escape(it["source"])
+    title = _md_escape(it["title"][:220])
+    summary = _md_escape(it["summary"][:400])
+    link = it["link"] or ""
+    msg = (
+        f"**{src}** {tag}\n"
+        f"**{title}**\n"
+        f"[链接]({link})\n"
+        f"{summary}\n"
+        f"> match: {_md_escape(reason)}"
+    )
+    return msg.encode("utf-8")[:4096].decode("utf-8", "ignore")
+
+def format_msg_dingtalk(it, reason):
+    tag = _md_escape(_extract_id(it["text"], it["link"]))
+    src = _md_escape(it["source"])
+    dt_title = f"{it['source']} {_extract_id(it['text'], it['link'])}"
+    title_esc = _md_escape(it["title"][:220])
+    summary = _md_escape(it["summary"][:400])
+    link = it["link"] or ""
+    text = (
+        f"**{src}** {tag}\n\n"
+        f"**{title_esc}**\n\n"
+        f"[链接]({link})\n\n"
+        f"{summary}\n\n"
+        f"match: {_md_escape(reason)}"
+    )[:4096]
+    return dt_title, text
+
+def format_msg_feishu(it, reason):
+    tag = _extract_id(it["text"], it["link"])
+    title = f"[{it['source']}] {tag}"
+    content = [[
+        {"tag": "text", "text": f"{it['title'][:220]}\n"},
+        {"tag": "a", "text": it["link"] or "N/A", "href": it["link"] or ""},
+        {"tag": "text", "text": f"\n{it['summary'][:400]}\nmatch: {reason}"},
+    ]]
+    return title, content
+
+
+def send_wecom(msg_markdown):
+    if not WECOM_WEBHOOK_KEY:
+        return True
+    try:
+        r = SESS.post(
+            f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WECOM_WEBHOOK_KEY}",
+            json={"msgtype": "markdown", "markdown": {"content": msg_markdown}},
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code != 200 or r.json().get("errcode", 0) != 0:
+            log.warning(f"WeCom push {r.status_code}: {r.text[:200]}")
+            return False
+    except Exception as ex:
+        log.warning(f"WeCom err: {type(ex).__name__}")
+        return False
+    return True
+
+def _dingtalk_sign():
+    if not DINGTALK_WEBHOOK_SECRET:
+        return ""
+    import hmac, hashlib, base64
+    from urllib.parse import quote_plus
+    ts = str(int(time.time() * 1000))
+    string_to_sign = f"{ts}\n{DINGTALK_WEBHOOK_SECRET}"
+    hmac_code = hmac.new(DINGTALK_WEBHOOK_SECRET.encode("utf-8"),
+                         string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+    sign = quote_plus(base64.b64encode(hmac_code))
+    return f"&timestamp={ts}&sign={sign}"
+
+def send_dingtalk(title, msg_markdown):
+    if not DINGTALK_WEBHOOK_TOKEN:
+        return True
+    try:
+        url = f"https://oapi.dingtalk.com/robot/send?access_token={DINGTALK_WEBHOOK_TOKEN}{_dingtalk_sign()}"
+        r = SESS.post(
+            url,
+            json={"msgtype": "markdown", "markdown": {"title": title, "text": msg_markdown}},
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code != 200 or r.json().get("errcode", 0) != 0:
+            log.warning(f"DingTalk push {r.status_code}: {r.text[:200]}")
+            return False
+    except Exception as ex:
+        log.warning(f"DingTalk err: {type(ex).__name__}")
+        return False
+    return True
+
+def send_feishu(title, content):
+    if not FEISHU_WEBHOOK_URL:
+        return True
+    try:
+        r = SESS.post(
+            FEISHU_WEBHOOK_URL,
+            json={"msg_type": "post", "content": {"post": {"zh_cn": {"title": title, "content": content}}}},
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code != 200 or r.json().get("code", 0) != 0:
+            log.warning(f"Feishu push {r.status_code}: {r.text[:200]}")
+            return False
+    except Exception as ex:
+        log.warning(f"Feishu err: {type(ex).__name__}")
+        return False
+    return True
 
 
 def send_failure_alert(msg):
@@ -1760,22 +1892,41 @@ def send_failure_alert(msg):
     if now - state.get("last_alert_ts", 0) < ALERT_COOLDOWN_SEC:
         log.warning(f"alert suppressed (cooldown): {msg[:150]}")
         return
-    if not (TG_BOT_TOKEN and TG_CHAT_IDS):
-        log.error(f"[ALERT-DRY] {msg[:500]}")
-    else:
+    alert_text = f"vuln-monitor error\n\n{msg[:3800]}"
+    any_configured = False
+    if TG_BOT_TOKEN and TG_CHAT_IDS:
+        any_configured = True
         for chat_id in TG_CHAT_IDS:
             try:
                 SESS.post(
                     f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": f"vuln-monitor error\n\n{msg[:3800]}",
-                        "disable_web_page_preview": True,
-                    },
+                    json={"chat_id": chat_id, "text": alert_text, "disable_web_page_preview": True},
                     timeout=REQUEST_TIMEOUT,
                 )
             except Exception as ex:
-                log.error(f"alert push {chat_id} failed: {ex}")
+                log.error(f"alert push TG {chat_id} failed: {type(ex).__name__}")
+    if WECOM_WEBHOOK_KEY:
+        any_configured = True
+        try:
+            SESS.post(
+                f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={WECOM_WEBHOOK_KEY}",
+                json={"msgtype": "text", "text": {"content": alert_text}},
+                timeout=REQUEST_TIMEOUT,
+            )
+        except Exception as ex:
+            log.error(f"alert push WeCom failed: {type(ex).__name__}")
+    if DINGTALK_WEBHOOK_TOKEN:
+        any_configured = True
+        try:
+            url = f"https://oapi.dingtalk.com/robot/send?access_token={DINGTALK_WEBHOOK_TOKEN}{_dingtalk_sign()}"
+            SESS.post(url, json={"msgtype": "text", "text": {"content": alert_text}}, timeout=REQUEST_TIMEOUT)
+        except Exception as ex:
+            log.error(f"alert push DingTalk failed: {type(ex).__name__}")
+    if FEISHU_WEBHOOK_URL:
+        any_configured = True
+        send_feishu("vuln-monitor error", [[{"tag": "text", "text": alert_text}]])
+    if not any_configured:
+        log.error(f"[ALERT-DRY] {msg[:500]}")
     state["last_alert_ts"] = now
     try:
         tmp = ALERT_STATE.with_suffix(".tmp")
@@ -1890,7 +2041,10 @@ def _run(no_push=False):
 
         # cold start: mark all records as already sent to prevent initial flood
         if _cold_start:
-            suppressed = conn.execute("UPDATE vulns SET tg_sent=1 WHERE pushed=1 AND tg_sent=0").rowcount
+            suppressed = conn.execute(
+                "UPDATE vulns SET tg_sent=1, wecom_sent=1, dingtalk_sent=1, feishu_sent=1 "
+                "WHERE pushed=1 AND (tg_sent=0 OR wecom_sent=0 OR dingtalk_sent=0 OR feishu_sent=0)"
+            ).rowcount
             conn.commit()
             if suppressed:
                 log.info(f"cold start: suppressed {suppressed} initial notifications (seeding run)")
@@ -1908,26 +2062,53 @@ def _run(no_push=False):
 
 
 def _push_pending(conn):
-    """Send Telegram for all pushed=1, tg_sent=0 records."""
+    """Send notifications via all configured channels for pushed=1 records."""
     pending = conn.execute(
-        "SELECT key, cve_id, source, title, link, summary, reason, llm_verdict, llm_notes "
-        "FROM vulns WHERE pushed=1 AND tg_sent=0"
+        "SELECT key, cve_id, source, title, link, summary, reason, llm_verdict, llm_notes, "
+        "tg_sent, wecom_sent, dingtalk_sent, feishu_sent "
+        "FROM vulns WHERE pushed=1 AND "
+        "(tg_sent=0 OR wecom_sent=0 OR dingtalk_sent=0 OR feishu_sent=0)"
     ).fetchall()
     if not pending:
         return
-    sent = 0
-    for key, cve_id, source, title, link, summary, reason, verdict, notes in pending:
+    counts = {"telegram": 0, "wecom": 0, "dingtalk": 0, "feishu": 0}
+    for (key, cve_id, source, title, link, summary, reason, verdict, notes,
+         tg_done, wecom_done, dingtalk_done, feishu_done) in pending:
         it = {"source": source or "", "title": title or "", "link": link or "",
               "summary": summary or "", "text": f"{title or ''}\n{summary or ''}"}
-        msg = format_msg(it, reason)
-        ok = send_telegram(msg)
-        if ok:
-            conn.execute("UPDATE vulns SET tg_sent=1 WHERE key=?", (key,))
-            sent += 1
+        if not tg_done:
+            if not (TG_BOT_TOKEN and TG_CHAT_IDS):
+                conn.execute("UPDATE vulns SET tg_sent=1 WHERE key=?", (key,))
+            elif send_telegram(format_msg(it, reason)):
+                conn.execute("UPDATE vulns SET tg_sent=1 WHERE key=?", (key,))
+                counts["telegram"] += 1
+        if not wecom_done:
+            if not WECOM_WEBHOOK_KEY:
+                conn.execute("UPDATE vulns SET wecom_sent=1 WHERE key=?", (key,))
+            elif send_wecom(format_msg_wecom(it, reason)):
+                conn.execute("UPDATE vulns SET wecom_sent=1 WHERE key=?", (key,))
+                counts["wecom"] += 1
+        if not dingtalk_done:
+            if not DINGTALK_WEBHOOK_TOKEN:
+                conn.execute("UPDATE vulns SET dingtalk_sent=1 WHERE key=?", (key,))
+            else:
+                dt_title, dt_text = format_msg_dingtalk(it, reason)
+                if send_dingtalk(dt_title, dt_text):
+                    conn.execute("UPDATE vulns SET dingtalk_sent=1 WHERE key=?", (key,))
+                    counts["dingtalk"] += 1
+        if not feishu_done:
+            if not FEISHU_WEBHOOK_URL:
+                conn.execute("UPDATE vulns SET feishu_sent=1 WHERE key=?", (key,))
+            else:
+                fs_title, fs_content = format_msg_feishu(it, reason)
+                if send_feishu(fs_title, fs_content):
+                    conn.execute("UPDATE vulns SET feishu_sent=1 WHERE key=?", (key,))
+                    counts["feishu"] += 1
+        conn.commit()
         time.sleep(PUSH_SLEEP_SEC)
-    conn.commit()
-    if sent:
-        log.info(f"push: sent {sent} Telegram notifications")
+    active = {k: v for k, v in counts.items() if v > 0}
+    if active:
+        log.info(f"push: {' '.join(f'{k}={v}' for k, v in active.items())}")
 
 
 # ================== TABLE FORMATTER ==================
