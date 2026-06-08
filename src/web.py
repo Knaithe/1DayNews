@@ -677,7 +677,7 @@ async function loadVulns(append=false) {
       return `<div class="vcard" style="animation:fadeUp .4s ${i*.03}s both">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
-          <span class="reason-badge" style="background:${ts.bg};color:${ts.fg}">${esc(v.vuln_type||v.reason||'-')}</span>
+          ${v.vuln_type==='RCE'?`<span class="reason-badge" style="background:${ts.bg};color:${ts.fg}">RCE</span>`:''}
           ${sevBadge(v)}
           ${v.pr==='N'?'<span class="pr-badge">Unauth</span>':''}
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
