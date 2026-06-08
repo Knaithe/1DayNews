@@ -573,7 +573,9 @@ def init_db(conn):
             tg_sent       INTEGER DEFAULT 0,
             wecom_sent    INTEGER DEFAULT 0,
             dingtalk_sent INTEGER DEFAULT 0,
-            feishu_sent   INTEGER DEFAULT 0
+            feishu_sent   INTEGER DEFAULT 0,
+            cvss_vector   TEXT,
+            cvss_pr       TEXT
         )
     """)
     # migrate: add columns if missing (existing databases)
@@ -592,6 +594,8 @@ def init_db(conn):
         ("freshness",     "TEXT"),
         ("freshness_reason", "TEXT"),
         ("vuln_type",     "TEXT"),
+        ("cvss_vector",   "TEXT"),
+        ("cvss_pr",       "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
@@ -803,6 +807,13 @@ def score(text):
     return False, "no hit", None
 
 
+def _extract_pr(vector):
+    if not vector:
+        return None
+    m = re.search(r"PR:([NLH])", vector)
+    return m.group(1) if m else None
+
+
 _NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _FRESHNESS_DAYS = 60
 _nvd_cache = {}       # cve_id → {"published":"YYYY-MM-DD","cvss":float,"severity":str} or "" or None
@@ -827,7 +838,7 @@ def _nvd_detail(cve_id):
             pass  # rate-limited — fall through to query
         elif isinstance(cached, str) and cached:
             # have date in cache but no full detail yet — build partial detail, don't re-query NVD
-            _nvd_detail_cache[cve_upper] = {"published": cached, "cvss": None, "severity": None, "description": ""}
+            _nvd_detail_cache[cve_upper] = {"published": cached, "cvss": None, "severity": None, "description": "", "vector": None}
             return _nvd_detail_cache[cve_upper]
     # query NVD (rate limit: 50 req/30s with key, 5 req/30s without)
     _nvd_sleep = 0.7 if NVD_API_KEY else 6.5
@@ -856,18 +867,20 @@ def _nvd_detail(cve_id):
                 pub_str = dt.strftime("%Y-%m-%d")
             cvss = None
             severity = None
+            vector = None
             for metric_key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
                 metrics = cve_data.get("metrics", {}).get(metric_key, [])
                 if metrics:
                     cvss_data = metrics[0].get("cvssData", {})
                     cvss = cvss_data.get("baseScore")
                     severity = cvss_data.get("baseSeverity", "").lower()
+                    vector = cvss_data.get("vectorString", "")
                     break
             if cvss and not severity:
                 severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
             descs = cve_data.get("descriptions", [])
             desc_en = next((d["value"] for d in descs if d.get("lang") == "en"), "")
-            detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc_en}
+            detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc_en, "vector": vector}
             _nvd_cache[cve_upper] = pub_str or ""
             _nvd_detail_cache[cve_upper] = detail
             return detail
@@ -888,6 +901,7 @@ def _nvd_detail(cve_id):
             pub_str = pub_raw[:10] if pub_raw else None
             cvss = None
             severity = None
+            vector = adv.get("cvss", {}).get("vector_string", "")
             if adv.get("cvss", {}).get("score"):
                 cvss = float(adv["cvss"]["score"])
             sev_raw = adv.get("severity", "")
@@ -896,7 +910,7 @@ def _nvd_detail(cve_id):
             if cvss and not severity:
                 severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
             desc = adv.get("summary", "")
-            detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc}
+            detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc, "vector": vector}
             _nvd_cache[cve_upper] = pub_str or ""
             _nvd_detail_cache[cve_upper] = detail
             return detail
@@ -1002,7 +1016,8 @@ def _backfill_nvd_severity(conn):
     rows = conn.execute(
         "SELECT key, cve_id FROM vulns "
         "WHERE cve_id IS NOT NULL AND cve_id LIKE 'CVE-%' "
-        "AND (severity IS NULL OR cve_published IS NULL OR (vuln_type != 'RCE' AND vuln_type IS NOT NULL)) "
+        "AND (severity IS NULL OR cve_published IS NULL OR cvss_vector IS NULL "
+        "OR (vuln_type != 'RCE' AND vuln_type IS NOT NULL)) "
         f"LIMIT {batch}"
     ).fetchall()
     updated = 0
@@ -1013,6 +1028,15 @@ def _backfill_nvd_severity(conn):
             detail = _nvd_detail(c.upper())
             if detail and (detail.get("cvss") or detail.get("published")):
                 break
+        if detail and not detail.get("vector"):
+            for c in (cves or [cve_id]):
+                cu = c.upper()
+                _nvd_cache.pop(cu, None)
+                _nvd_detail_cache.pop(cu, None)
+                fresh = _nvd_detail(cu)
+                if fresh and fresh.get("vector"):
+                    detail = fresh
+                    break
         if detail:
             # re-score with NVD description to upgrade vuln_type (e.g. other → RCE)
             desc = detail.get("description", "")
@@ -1021,9 +1045,12 @@ def _backfill_nvd_severity(conn):
                 hit, _, vt = score(desc)
                 if hit and vt == "RCE":
                     vtype_upgrade = "RCE"
+            vec = detail.get("vector") or ""
             sql = ("UPDATE vulns SET severity=COALESCE(severity,?), cvss=COALESCE(cvss,?), "
-                   "cve_published=COALESCE(cve_published,?)")
-            params = [detail.get("severity"), detail.get("cvss"), detail.get("published")]
+                   "cve_published=COALESCE(cve_published,?), "
+                   "cvss_vector=COALESCE(cvss_vector,?), cvss_pr=COALESCE(cvss_pr,?)")
+            params = [detail.get("severity"), detail.get("cvss"), detail.get("published"),
+                      vec or "N/A", _extract_pr(vec)]
             if vtype_upgrade:
                 sql += ", vuln_type=?"
                 params.append(vtype_upgrade)
@@ -2025,13 +2052,15 @@ def _run(no_push=False):
             nvd = _nvd_detail_cache.get(cve_id.upper()) if cve_id and cve_id.startswith("CVE-") else None
             nvd_severity = nvd["severity"] if nvd else None
             nvd_cvss = nvd["cvss"] if nvd else None
+            nvd_vector = nvd.get("vector") if nvd else None
             should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES
             conn.execute(
-                "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss,cvss_vector,cvss_pr) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (key, cve_id, it["source"], it["title"][:300], it["link"],
                  it["summary"][:500], reason, vuln_type, freshness, fresh_reason,
-                 1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss),
+                 1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss,
+                 nvd_vector, _extract_pr(nvd_vector)),
             )
             if should_push:
                 pushed += 1

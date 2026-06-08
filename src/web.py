@@ -155,6 +155,9 @@ def api_vulns():
         severity = request.args.get("severity", "").strip().lower()
         if severity in ("critical", "high", "medium", "low"):
             where.append("LOWER(severity) = ?"); params.append(severity)
+        pr = request.args.get("pr", "").strip().upper()
+        if pr in ("N", "L", "H") and "cvss_pr" in cols_avail:
+            where.append("cvss_pr = ?"); params.append(pr)
         reason = request.args.get("reason", "").strip()
         if reason:
             where.append("reason = ?"); params.append(reason)
@@ -172,7 +175,7 @@ def api_vulns():
         base_cols = ["cve_id", "source", "title", "link", "summary", "reason", "pushed",
                      "created_at", "cve_published", "severity", "cvss", "llm_verdict",
                      "llm_notes", "tg_sent"]
-        optional_cols = ["vuln_type", "freshness"]
+        optional_cols = ["vuln_type", "freshness", "cvss_pr"]
         cols = base_cols + [c for c in optional_cols if c in cols_avail]
         sql = f"SELECT {','.join(cols)} FROM vulns"
         if where:
@@ -184,11 +187,13 @@ def api_vulns():
         rows = conn.execute(sql, params).fetchall()
     has_vt = "vuln_type" in cols_avail
     has_fr = "freshness" in cols_avail
+    has_pr = "cvss_pr" in cols_avail
     return jsonify([{
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
         "vuln_type": r["vuln_type"] if has_vt else None,
         "freshness": r["freshness"] if has_fr else None,
+        "pr": r["cvss_pr"] if has_pr else None,
         "pushed": bool(r["pushed"]),
         "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
         "cve_published": r["cve_published"],
@@ -363,6 +368,11 @@ a:hover { text-decoration: underline; }
 .sev-badge.sev-high { background: var(--orange); color: var(--ink); }
 .sev-badge.sev-medium { background: var(--yellow); color: var(--ink); }
 .sev-badge.sev-low { background: var(--mint); color: var(--ink); }
+.pr-badge {
+  padding: 2px 8px; border-radius: var(--pill); font-size: 10px; font-weight: 700;
+  letter-spacing: .3px; font-family: 'JetBrains Mono', monospace;
+  background: #DC2626; color: var(--white); border: 1px solid #991B1B;
+}
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
@@ -485,6 +495,13 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill" data-sev="low">Low</button>
 </div>
 
+<div class="filter-row" id="prRow" role="group" aria-label="Filter by privileges required">
+  <button type="button" class="cat-pill active" data-pr="">All</button>
+  <button type="button" class="cat-pill" data-pr="N">Unauth</button>
+  <button type="button" class="cat-pill" data-pr="L">Low Priv</button>
+  <button type="button" class="cat-pill" data-pr="H">High Priv</button>
+</div>
+
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
 
 <div class="grid" id="cardList" aria-live="polite" aria-busy="false"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
@@ -510,7 +527,7 @@ const TYPE_STYLE = {
   "other": {bg:"#FEF3C7",fg:"#92400e"},
 };
 
-let debounceTimer, activeCat = '', activeType = '', activeDays = '7', activeSeverity = '';
+let debounceTimer, activeCat = '', activeType = '', activeDays = '7', activeSeverity = '', activePR = '';
 let currentLimit = 100;
 const MAX_LIMIT = __LIMIT_MAX__;
 document.getElementById('loadMoreBtn').addEventListener('click', () => {
@@ -535,6 +552,9 @@ document.querySelectorAll('#typeRow .cat-pill').forEach(p => p.addEventListener(
 }));
 document.querySelectorAll('#sevRow .cat-pill').forEach(p => p.addEventListener('click', () => {
   activeSeverity = p.dataset.sev; setActive('#sevRow', 'sev', activeSeverity); loadVulns();
+}));
+document.querySelectorAll('#prRow .cat-pill').forEach(p => p.addEventListener('click', () => {
+  activePR = p.dataset.pr; setActive('#prRow', 'pr', activePR); loadVulns();
 }));
 
 async function loadSources() {
@@ -630,6 +650,7 @@ async function loadVulns(append=false) {
   if (activeCat) params.set('source', activeCat);
   if (activeType) params.set('vuln_type', activeType);
   if (activeSeverity) params.set('severity', activeSeverity);
+  if (activePR) params.set('pr', activePR);
   if (activeDays) params.set('days', activeDays);
   if (document.getElementById('pushedFilter').checked) params.set('pushed', '1');
   params.set('limit', String(currentLimit));
@@ -656,6 +677,7 @@ async function loadVulns(append=false) {
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
           <span class="reason-badge" style="background:${ts.bg};color:${ts.fg}">${esc(v.vuln_type||v.reason||'-')}</span>
           ${sevBadge(v)}
+          ${v.pr==='N'?'<span class="pr-badge">Unauth</span>':''}
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
           <span class="vcard-date">${esc(v.date||'-')}</span>
         </div>
