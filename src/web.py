@@ -144,18 +144,15 @@ def api_vulns():
         where, params = [], []
         q = request.args.get("q", "").strip()
         if q:
-            terms_pos, terms_neg = [], []
-            for tok in q.split():
-                if tok.startswith("-") and len(tok) > 1:
-                    terms_neg.append(tok[1:])
-                else:
-                    terms_pos.append(tok)
-            for t in terms_pos:
-                where.append("(cve_id LIKE ? OR title LIKE ? OR summary LIKE ?)")
-                params.extend([f"%{t}%"] * 3)
-            for t in terms_neg:
-                where.append("(COALESCE(title,'') NOT LIKE ? AND COALESCE(summary,'') NOT LIKE ?)")
-                params.extend([f"%{t}%"] * 2)
+            where.append("(cve_id LIKE ? OR title LIKE ? OR summary LIKE ?)")
+            params.extend([f"%{q}%"] * 3)
+        exclude = request.args.get("exclude", "").strip()
+        if exclude:
+            for kw in exclude.split(","):
+                kw = kw.strip()
+                if kw:
+                    where.append("(COALESCE(title,'') NOT LIKE ? AND COALESCE(summary,'') NOT LIKE ?)")
+                    params.extend([f"%{kw}%"] * 2)
         source = request.args.get("source", "").strip()
         if source:
             where.append("source = ?"); params.append(source)
@@ -386,6 +383,8 @@ a:hover { text-decoration: underline; }
   letter-spacing: .3px; font-family: 'JetBrains Mono', monospace;
   background: #DC2626; color: var(--white); border: 1px solid #991B1B;
 }
+.exclude-pill { opacity: .55; font-size: 11px; }
+.exclude-pill.active { opacity: 1; background: #991B1B; color: var(--white); text-decoration: line-through; }
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
@@ -514,6 +513,14 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill" data-pr="!N">Auth Required</button>
 </div>
 
+<div class="filter-row" id="excludeRow" role="group" aria-label="Exclude noise">
+  <button type="button" class="cat-pill exclude-pill" data-ex="chrome">Chrome</button>
+  <button type="button" class="cat-pill exclude-pill" data-ex="firefox">Firefox</button>
+  <button type="button" class="cat-pill exclude-pill" data-ex="linux kernel">Linux Kernel</button>
+  <button type="button" class="cat-pill exclude-pill" data-ex="wordpress">WordPress</button>
+  <button type="button" class="cat-pill exclude-pill" data-ex="android">Android</button>
+</div>
+
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
 
 <div class="grid" id="cardList" aria-live="polite" aria-busy="false"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
@@ -540,6 +547,7 @@ const TYPE_STYLE = {
 };
 
 let debounceTimer, activeCat = '', activeType = '', activeDays = '7', activeSeverity = '', activePR = '';
+const activeExcludes = new Set();
 let currentLimit = 100;
 const MAX_LIMIT = __LIMIT_MAX__;
 document.getElementById('loadMoreBtn').addEventListener('click', () => {
@@ -567,6 +575,12 @@ document.querySelectorAll('#sevRow .cat-pill').forEach(p => p.addEventListener('
 }));
 document.querySelectorAll('#prRow .cat-pill').forEach(p => p.addEventListener('click', () => {
   activePR = p.dataset.pr; setActive('#prRow', 'pr', activePR); loadVulns();
+}));
+document.querySelectorAll('#excludeRow .exclude-pill').forEach(p => p.addEventListener('click', () => {
+  const kw = p.dataset.ex;
+  if (activeExcludes.has(kw)) { activeExcludes.delete(kw); p.classList.remove('active'); }
+  else { activeExcludes.add(kw); p.classList.add('active'); }
+  loadVulns();
 }));
 
 async function loadSources() {
@@ -663,6 +677,7 @@ async function loadVulns(append=false) {
   if (activeType) params.set('vuln_type', activeType);
   if (activeSeverity) params.set('severity', activeSeverity);
   if (activePR) params.set('pr', activePR);
+  if (activeExcludes.size) params.set('exclude', [...activeExcludes].join(','));
   if (activeDays) params.set('days', activeDays);
   if (document.getElementById('pushedFilter').checked) params.set('pushed', '1');
   params.set('limit', String(currentLimit));
