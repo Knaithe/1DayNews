@@ -144,8 +144,18 @@ def api_vulns():
         where, params = [], []
         q = request.args.get("q", "").strip()
         if q:
-            where.append("(cve_id LIKE ? OR title LIKE ? OR summary LIKE ?)")
-            params.extend([f"%{q}%"] * 3)
+            terms_pos, terms_neg = [], []
+            for tok in q.split():
+                if tok.startswith("-") and len(tok) > 1:
+                    terms_neg.append(tok[1:])
+                else:
+                    terms_pos.append(tok)
+            for t in terms_pos:
+                where.append("(cve_id LIKE ? OR title LIKE ? OR summary LIKE ?)")
+                params.extend([f"%{t}%"] * 3)
+            for t in terms_neg:
+                where.append("(COALESCE(title,'') NOT LIKE ? AND COALESCE(summary,'') NOT LIKE ?)")
+                params.extend([f"%{t}%"] * 2)
         source = request.args.get("source", "").strip()
         if source:
             where.append("source = ?"); params.append(source)
