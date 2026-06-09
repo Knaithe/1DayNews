@@ -149,7 +149,7 @@ def api_vulns():
             params.extend([f"%{esc_q}%"] * 3)
         exclude = request.args.get("exclude", "").strip()
         if exclude:
-            for kw in exclude.split(","):
+            for kw in exclude.split(",")[:10]:
                 kw = kw.strip()
                 if kw:
                     esc_kw = kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
