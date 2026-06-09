@@ -144,15 +144,17 @@ def api_vulns():
         where, params = [], []
         q = request.args.get("q", "").strip()
         if q:
-            where.append("(cve_id LIKE ? OR title LIKE ? OR summary LIKE ?)")
-            params.extend([f"%{q}%"] * 3)
+            esc_q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("(cve_id LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\')")
+            params.extend([f"%{esc_q}%"] * 3)
         exclude = request.args.get("exclude", "").strip()
         if exclude:
             for kw in exclude.split(","):
                 kw = kw.strip()
                 if kw:
-                    where.append("(COALESCE(title,'') NOT LIKE ? AND COALESCE(summary,'') NOT LIKE ?)")
-                    params.extend([f"%{kw}%"] * 2)
+                    esc_kw = kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    where.append("(COALESCE(title,'') NOT LIKE ? ESCAPE '\\' AND COALESCE(summary,'') NOT LIKE ? ESCAPE '\\')")
+                    params.extend([f"%{esc_kw}%"] * 2)
         source = request.args.get("source", "").strip()
         if source:
             where.append("source = ?"); params.append(source)
