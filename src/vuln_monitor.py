@@ -1016,8 +1016,7 @@ def _backfill_nvd_severity(conn):
     rows = conn.execute(
         "SELECT key, cve_id FROM vulns "
         "WHERE cve_id IS NOT NULL AND cve_id LIKE 'CVE-%' "
-        "AND (severity IS NULL OR cve_published IS NULL OR cvss_vector IS NULL "
-        "OR (vuln_type != 'RCE' AND vuln_type IS NOT NULL)) "
+        "AND (severity IS NULL OR cve_published IS NULL OR cvss_vector IS NULL) "
         f"LIMIT {batch}"
     ).fetchall()
     updated = 0
@@ -1038,7 +1037,6 @@ def _backfill_nvd_severity(conn):
                     detail = fresh
                     break
         if detail:
-            # re-score with NVD description to upgrade vuln_type (e.g. other → RCE)
             desc = detail.get("description", "")
             vtype_upgrade = None
             if desc:
@@ -1049,7 +1047,8 @@ def _backfill_nvd_severity(conn):
             sql = ("UPDATE vulns SET severity=COALESCE(severity,?), cvss=COALESCE(cvss,?), "
                    "cve_published=COALESCE(cve_published,?), "
                    "cvss_vector=COALESCE(cvss_vector,?), cvss_pr=COALESCE(cvss_pr,?)")
-            params = [detail.get("severity"), detail.get("cvss"), detail.get("published"),
+            params = [detail.get("severity") or "unknown", detail.get("cvss"),
+                      detail.get("published") or "unknown",
                       vec or "N/A", _extract_pr(vec)]
             if vtype_upgrade:
                 sql += ", vuln_type=?"
@@ -1057,6 +1056,13 @@ def _backfill_nvd_severity(conn):
             sql += " WHERE key=?"
             params.append(key)
             conn.execute(sql, params)
+            updated += 1
+        else:
+            conn.execute(
+                "UPDATE vulns SET cvss_vector=COALESCE(cvss_vector,'N/A'), "
+                "severity=COALESCE(severity,'unknown'), "
+                "cve_published=COALESCE(cve_published,'unknown') WHERE key=?",
+                (key,))
             updated += 1
     if updated:
         conn.commit()
