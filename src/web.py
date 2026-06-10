@@ -180,7 +180,7 @@ def api_vulns():
         if days > 0:
             cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
             cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
-            where.append("(cve_published >= ? OR (cve_published IS NULL AND created_at > ?))")
+            where.append("(NULLIF(cve_published,'unknown') >= ? OR (NULLIF(cve_published,'unknown') IS NULL AND created_at > ?))")
             params.extend([cutoff_date, cutoff_ts])
 
         # column list — drop optional ones missing in pre-migration DBs
@@ -192,7 +192,7 @@ def api_vulns():
         sql = f"SELECT {','.join(cols)} FROM vulns"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY COALESCE(cve_published, strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
+        sql += " ORDER BY COALESCE(NULLIF(cve_published,'unknown'), strftime('%Y-%m-%d', created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?"
         limit = _int_arg("limit", 100, 1, LIMIT_MAX)
         params.append(limit)
 
@@ -208,12 +208,12 @@ def api_vulns():
         "pr": r["cvss_pr"] if has_pr else None,
         "pushed": bool(r["pushed"]),
         "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
-        "cve_published": r["cve_published"],
-        "severity": r["severity"],
+        "cve_published": r["cve_published"] if r["cve_published"] != "unknown" else None,
+        "severity": r["severity"] if r["severity"] != "unknown" else None,
         "cvss": r["cvss"],
         "llm_verdict": r["llm_verdict"],
         "llm_notes": r["llm_notes"],
-        "date": r["cve_published"] or (datetime.fromtimestamp(r["created_at"], tz=timezone.utc).strftime("%Y-%m-%d") if r["created_at"] else None),
+        "date": (r["cve_published"] if r["cve_published"] != "unknown" else None) or (datetime.fromtimestamp(r["created_at"], tz=timezone.utc).strftime("%Y-%m-%d") if r["created_at"] else None),
     } for r in rows])
 
 
