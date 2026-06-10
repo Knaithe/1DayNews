@@ -626,6 +626,7 @@ def init_db(conn):
     # enforce hard locks on existing data: GitHub/nday must not remain pushed
     conn.execute("UPDATE vulns SET pushed=0 WHERE source IN ('GitHub','PoC-GitHub') AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE freshness='nday' AND pushed=1")
+    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND (cvss_pr IS NULL OR cvss_pr != 'N')")
     conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
@@ -1067,6 +1068,16 @@ def _backfill_nvd_severity(conn):
     if updated:
         conn.commit()
         log.info(f"backfill_nvd_severity: updated {updated} records")
+    # re-evaluate pushed for records that got PR=N after initial insert
+    promoted = conn.execute(
+        "UPDATE vulns SET pushed=1 WHERE pushed=0 AND cvss_pr='N' "
+        "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub') "
+        "AND vuln_type IN ('RCE','other') "
+        "AND (llm_verdict='confirmed' OR llm_verified=0)"
+    ).rowcount
+    if promoted:
+        conn.commit()
+        log.info(f"backfill_nvd_severity: promoted {promoted} records (PR=N arrived after insert)")
     # source-specific backfills
     _backfill_fortinet(conn)
     _backfill_zdi(conn)
@@ -1135,19 +1146,21 @@ _VERDICT_PUSH = {"confirmed": 1, "not_relevant": 0, "noise": 0}
 
 _GITHUB_SOURCES = frozenset({"GitHub", "PoC-GitHub"})
 
-def _resolve_pushed(verdict, freshness, source):
+def _resolve_pushed(verdict, freshness, source, pr=None):
     """Determine pushed value from LLM verdict, respecting hard constraints.
 
     Rules:
       - freshness must be '1day' to push — nday/None/unknown all locked 0
       - GitHub/PoC-GitHub → locked 0, candidate only
+      - CVSS PR must be 'N' (unauthenticated) — None/L/H all locked 0
       - LLM can downgrade any record, but cannot override freshness or source trust
     """
     llm_wants_push = _VERDICT_PUSH.get(verdict, 0)
-    # only 1day is pushable — nday, None (no CVE / unverified) all blocked
     if freshness != "1day":
         return 0
     if source in _GITHUB_SOURCES:
+        return 0
+    if pr != "N":
         return 0
     return llm_wants_push
 _MAX_TOOL_ROUNDS = 5
@@ -1288,7 +1301,8 @@ def _enrich_one(record):
         f"Regex match: {reason}\nCVSS: {cvss or 'unknown'}\nSeverity: {severity or 'unknown'}"
     )
     # skip tools for high-trust sources with sufficient data — direct judgment is faster
-    has_enough_context = (source in FRESH_SOURCES and (severity or cvss))
+    has_enough_context = (source in FRESH_SOURCES and (
+        (severity and severity != "unknown") or cvss))
     if has_enough_context:
         user_msg += "\n\nYou have enough context from this PSIRT advisory. Do NOT call tools — respond with JSON verdict directly."
     messages = [{"role": "system", "content": _get_llm_prompt()},
@@ -1708,7 +1722,9 @@ def fetch_github_advisories():
                     for adv in advs:
                         cve = adv.get("cve_id") or adv.get("ghsa_id", "")
                         summary = adv.get("summary", "")
-                        cvss = adv.get("cvss", {}).get("score")
+                        cvss_obj = adv.get("cvss", {})
+                        cvss = cvss_obj.get("score")
+                        vec = cvss_obj.get("vector_string", "")
                         sev = adv.get("severity", "")
                         cvss_str = f" (CVSS {cvss})" if cvss else ""
                         sev_str = f" [{sev.upper()}]" if sev else ""
@@ -1718,6 +1734,9 @@ def fetch_github_advisories():
                             "link": adv.get("html_url", ""),
                             "summary": f"{summary}{cvss_str}",
                             "text": f"{cve} {summary}",
+                            "_severity": sev.lower() if sev else None,
+                            "_cvss": cvss,
+                            "_cvss_vector": vec or None,
                         })
                     if len(advs) < 100:
                         break  # no more pages for this window
@@ -2059,7 +2078,15 @@ def _run(no_push=False):
             nvd_severity = nvd["severity"] if nvd else None
             nvd_cvss = nvd["cvss"] if nvd else None
             nvd_vector = nvd.get("vector") if nvd else None
-            should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES
+            # fallback: use source-provided severity/cvss/vector (e.g. GHSA)
+            if not nvd_severity:
+                nvd_severity = it.get("_severity")
+            if not nvd_cvss:
+                nvd_cvss = it.get("_cvss")
+            if not nvd_vector:
+                nvd_vector = it.get("_cvss_vector")
+            pr = _extract_pr(nvd_vector)
+            should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES and pr == "N"
             conn.execute(
                 "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss,cvss_vector,cvss_pr) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -2315,9 +2342,9 @@ def _cmd_rescore_inner():
         init_db(conn)
         _warm_nvd_cache(conn)
         # only rescore records NOT yet verified by LLM — don't override LLM verdicts
-        rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed, cve_published FROM vulns WHERE llm_verified=0").fetchall()
+        rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed, cve_published, cvss_pr FROM vulns WHERE llm_verified=0").fetchall()
         upgraded = downgraded = unchanged = 0
-        for key, cve_id, source, title, link, summary, old_reason, old_pushed, existing_pub in rows:
+        for key, cve_id, source, title, link, summary, old_reason, old_pushed, existing_pub, cvss_pr in rows:
             text = f"{title or ''}\n{summary or ''}"
 
             hit, reason, vuln_type = score(text)
@@ -2360,7 +2387,7 @@ def _cmd_rescore_inner():
                 fresh_reason = "no_cve_low_trust"
                 hit = False
 
-            new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES) else 0
+            new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES and cvss_pr == "N") else 0
             if reason != old_reason or new_pushed != old_pushed or cve_pub:
                 conn.execute("UPDATE vulns SET reason=?, vuln_type=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
                             (reason, vuln_type, freshness, fresh_reason, new_pushed, cve_pub, key))
@@ -2396,7 +2423,7 @@ def _cmd_enrich_inner(dry=False):
             log.info("enrich: no LLM API key, skipping LLM enrichment")
         else:
             candidates = conn.execute(
-                "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss, freshness "
+                "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss, freshness, cvss_pr "
                 "FROM vulns WHERE llm_verified = 0 "
                 "AND reason NOT IN ('excluded', 'no hit') "
                 "ORDER BY created_at DESC LIMIT 500"
@@ -2422,7 +2449,7 @@ def _cmd_enrich_inner(dry=False):
                     best_cvss = max((r[8] for r in records if r[8]), default=None)
                     if any_high_trust and best_cvss and best_cvss >= 9.0:
                         for rec in records:
-                            pushed_val = _resolve_pushed("confirmed", rec[9], rec[2])
+                            pushed_val = _resolve_pushed("confirmed", rec[9], rec[2], rec[10])
                             conn.execute(
                                 "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', "
                                 "llm_notes='auto: high-trust + CVSS>=9.0', pushed=? WHERE key=?",
@@ -2436,7 +2463,7 @@ def _cmd_enrich_inner(dry=False):
                         llm_errors += 1
                         continue
                     for rec in records:
-                        pushed_val = _resolve_pushed(verdict, rec[9], rec[2])
+                        pushed_val = _resolve_pushed(verdict, rec[9], rec[2], rec[10])
                         conn.execute(
                             "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                             (verdict, (notes or "")[:500], pushed_val, rec[0]))
@@ -2449,7 +2476,7 @@ def _cmd_enrich_inner(dry=False):
                     if verdict is None:
                         llm_errors += 1
                         continue
-                    pushed_val = _resolve_pushed(verdict, rec[9], rec[2])
+                    pushed_val = _resolve_pushed(verdict, rec[9], rec[2], rec[10])
                     conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                         (verdict, (notes or "")[:500], pushed_val, rec[0]))
@@ -2464,7 +2491,7 @@ def _cmd_enrich_inner(dry=False):
                     fallback = conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', llm_notes='fallback: LLM errors, regex-scored', pushed=1 "
                         "WHERE llm_verified=0 AND vuln_type IN ('RCE','other') "
-                        "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub')"
+                        "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub') AND cvss_pr='N'"
                     ).rowcount
                     conn.commit()
                     if fallback:

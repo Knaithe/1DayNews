@@ -188,44 +188,63 @@ LLM_TOP_P=0.9
 ├─ 1. regex score() → reason + vuln_type
 │  ├─ excluded → 不推，不审
 │  ├─ no hit → 不推，不审
-│  ├─ RCE+asset+CVE / RCE+asset / RCE+CVE → vuln_type=RCE
+│  ├─ RCE+asset+CVE / RCE+asset / RCE+CVE / RCE → vuln_type=RCE
 │  └─ asset+CVE → vuln_type=other
 │
-├─ 2. freshness _is_fresh()（所有含 CVE 的记录都过）
-│  ├─ 所有 CVE 年份 > 1 年 → nday（无例外）
-│  ├─ 高信任源 → 1day（无 CVE 也放行，可回退 CVE 年份）
-│  ├─ 低信任源 + NVD 确认 ≤60 天 → 1day
-│  ├─ 低信任源 + NVD 无数据/超期 → nday（不回退 CVE 年份）
-│  └─ 低信任源 + 无 CVE + hit → nday（显式标记，不留 NULL）
+├─ 2. freshness（两条路径）
+│  │
+│  ├─ A. 有 CVE → _is_fresh()
+│  │  ├─ 所有 CVE 年份 > 1 年 → nday（无例外，高信任也不豁免）
+│  │  ├─ 高信任源（FRESH_SOURCES）→ 1day（CVE 年份兜底，不依赖 NVD）
+│  │  ├─ 低信任源 + NVD 确认 ≤60 天 → 1day
+│  │  └─ 低信任源 + NVD 无数据/超期 → nday
+│  │
+│  └─ B. 无 CVE
+│     ├─ 高信任源 + 源提供发布日期 ≤60 天 → 1day
+│     ├─ 高信任源 + 源日期过期 → nday
+│     ├─ 高信任源 + 无日期 + advisory ID 年份 > 1 年 → nday
+│     ├─ 高信任源 + 无日期 + 其他 → 1day
+│     └─ 低信任源 + hit → nday（显式标记，不留 NULL）
+│  注：freshness=nday 时，hit 同步置 False → pushed 必为 0
 │
-├─ 3. 源信任
+├─ 3. 初始推送（fetch 阶段）
 │  ├─ GitHub/PoC-GitHub → pushed=0（候选，永不推送）
-│  └─ 其他 + vuln_type∈(RCE,other) + freshness=1day → pushed=1
+│  ├─ CVSS PR≠N 或 PR 未知 → pushed=0（必须无需认证才推送）
+│  └─ hit + freshness=1day + 非 GitHub 源 + PR=N → pushed=1
 │
 ├─ 4. LLM enrich → verdict: confirmed / not_relevant / noise
-│  ├─ 高信任 + CVSS≥9 → confirmed（自动，受 freshness/source 约束）
+│  ├─ 高优先源（HIGH_PRIORITY_SOURCES）+ CVSS≥9 → auto-confirm（跳 LLM）
+│  ├─ 高信任源 + 已有真实 severity/cvss → 跳过工具调用，LLM 直接判定
+│  ├─ 其他 → LLM 调用工具（NVD/URL/GitHub/长亭）后判定
+│  ├─ LLM 连续出错 >3 次 → fallback：未验证 + scored + PR=N 的记录直接 pushed=1
 │  └─ _resolve_pushed()
-│     ├─ freshness≠1day → 锁 0（nday/NULL 都不推，LLM 不可推翻）
+│     ├─ freshness≠1day → 锁 0（LLM 不可推翻）
 │     ├─ GitHub/PoC-GitHub → 锁 0
-│     └─ 其他 → LLM 决定（只能降级）
+│     ├─ CVSS PR≠N 或未知 → 锁 0
+│     └─ verdict 决定（confirmed=1，not_relevant/noise=0）
 │
 └─ 5. pushed=1 → 多通道推送（Telegram / 企业微信 / 钉钉 / 飞书，各通道独立跟踪）
 ```
 
-**核心规则：** freshness 必须为 1day 才推送（nday/NULL 都锁 0）· GitHub 源 → 仅候选 · 低信任源必须 NVD 确认（不回退年份）· LLM 只能降级 · LLM 不可推翻 freshness
+**源信任集合（代码中有两个不同集合）：**
+
+| 集合 | 用途 | 成员 |
+|---|---|---|
+| `FRESH_SOURCES` | freshness 判定 + LLM 跳工具 | Fortinet/PaloAlto/Cisco/MSRC/CISA_KEV/ZDI/watchTowr/Horizon3/Rapid7/Chaitin/DailyCVE/GHSA |
+| `HIGH_PRIORITY_SOURCES` | auto-confirm (CVSS≥9) | Fortinet/PaloAlto/Cisco/CISA_KEV/ZDI/watchTowr/MSRC/Horizon3/Chaitin/ThreatBook |
+
+**核心规则：** freshness=1day + PR=N 才可推送（nday/NULL/PR≠N 锁 0，hit 同步清零）· GitHub/PoC-GitHub → 仅候选 · 低信任源必须 NVD ≤60 天确认 · LLM verdict 覆写 pushed 但受 freshness/source/PR 硬约束 · LLM 出错兜底走正则
 
 **数据字段：**
 
-| 字段 | 问什么 | 示例值 |
+| 字段 | 含义 | 示例值 |
 |---|---|---|
-| `reason` | 详细匹配原因 | `RCE+asset+CVE` / `RCE+CVE` / `asset+CVE` |
+| `reason` | 详细匹配原因 | `RCE+asset+CVE` / `RCE+CVE` / `RCE` / `asset+CVE` |
 | `vuln_type` | 漏洞分类 | `RCE` / `other` |
 | `freshness` | 新鲜度 | `1day` / `nday` |
-| `freshness_reason` | 为什么 | `high_trust_source` / `nvd_60d` / `old_cve` |
+| `freshness_reason` | 判定依据 | `high_trust_source` / `nvd_60d` / `old_cve` / `source_pub_date` / `old_advisory_id` / `no_cve_low_trust` |
 | `llm_verdict` | LLM 判定 | `confirmed` / `not_relevant` / `noise` |
 | `pushed` | 最终推送 | 0 / 1 |
-
-LLM 会调用工具（查 NVD、抓源页面、搜 GitHub/长亭），高信任源且已有 CVSS 数据时跳过工具调用直接判定。工具调用轮次用尽时强制出结论。
 
 不配 LLM key 时 enrich 跳过 LLM 步骤，直接走正则结果推送，不影响现有功能。
 
