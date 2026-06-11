@@ -1097,7 +1097,7 @@ def _backfill_ghsa_vuln_type(conn):
         "WHERE source='GHSA' AND cve_id LIKE 'CVE-%' "
         "AND (vuln_type IS NULL OR vuln_type != 'RCE') "
         "AND reason != 'excluded' "
-        "LIMIT 30"
+        "ORDER BY created_at DESC LIMIT 50"
     ).fetchall()
     if not rows:
         return
