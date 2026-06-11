@@ -54,3 +54,5 @@ desktop.ini
 *.orig
 scratch/
 tmp/
+vuln_cache_remote.db
+vuln_cache_remote.db

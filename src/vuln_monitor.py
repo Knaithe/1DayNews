@@ -1083,60 +1083,6 @@ def _backfill_nvd_severity(conn):
     _backfill_fortinet(conn)
     _backfill_zdi(conn)
     _backfill_published_fallback(conn)
-    _backfill_ghsa_vuln_type(conn)
-
-
-def _backfill_ghsa_vuln_type(conn):
-    """Re-check GHSA records whose summary was truncated at ingestion time.
-
-    Fetches full description from GitHub Advisory API and upgrades vuln_type to RCE
-    if the description matches RCE patterns. Uses a tracking table to avoid
-    re-processing records already checked.
-    """
-    conn.execute("CREATE TABLE IF NOT EXISTS _ghsa_checked (key TEXT PRIMARY KEY)")
-    rows = conn.execute(
-        "SELECT v.key, v.cve_id FROM vulns v "
-        "LEFT JOIN _ghsa_checked c ON v.key = c.key "
-        "WHERE v.source='GHSA' AND v.cve_id LIKE 'CVE-%' "
-        "AND v.vuln_type != 'RCE' AND v.reason != 'excluded' "
-        "AND c.key IS NULL "
-        "ORDER BY v.created_at DESC LIMIT 80"
-    ).fetchall()
-    if not rows:
-        return
-    headers = {"Accept": "application/vnd.github+json"}
-    if GH_TOKEN:
-        headers["Authorization"] = f"Bearer {GH_TOKEN}"
-    upgraded = 0
-    checked = 0
-    for key, cve_id in rows:
-        try:
-            r = SESS.get("https://api.github.com/advisories",
-                         params={"cve_id": cve_id}, headers=headers, timeout=10)
-            if r.status_code != 200 or not r.json():
-                conn.execute("INSERT OR IGNORE INTO _ghsa_checked VALUES (?)", (key,))
-                checked += 1
-                continue
-            desc = r.json()[0].get("description", "")
-            if not desc:
-                conn.execute("INSERT OR IGNORE INTO _ghsa_checked VALUES (?)", (key,))
-                checked += 1
-                continue
-            hit, new_reason, vt = score(desc)
-            if vt == "RCE":
-                conn.execute(
-                    "UPDATE vulns SET vuln_type='RCE', reason=? WHERE key=?",
-                    (new_reason, key))
-                upgraded += 1
-            conn.execute("INSERT OR IGNORE INTO _ghsa_checked VALUES (?)", (key,))
-            checked += 1
-        except Exception:
-            continue
-        time.sleep(0.5)
-    if upgraded or checked:
-        conn.commit()
-    if upgraded:
-        log.info(f"backfill_ghsa_vuln_type: upgraded {upgraded} to RCE ({checked} checked)")
 
 
 # ================== LLM ENRICHMENT ==================
