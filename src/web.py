@@ -521,6 +521,7 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill exclude-pill" data-ex="linux kernel">Linux Kernel</button>
   <button type="button" class="cat-pill exclude-pill" data-ex="wordpress">WordPress</button>
   <button type="button" class="cat-pill exclude-pill" data-ex="android">Android</button>
+  <button type="button" class="cat-pill exclude-pill" data-ex="adobe">Adobe</button>
 </div>
 
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
