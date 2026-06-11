@@ -623,10 +623,11 @@ def init_db(conn):
     if "vuln_type" in _new_cols:
         conn.execute("UPDATE vulns SET vuln_type='RCE' WHERE reason LIKE '%RCE%'")
         conn.execute("UPDATE vulns SET vuln_type='other' WHERE vuln_type IS NULL AND reason NOT IN ('excluded','no hit')")
-    # enforce hard locks on existing data: GitHub/nday must not remain pushed
+    # enforce hard locks on existing data: GitHub/nday/excluded must not remain pushed
     conn.execute("UPDATE vulns SET pushed=0 WHERE source IN ('GitHub','PoC-GitHub') AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE freshness='nday' AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND (cvss_pr IS NULL OR cvss_pr != 'N')")
+    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND reason='excluded'")
     conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_source     ON vulns(source)")
@@ -910,7 +911,7 @@ def _nvd_detail(cve_id):
                 severity = sev_raw
             if cvss and not severity:
                 severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
-            desc = adv.get("summary", "")
+            desc = adv.get("description", "") or adv.get("summary", "")
             detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc, "vector": vector}
             _nvd_cache[cve_upper] = pub_str or ""
             _nvd_detail_cache[cve_upper] = detail
@@ -1072,7 +1073,7 @@ def _backfill_nvd_severity(conn):
     promoted = conn.execute(
         "UPDATE vulns SET pushed=1 WHERE pushed=0 AND cvss_pr='N' "
         "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub') "
-        "AND vuln_type IN ('RCE','other') "
+        "AND vuln_type IN ('RCE','other') AND reason != 'excluded' "
         "AND (llm_verdict='confirmed' OR llm_verified=0)"
     ).rowcount
     if promoted:
@@ -1722,18 +1723,20 @@ def fetch_github_advisories():
                     for adv in advs:
                         cve = adv.get("cve_id") or adv.get("ghsa_id", "")
                         summary = adv.get("summary", "")
+                        desc = adv.get("description", "")
                         cvss_obj = adv.get("cvss", {})
                         cvss = cvss_obj.get("score")
                         vec = cvss_obj.get("vector_string", "")
                         sev = adv.get("severity", "")
                         cvss_str = f" (CVSS {cvss})" if cvss else ""
                         sev_str = f" [{sev.upper()}]" if sev else ""
+                        full_text = desc or summary
                         out.append({
                             "source": "GHSA",
                             "title": f"{sev_str} {cve} {summary[:200]}".strip(),
                             "link": adv.get("html_url", ""),
                             "summary": f"{summary}{cvss_str}",
-                            "text": f"{cve} {summary}",
+                            "text": f"{cve} {full_text}",
                             "_severity": sev.lower() if sev else None,
                             "_cvss": cvss,
                             "_cvss_vector": vec or None,
