@@ -1083,6 +1083,48 @@ def _backfill_nvd_severity(conn):
     _backfill_fortinet(conn)
     _backfill_zdi(conn)
     _backfill_published_fallback(conn)
+    _backfill_ghsa_vuln_type(conn)
+
+
+def _backfill_ghsa_vuln_type(conn):
+    """Re-check GHSA records that may have been misclassified due to truncated summary.
+
+    Fetches full description from GitHub Advisory API and upgrades vuln_type to RCE
+    if the description matches RCE patterns.
+    """
+    rows = conn.execute(
+        "SELECT key, cve_id FROM vulns "
+        "WHERE source='GHSA' AND cve_id LIKE 'CVE-%' "
+        "AND (vuln_type IS NULL OR vuln_type != 'RCE') "
+        "AND reason != 'excluded' "
+        "LIMIT 30"
+    ).fetchall()
+    if not rows:
+        return
+    headers = {"Accept": "application/vnd.github+json"}
+    if GH_TOKEN:
+        headers["Authorization"] = f"Bearer {GH_TOKEN}"
+    upgraded = 0
+    for key, cve_id in rows:
+        try:
+            r = SESS.get("https://api.github.com/advisories",
+                         params={"cve_id": cve_id}, headers=headers, timeout=10)
+            if r.status_code != 200 or not r.json():
+                continue
+            desc = r.json()[0].get("description", "")
+            if not desc:
+                continue
+            hit, reason, vt = score(desc)
+            if vt == "RCE":
+                conn.execute(
+                    "UPDATE vulns SET vuln_type='RCE' WHERE key=?", (key,))
+                upgraded += 1
+        except Exception:
+            continue
+        time.sleep(0.5)
+    if upgraded:
+        conn.commit()
+        log.info(f"backfill_ghsa_vuln_type: upgraded {upgraded} records to RCE")
 
 
 # ================== LLM ENRICHMENT ==================
