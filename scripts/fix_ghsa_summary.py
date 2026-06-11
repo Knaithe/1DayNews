@@ -18,36 +18,40 @@ def main():
               for r in rows if r[1]}
     print(f"DB has {len(db_map)} GHSA records with cve_id")
 
-    # 2) Bulk fetch from GHSA API (100 per page, all severities)
+    # 2) Fetch from GHSA API using date-range windows (same as fetch_github_advisories)
+    from datetime import datetime, timedelta, timezone
     headers = {"Accept": "application/vnd.github+json"}
     if GH_TOKEN:
         headers["Authorization"] = f"Bearer {GH_TOKEN}"
 
     fetched = {}
+    now = datetime.now(timezone.utc)
     for severity in ("critical", "high"):
-        page = 1
-        while True:
-            r = SESS.get("https://api.github.com/advisories",
-                         params={"severity": severity, "type": "reviewed",
-                                 "per_page": 100, "page": page},
-                         headers=headers, timeout=15)
-            if r.status_code != 200:
-                print(f"  API {r.status_code} at {severity} p{page}, stopping")
-                break
-            advs = r.json()
-            if not advs:
-                break
-            for a in advs:
-                cve = a.get("cve_id")
-                if cve and cve in db_map:
-                    desc = a.get("description", "") or a.get("summary", "")
-                    fetched[cve] = desc
-            print(f"  {severity} p{page}: {len(advs)} advisories, matched {len(fetched)} so far")
-            if len(advs) < 100:
-                break
-            page += 1
+        for weeks_ago in range(9):  # ~63 days coverage
+            end = now - timedelta(days=weeks_ago * 7)
+            start = end - timedelta(days=7)
+            date_range = f"{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
+            for page in (1, 2, 3):
+                r = SESS.get("https://api.github.com/advisories",
+                             params={"severity": severity, "published": date_range,
+                                     "per_page": 100, "page": page},
+                             headers=headers, timeout=15)
+                if r.status_code != 200:
+                    print(f"  API {r.status_code} at {severity} {date_range} p{page}")
+                    break
+                advs = r.json()
+                if not advs:
+                    break
+                for a in advs:
+                    cve = a.get("cve_id")
+                    if cve and cve in db_map:
+                        desc = a.get("description", "") or a.get("summary", "")
+                        fetched[cve] = desc
+                if len(advs) < 100:
+                    break
+                time.sleep(0.3)
             time.sleep(0.3)
-        time.sleep(0.5)
+        print(f"  {severity}: matched {len(fetched)} so far")
 
     print(f"\nFetched descriptions for {len(fetched)}/{len(db_map)} GHSA records")
 
