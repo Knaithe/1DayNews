@@ -128,6 +128,8 @@ RSS_FEEDS = [
     ("PaloAlto",    "https://security.paloaltonetworks.com/rss.xml"),
     ("Cisco",       "https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml"),
     ("MSRC",        "https://api.msrc.microsoft.com/update-guide/rss"),
+    # ---- exploit aggregator (low quality but unique CVE coverage, enriched via NVD backfill) ----
+    ("Sploitus_Citrix",   "https://sploitus.com/rss?query=citrix"),
     # ---- research teams (vuln-focused, not blogs/marketing) ----
     ("watchTowr",   "https://labs.watchtowr.com/rss/"),
     ("ZDI",         "https://www.zerodayinitiative.com/rss/published/"),
