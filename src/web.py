@@ -222,7 +222,7 @@ def api_stats():
     with get_db() as conn:
         total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
         pushed = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
-        sources = conn.execute("SELECT source, COUNT(*) as n FROM vulns WHERE source IS NOT NULL GROUP BY source ORDER BY n DESC").fetchall()
+        sources = conn.execute("SELECT source, COUNT(*) as n FROM vulns WHERE source IS NOT NULL AND created_at > strftime('%%s','now') - 7*86400 GROUP BY source ORDER BY n DESC").fetchall()
     return jsonify({
         "total": total, "pushed": pushed,
         "sources": {r["source"]: r["n"] for r in sources},
