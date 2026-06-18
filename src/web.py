@@ -498,6 +498,7 @@ a:hover { text-decoration: underline; }
 <div class="filter-row" id="typeRow" role="group" aria-label="Filter by type">
   <button type="button" class="cat-pill active" data-vtype="">All</button>
   <button type="button" class="cat-pill" data-vtype="RCE">RCE</button>
+  <button type="button" class="cat-pill" data-vtype="bypass">bypass</button>
   <button type="button" class="cat-pill" data-vtype="other">other</button>
 </div>
 
@@ -541,12 +542,11 @@ const SRC_STYLE = {
   watchTowr: {bg:"#FCE7F3",fg:"#be185d"}, Horizon3: {bg:"#D1FAE5",fg:"#047857"},
   Rapid7:    {bg:"#CFFAFE",fg:"#0e7490"}, Chaitin:  {bg:"#D1FAE5",fg:"#065f46"},
   ThreatBook:{bg:"#E0F2FE",fg:"#0c4a6e"}, GitHub:   {bg:"#EDE9FE",fg:"#5b21b6"},
-  Sploitus_Citrix:{bg:"#FED7AA",fg:"#9a3412"}, Sploitus_Ivanti:{bg:"#FED7AA",fg:"#9a3412"},
-  Sploitus_F5:{bg:"#FED7AA",fg:"#9a3412"},
 };
 const TYPE_STYLE = {
-  "RCE":   {bg:"#FEE2E2",fg:"#991b1b"},
-  "other": {bg:"#FEF3C7",fg:"#92400e"},
+  "RCE":    {bg:"#FEE2E2",fg:"#991b1b"},
+  "bypass": {bg:"#DBEAFE",fg:"#1e40af"},
+  "other":  {bg:"#FEF3C7",fg:"#92400e"},
 };
 
 let debounceTimer, activeCat = '', activeType = '', activeDays = '7', activeSeverity = '', activePR = '';
@@ -705,7 +705,7 @@ async function loadVulns(append=false) {
       return `<div class="vcard" style="animation:fadeUp .4s ${i*.03}s both">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
-          ${v.vuln_type==='RCE'?`<span class="reason-badge" style="background:${ts.bg};color:${ts.fg}">RCE</span>`:''}
+          ${v.vuln_type&&TYPE_STYLE[v.vuln_type]?`<span class="reason-badge" style="background:${ts.bg};color:${ts.fg}">${esc(v.vuln_type)}</span>`:''}
           ${sevBadge(v)}
           ${v.pr==='N'?'<span class="pr-badge">Unauth</span>':''}
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>

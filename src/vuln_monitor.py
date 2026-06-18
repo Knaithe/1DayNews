@@ -3,7 +3,7 @@
 0day/1day RCE vulnerability intelligence aggregator.
 
 Sources (17):
-    Vendor PSIRT (Fortinet/PaloAlto/Cisco/MSRC) + Sploitus exploit feeds
+    Vendor PSIRT (Fortinet/PaloAlto/Cisco/MSRC) + research teams + GHSA
     + research teams (watchTowr/ZDI/Horizon3/Rapid7) + CISA KEV
     + vuln databases (Chaitin/ThreatBook) + GitHub PoC search
 
@@ -121,17 +121,13 @@ ALERT_COOLDOWN_SEC = 3600
 RSS_FEEDS = [
     # ---- vendor PSIRT ----
     # Citrix, F5, Assetnote intentionally omitted: no working RSS as of 2026.
-    #   Citrix — Salesforce SPA (covered by watchTowr + KEV JSON + Sploitus below).
-    #   F5     — my.f5.com SPA (covered by Sploitus below).
+    #   Citrix — Salesforce SPA (covered by watchTowr + KEV JSON).
+    #   F5     — my.f5.com SPA (no working RSS as of 2026).
     #   Assetnote — dropped RSS after Searchlight acquisition.
     ("Fortinet",    "https://www.fortiguard.com/rss/ir.xml"),
     ("PaloAlto",    "https://security.paloaltonetworks.com/rss.xml"),
     ("Cisco",       "https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml"),
     ("MSRC",        "https://api.msrc.microsoft.com/update-guide/rss"),
-    # ---- Sploitus keyword feeds (fill PSIRT gaps with exploit/PoC signal) ----
-    ("Sploitus_Citrix",   "https://sploitus.com/rss?query=citrix"),
-    ("Sploitus_Ivanti",   "https://sploitus.com/rss?query=ivanti"),
-    ("Sploitus_F5",       "https://sploitus.com/rss?query=f5+big-ip"),
     # ---- research teams (vuln-focused, not blogs/marketing) ----
     ("watchTowr",   "https://labs.watchtowr.com/rss/"),
     ("ZDI",         "https://www.zerodayinitiative.com/rss/published/"),
@@ -196,6 +192,22 @@ RCE_PATTERNS = [
     r"zerologon", r"printnightmare", r"hivenightmare", r"follina",
     r"citrix\s?bleed", r"ghostcat", r"dirtycow", r"dirty pipe", r"looney tunables",
     r"regresshion", r"text4shell",
+]
+
+# ================== BYPASS PATTERNS ==================
+BYPASS_PATTERNS = [
+    r"auth(entication|orization)?\s*bypass",
+    r"bypass\s*auth(entication|orization)?",
+    r"access control bypass",
+    r"permission bypass",
+    r"\bRBAC\b.*bypass", r"bypass.*\bRBAC\b",
+    r"security (feature )?bypass",
+    r"account takeover",
+    r"session (hijack|fixation|steal)",
+    r"token (leak|expos|disclos|forg)",
+    r"JWT.*(bypass|weak|forg|leak)",
+    r"credential.*(leak|expos|bypass|steal)",
+    r"认证绕过", r"权限绕过", r"身份验证绕过",
 ]
 
 
@@ -396,6 +408,8 @@ EXCLUDE_PATTERNS = [
     r"\b(?:staging|ocfs2|fbdev|ALSA|media|usb: gadget|i2c:|s390/|rtnetlink|bcache|tracing):",
     # Apache library-level crashes/bugs (not enterprise-exploitable RCE)
     r"Apache Thrift:",
+    # Browser patches (not actionable for infra defenders; keep actively-exploited)
+    r"(?:Google Chrome|Chromium)\b(?!.*(exploit|0[- ]?day|zero[- ]?day|in[- ]the[- ]wild))",
 ]
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.I)
@@ -415,7 +429,7 @@ HIGH_PRIORITY_SOURCES = frozenset({
     "watchTowr", "MSRC", "Horizon3", "Chaitin", "ThreatBook",
 })
 # Reasons that indicate a genuinely interesting finding.
-STRONG_VULN_TYPES = frozenset({"RCE", "other"})
+STRONG_VULN_TYPES = frozenset({"RCE", "bypass", "other"})
 
 # ── Freshness (1day vs nday) ──
 # 1day = 漏洞本体新近公开且处于可利用窗口期，值得立刻关注和防御的新鲜攻击面。
@@ -432,7 +446,7 @@ FRESH_SOURCES = frozenset({
     "GHSA",                                            # GitHub Advisory Database (reviewed by GitHub security team)
 })
 # Sources that aggregate/republish old vulns — need CVE year validation.
-# Sploitus_*, GitHub, PoC-GitHub are implicitly NOT in FRESH_SOURCES.
+# PoC-GitHub is implicitly NOT in FRESH_SOURCES.
 
 # Fallback advisory page per vendor (used when we know the source but have no
 # item-level URL).
@@ -781,21 +795,22 @@ def item_key(title, link, text):
 # ================== FILTER ==================
 # Pre-compile patterns into single combined regexes for performance.
 _RCE_RE = re.compile("|".join(f"(?:{p})" for p in RCE_PATTERNS), re.I)
+_BYPASS_RE = re.compile("|".join(f"(?:{p})" for p in BYPASS_PATTERNS), re.I)
 _EXCLUDE_RE = re.compile("|".join(f"(?:{p})" for p in EXCLUDE_PATTERNS), re.I)
 _ASSET_KW_SET = frozenset(ASSET_KEYWORDS)
 
 def score(text):
     """Score text for exploitability. Returns (hit, reason, vuln_type).
 
-    reason: detailed match info (RCE+asset/CVE, asset+CVE, etc.)
-    vuln_type: simplified classification (RCE / other / None)
+    reason: detailed match info (RCE+asset/CVE, bypass+asset/CVE, asset+CVE, etc.)
+    vuln_type: simplified classification (RCE / bypass / other / None)
     """
     if _EXCLUDE_RE.search(text):
         return False, "excluded", None
     low = text.lower()
-    rce   = bool(_RCE_RE.search(text))
-    asset = any(k in low for k in _ASSET_KW_SET)
-    cve   = bool(CVE_RE.search(text))
+    rce    = bool(_RCE_RE.search(text))
+    asset  = any(k in low for k in _ASSET_KW_SET)
+    cve    = bool(CVE_RE.search(text))
     if rce and asset and cve:
         return True, "RCE+asset+CVE", "RCE"
     if rce and asset:
@@ -804,6 +819,15 @@ def score(text):
         return True, "RCE+CVE", "RCE"
     if rce:
         return True, "RCE", "RCE"
+    bypass = bool(_BYPASS_RE.search(text))
+    if bypass and asset and cve:
+        return True, "bypass+asset+CVE", "bypass"
+    if bypass and cve:
+        return True, "bypass+CVE", "bypass"
+    if bypass and asset:
+        return True, "bypass+asset", "bypass"
+    if bypass:
+        return True, "bypass", "bypass"
     if asset and cve:
         return True, "asset+CVE", "other"
     return False, "no hit", None
@@ -1043,8 +1067,8 @@ def _backfill_nvd_severity(conn):
             vtype_upgrade = None
             if desc:
                 hit, _, vt = score(desc)
-                if hit and vt == "RCE":
-                    vtype_upgrade = "RCE"
+                if hit and vt in ("RCE", "bypass"):
+                    vtype_upgrade = vt
             vec = detail.get("vector") or ""
             sql = ("UPDATE vulns SET severity=COALESCE(severity,?), cvss=COALESCE(cvss,?), "
                    "cve_published=COALESCE(cve_published,?), "
@@ -1073,7 +1097,7 @@ def _backfill_nvd_severity(conn):
     promoted = conn.execute(
         "UPDATE vulns SET pushed=1 WHERE pushed=0 AND cvss_pr='N' "
         "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub') "
-        "AND vuln_type IN ('RCE','other') AND reason != 'excluded' "
+        "AND vuln_type IN ('RCE','bypass','other') AND reason != 'excluded' "
         "AND (llm_verdict='confirmed' OR llm_verified=0)"
     ).rowcount
     if promoted:
@@ -1761,7 +1785,7 @@ def _fetch_all_sources():
         items.extend(batch)
     for name, func in [("CISA_KEV", fetch_kev_json), ("Chaitin", fetch_chaitin),
                         ("ThreatBook", fetch_threatbook),
-                        ("GitHub", fetch_github_cve), ("PoC-GitHub", fetch_poc_in_github),
+                        ("PoC-GitHub", fetch_poc_in_github),
                         ("GHSA", fetch_github_advisories)]:
         batch = func()
         counts[name] = len(batch)
@@ -2493,7 +2517,7 @@ def _cmd_enrich_inner(dry=False):
                 if llm_errors > 3:
                     fallback = conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', llm_notes='fallback: LLM errors, regex-scored', pushed=1 "
-                        "WHERE llm_verified=0 AND vuln_type IN ('RCE','other') "
+                        "WHERE llm_verified=0 AND vuln_type IN ('RCE','bypass','other') "
                         "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub') AND cvss_pr='N'"
                     ).rowcount
                     conn.commit()
