@@ -55,4 +55,7 @@ desktop.ini
 scratch/
 tmp/
 vuln_cache_remote.db
-vuln_cache_remote.db
+vuln_cache_remote.db-shm
+vuln_cache_remote.db-wal
+.agents/
+skills-lock.json

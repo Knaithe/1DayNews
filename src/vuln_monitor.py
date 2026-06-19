@@ -801,6 +801,22 @@ _BYPASS_RE = re.compile("|".join(f"(?:{p})" for p in BYPASS_PATTERNS), re.I)
 _EXCLUDE_RE = re.compile("|".join(f"(?:{p})" for p in EXCLUDE_PATTERNS), re.I)
 _ASSET_KW_SET = frozenset(ASSET_KEYWORDS)
 
+_UNAUTH_ONLY_RE = re.compile(
+    r"unauthenticated|pre[- ]?auth(entication)?|\bunauth\b"
+    r"|no authentication (required|needed)|anonymous\s+(access|rce|exec)",
+    re.I,
+)
+_FILE_READ_RE = re.compile(
+    r"(arbitrary|unauthorized)\s+file\s+read"
+    r"|file\s+(read|disclos)"
+    r"|information\s+disclos"
+    r"|path\s+traversal(?!.*(write|overwrite|exec|upload|RCE))"
+    r"|directory\s+traversal(?!.*(write|overwrite|exec|upload|RCE))"
+    r"|任意文件读取",
+    re.I,
+)
+
+
 def score(text):
     """Score text for exploitability. Returns (hit, reason, vuln_type).
 
@@ -813,6 +829,15 @@ def score(text):
     rce    = bool(_RCE_RE.search(text))
     asset  = any(k in low for k in _ASSET_KW_SET)
     cve    = bool(CVE_RE.search(text))
+    bypass = bool(_BYPASS_RE.search(text))
+    # unauth + file-read-only (no code exec) → bypass, not RCE
+    # only downgrade when ALL RCE matches are unauth-only (no real exec indicator)
+    if rce and _FILE_READ_RE.search(text):
+        rce_hits = [m.group() for m in _RCE_RE.finditer(text)]
+        if rce_hits and all(_UNAUTH_ONLY_RE.fullmatch(h) for h in rce_hits):
+            rce = False
+            if not bypass:
+                bypass = True
     if rce and asset and cve:
         return True, "RCE+asset+CVE", "RCE"
     if rce and asset:
@@ -821,7 +846,6 @@ def score(text):
         return True, "RCE+CVE", "RCE"
     if rce:
         return True, "RCE", "RCE"
-    bypass = bool(_BYPASS_RE.search(text))
     if bypass and asset and cve:
         return True, "bypass+asset+CVE", "bypass"
     if bypass and cve:
