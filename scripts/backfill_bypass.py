@@ -6,6 +6,7 @@ Usage:
     VULN_DB=path python backfill_bypass.py   # override DB path
 """
 import sqlite3, sys, os, time
+from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from vuln_monitor import score, SESS, NVD_API_KEY
 
@@ -132,24 +133,30 @@ def main():
         return
 
     print(f"\nInserting into {DB}...", flush=True)
-    conn = sqlite3.connect(DB)
+    write_conn = sqlite3.connect(DB)
+    now_ts = datetime.now(timezone.utc).timestamp()
     inserted = 0
     skipped = 0
-    for c in candidates:
-        exists = conn.execute("SELECT 1 FROM vulns WHERE cve_id=?", (c["cve_id"],)).fetchone()
-        if exists:
-            skipped += 1
-            continue
-        conn.execute(
-            """INSERT INTO vulns (key, cve_id, source, title, link, summary, reason, vuln_type,
-               cvss, severity, cvss_vector, pushed, freshness, freshness_reason, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'fresh', 'backfill', datetime('now'))""",
-            (c["key"], c["cve_id"], c["source"], c["title"], c["link"], c["summary"],
-             c["reason"], c["vuln_type"], c["cvss"], c["severity"], c["cvss_vector"]),
-        )
-        inserted += 1
-    conn.commit()
-    conn.close()
+    try:
+        for c in candidates:
+            exists = write_conn.execute("SELECT 1 FROM vulns WHERE cve_id=?", (c["cve_id"],)).fetchone()
+            if exists:
+                skipped += 1
+                continue
+            write_conn.execute(
+                """INSERT INTO vulns (key, cve_id, source, title, link, summary, reason, vuln_type,
+                   cvss, severity, cvss_vector, pushed, freshness, freshness_reason, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'fresh', 'backfill', ?)""",
+                (c["key"], c["cve_id"], c["source"], c["title"], c["link"], c["summary"],
+                 c["reason"], c["vuln_type"], c["cvss"], c["severity"], c["cvss_vector"], now_ts),
+            )
+            inserted += 1
+        write_conn.commit()
+    except Exception:
+        write_conn.rollback()
+        raise
+    finally:
+        write_conn.close()
     print(f"Done: inserted={inserted}, skipped={skipped}", flush=True)
 
 
