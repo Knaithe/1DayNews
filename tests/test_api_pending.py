@@ -3,6 +3,7 @@ import json
 import sqlite3
 import tempfile
 import os
+from datetime import datetime, timezone
 import pytest
 
 os.environ.setdefault("VULN_DATA_DIR", "")
@@ -24,7 +25,7 @@ def app(tmp_path):
         dingtalk_sent INTEGER DEFAULT 0, feishu_sent INTEGER DEFAULT 0,
         cvss_vector TEXT, cvss_pr TEXT, dispatched INTEGER DEFAULT 0
     )""")
-    now = 1781827200.0  # 2026-06-19 00:00 UTC
+    now = datetime.now(timezone.utc).timestamp()
     rows = [
         ("k1", "CVE-2026-1001", "CISA_KEV", "RCE in FortiGate", "https://example.com/1",
          "Critical RCE", "RCE+asset+CVE", "RCE", "1day", None, 1, now, "2026-06-18",
@@ -81,16 +82,21 @@ class TestAPIPending:
         times = [v["created_at"] for v in data["vulns"]]
         assert times == sorted(times, reverse=True)
 
-    def test_since_filter(self, client):
-        resp = client.get("/api/pending?since=2026-06-18T12:00:00")
+    def test_days_filter(self, client):
+        # default days=7, CVE-1002 is now-86400 (1 day ago) → included
+        resp = client.get("/api/pending")
         data = json.loads(resp.data)
         cve_ids = [v["cve_id"] for v in data["vulns"]]
         assert "CVE-2026-1001" in cve_ids
-        assert "CVE-2026-1002" not in cve_ids
+        assert "CVE-2026-1002" in cve_ids
 
-    def test_invalid_since(self, client):
-        resp = client.get("/api/pending?since=not-a-date")
-        assert resp.status_code == 400
+    def test_days_filter_wide(self, client):
+        # days=365 should include both (1002 is only 1 day old)
+        resp = client.get("/api/pending?days=365")
+        data = json.loads(resp.data)
+        cve_ids = [v["cve_id"] for v in data["vulns"]]
+        assert "CVE-2026-1001" in cve_ids
+        assert "CVE-2026-1002" in cve_ids
 
     def test_limit(self, client):
         resp = client.get("/api/pending?limit=1")

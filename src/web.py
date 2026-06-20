@@ -263,15 +263,11 @@ def api_pending():
         cols_avail = _vulns_columns(conn)
         if "dispatched" not in cols_avail:
             return jsonify({"vulns": [], "count": 0})
-        since = request.args.get("since", "").strip()
         params = []
-        where = "pushed = 1 AND dispatched = 0"
-        if since:
-            where += " AND created_at > ?"
-            try:
-                params.append(datetime.fromisoformat(since).timestamp())
-            except ValueError:
-                return jsonify({"error": "invalid since format, use ISO 8601"}), 400
+        days = _int_arg("days", 7, 1, 365)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+        where = "pushed = 1 AND dispatched = 0 AND created_at > ?"
+        params.append(cutoff)
         limit = _int_arg("limit", 50, 1, 200)
         sql = f"""SELECT cve_id, source, title, link, summary, vuln_type, cvss,
                          severity, reason, created_at
