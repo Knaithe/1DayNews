@@ -305,16 +305,18 @@ def api_ack():
     cve_ids = data["cve_ids"]
     if not isinstance(cve_ids, list) or not cve_ids:
         return jsonify({"error": "cve_ids must be a non-empty list"}), 400
+    if len(cve_ids) > 100:
+        return jsonify({"error": "max 100 cve_ids per request"}), 400
     with get_db_rw() as conn:
         cols_avail = _vulns_columns(conn)
         if "dispatched" not in cols_avail:
             return jsonify({"error": "dispatched column not available, run vuln_monitor.py once to migrate"}), 500
         placeholders = ",".join("?" for _ in cve_ids)
-        conn.execute(
-            f"UPDATE vulns SET dispatched = 1 WHERE cve_id IN ({placeholders})",
+        cur = conn.execute(
+            f"UPDATE vulns SET dispatched = 1 WHERE cve_id IN ({placeholders}) AND dispatched = 0",
             cve_ids,
         )
-    return jsonify({"acked": len(cve_ids)})
+    return jsonify({"acked": cur.rowcount})
 
 
 # ── Frontend ──

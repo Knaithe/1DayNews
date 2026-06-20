@@ -149,7 +149,7 @@ class TestAPIAck:
         resp = client.post("/api/ack", json={"cve_ids": ["CVE-0000-0000"]})
         assert resp.status_code == 200
         data = json.loads(resp.data)
-        assert data["acked"] == 1
+        assert data["acked"] == 0
 
     def test_ack_missing_body(self, client):
         resp = client.post("/api/ack")
@@ -164,9 +164,20 @@ class TestAPIAck:
         assert resp.status_code == 400
 
     def test_ack_idempotent(self, client):
-        client.post("/api/ack", json={"cve_ids": ["CVE-2026-1001"]})
-        resp = client.post("/api/ack", json={"cve_ids": ["CVE-2026-1001"]})
-        assert resp.status_code == 200
+        resp1 = client.post("/api/ack", json={"cve_ids": ["CVE-2026-1001"]})
+        assert json.loads(resp1.data)["acked"] == 1
+        resp2 = client.post("/api/ack", json={"cve_ids": ["CVE-2026-1001"]})
+        assert json.loads(resp2.data)["acked"] == 0
+
+    def test_ack_returns_actual_rowcount(self, client):
+        resp = client.post("/api/ack", json={"cve_ids": ["CVE-2026-1001", "CVE-0000-FAKE"]})
+        data = json.loads(resp.data)
+        assert data["acked"] == 1
+
+    def test_ack_over_limit(self, client):
+        ids = [f"CVE-2026-{i:04d}" for i in range(101)]
+        resp = client.post("/api/ack", json={"cve_ids": ids})
+        assert resp.status_code == 400
 
 
 class TestBearerAuth:
