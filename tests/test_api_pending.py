@@ -90,11 +90,10 @@ class TestAPIPending:
         assert "CVE-2026-1001" in cve_ids
         assert "CVE-2026-1002" in cve_ids
 
-    def test_limit(self, client):
-        resp = client.get("/api/pending?limit=1")
+    def test_returns_all_within_limit(self, client):
+        resp = client.get("/api/pending")
         data = json.loads(resp.data)
-        assert data["count"] == 1
-        assert data["vulns"][0]["cvss"] == 9.8
+        assert data["count"] == 2
 
     def test_response_fields(self, client):
         resp = client.get("/api/pending")

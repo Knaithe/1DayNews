@@ -267,12 +267,10 @@ def api_pending():
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
         where = "pushed = 1 AND dispatched = 0 AND created_at > ?"
         params.append(cutoff)
-        limit = _int_arg("limit", 50, 1, 200)
         sql = f"""SELECT cve_id, source, title, link, summary, vuln_type, cvss,
                          severity, reason, created_at
                   FROM vulns WHERE {where}
-                  ORDER BY created_at DESC LIMIT ?"""
-        params.append(limit)
+                  ORDER BY created_at DESC LIMIT 1000"""
         rows = conn.execute(sql, params).fetchall()
     return jsonify({
         "vulns": [{
