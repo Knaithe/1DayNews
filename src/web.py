@@ -276,7 +276,7 @@ def api_pending():
         sql = f"""SELECT cve_id, source, title, link, summary, vuln_type, cvss,
                          severity, reason, created_at
                   FROM vulns WHERE {where}
-                  ORDER BY cvss DESC, created_at DESC LIMIT ?"""
+                  ORDER BY created_at DESC LIMIT ?"""
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
     return jsonify({

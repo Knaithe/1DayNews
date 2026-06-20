@@ -75,11 +75,11 @@ class TestAPIPending:
         data = json.loads(resp.data)
         assert data["count"] == len(data["vulns"])
 
-    def test_ordered_by_cvss_desc(self, client):
+    def test_ordered_by_time_desc(self, client):
         resp = client.get("/api/pending")
         data = json.loads(resp.data)
-        scores = [v["cvss"] for v in data["vulns"]]
-        assert scores == sorted(scores, reverse=True)
+        times = [v["created_at"] for v in data["vulns"]]
+        assert times == sorted(times, reverse=True)
 
     def test_since_filter(self, client):
         resp = client.get("/api/pending?since=2026-06-18T12:00:00")
