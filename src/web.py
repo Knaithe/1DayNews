@@ -264,8 +264,7 @@ def api_pending():
         if "dispatched" not in cols_avail:
             return jsonify({"vulns": [], "count": 0})
         params = []
-        days = _int_arg("days", 7, 1, 365)
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
         where = "pushed = 1 AND dispatched = 0 AND created_at > ?"
         params.append(cutoff)
         limit = _int_arg("limit", 50, 1, 200)

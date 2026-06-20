@@ -82,17 +82,9 @@ class TestAPIPending:
         times = [v["created_at"] for v in data["vulns"]]
         assert times == sorted(times, reverse=True)
 
-    def test_days_filter(self, client):
-        # default days=7, CVE-1002 is now-86400 (1 day ago) → included
+    def test_7day_window(self, client):
+        # both CVE-1001 (now) and CVE-1002 (now-1day) within 7 days
         resp = client.get("/api/pending")
-        data = json.loads(resp.data)
-        cve_ids = [v["cve_id"] for v in data["vulns"]]
-        assert "CVE-2026-1001" in cve_ids
-        assert "CVE-2026-1002" in cve_ids
-
-    def test_days_filter_wide(self, client):
-        # days=365 should include both (1002 is only 1 day old)
-        resp = client.get("/api/pending?days=365")
         data = json.loads(resp.data)
         cve_ids = [v["cve_id"] for v in data["vulns"]]
         assert "CVE-2026-1001" in cve_ids
