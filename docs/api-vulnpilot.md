@@ -19,20 +19,19 @@ Cookie: _vmt=<token>
 
 ## GET /api/pending
 
-返回已推送（pushed=1）且未被领取（dispatched=0）的漏洞，按 CVSS 降序排列。
+返回最近 7 天内已推送（pushed=1）且未被领取（dispatched=0）的漏洞，按时间降序排列。
 
 **参数：**
 
 | 参数 | 类型 | 必选 | 说明 |
 |---|---|---|---|
-| since | string | 否 | ISO 8601 时间，只返回此时间之后的记录 |
 | limit | int | 否 | 最大返回数量，默认 50，范围 1-200 |
 
 **请求示例：**
 
 ```bash
 curl -H "Authorization: Bearer YOUR_TOKEN" \
-  "http://100.x.x.x:8001/api/pending?limit=10"
+  "http://100.x.x.x:8001/api/pending"
 ```
 
 **响应：**
@@ -58,6 +57,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 ```
 
 **说明：**
+- 固定 7 天窗口，无外部可控参数
 - 只返回通过评分筛选并推送到 TG 的漏洞
 - 已被 `/api/ack` 标记的不再返回
 - DB 没有 `dispatched` 字段时（未 migration）返回空列表
@@ -65,6 +65,8 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 ## POST /api/ack
 
 标记漏洞已被 dispatcher 领取，后续 `/api/pending` 不再返回。
+
+**限制：** 单次最多 100 个 cve_ids。
 
 **请求：**
 
@@ -82,11 +84,13 @@ curl -X POST \
 {"acked": 2}
 ```
 
+`acked` 返回实际更新的行数（非输入数量）。重复 ack 同一条 CVE 会返回 `{"acked": 0}`。
+
 **错误：**
 
 | 状态码 | 原因 |
 |---|---|
-| 400 | 缺少 `cve_ids`、空列表、或类型不是数组 |
+| 400 | 缺少 `cve_ids`、空列表、类型不是数组、或超过 100 条 |
 | 403 | token 无效 |
 | 500 | DB 没有 `dispatched` 字段（需要先跑一次 `vuln_monitor.py` 做 migration） |
 
