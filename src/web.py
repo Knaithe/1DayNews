@@ -70,7 +70,7 @@ app = Flask(__name__)
 def check_token():
     if _MAGIC_TOKEN is None:
         return  # localhost mode, no auth
-    # Allow token via: /TOKEN/path, ?token=TOKEN, or cookie
+    # Allow token via: /TOKEN/path, ?token=TOKEN, cookie, or Authorization: Bearer
     path_parts = request.path.strip("/").split("/", 1)
     if _token_match(path_parts[0]):
         # Strip token prefix, redirect to real path + set cookie
@@ -83,6 +83,9 @@ def check_token():
     if _token_match(request.args.get("token", "")):
         return
     if _token_match(request.cookies.get("_vmt", "")):
+        return
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and _token_match(auth[7:]):
         return
     abort(403)
 
@@ -120,6 +123,21 @@ def get_db():
     conn.row_factory = sqlite3.Row
     try:
         yield conn
+    finally:
+        conn.close()
+
+
+@contextlib.contextmanager
+def get_db_rw():
+    """Context manager for read-write DB access."""
+    conn = sqlite3.connect(str(DB_FILE), timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -234,6 +252,69 @@ def api_sources():
     with get_db() as conn:
         rows = conn.execute("SELECT DISTINCT source FROM vulns WHERE source IS NOT NULL ORDER BY source").fetchall()
     return jsonify([r["source"] for r in rows])
+
+
+# ── Vulnpilot API (for B-side dispatcher) ──
+
+@app.route("/api/pending")
+def api_pending():
+    """Return pushed vulns not yet dispatched to B-side for analysis."""
+    with get_db() as conn:
+        cols_avail = _vulns_columns(conn)
+        if "dispatched" not in cols_avail:
+            return jsonify({"vulns": [], "count": 0})
+        since = request.args.get("since", "").strip()
+        params = []
+        where = "pushed = 1 AND dispatched = 0"
+        if since:
+            where += " AND created_at > ?"
+            try:
+                params.append(datetime.fromisoformat(since).timestamp())
+            except ValueError:
+                return jsonify({"error": "invalid since format, use ISO 8601"}), 400
+        limit = _int_arg("limit", 50, 1, 200)
+        sql = f"""SELECT cve_id, source, title, link, summary, vuln_type, cvss,
+                         severity, reason, created_at
+                  FROM vulns WHERE {where}
+                  ORDER BY cvss DESC, created_at DESC LIMIT ?"""
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+    return jsonify({
+        "vulns": [{
+            "cve_id": r["cve_id"],
+            "title": r["title"],
+            "source": r["source"],
+            "link": r["link"],
+            "summary": r["summary"],
+            "vuln_type": r["vuln_type"],
+            "cvss": r["cvss"],
+            "severity": r["severity"],
+            "reason": r["reason"],
+            "created_at": datetime.fromtimestamp(r["created_at"], tz=timezone.utc).isoformat() if r["created_at"] else None,
+        } for r in rows],
+        "count": len(rows),
+    })
+
+
+@app.route("/api/ack", methods=["POST"])
+def api_ack():
+    """Mark vulns as dispatched so they don't appear in /api/pending again."""
+    data = request.get_json(silent=True)
+    if not data or "cve_ids" not in data:
+        return jsonify({"error": "missing cve_ids"}), 400
+    cve_ids = data["cve_ids"]
+    if not isinstance(cve_ids, list) or not cve_ids:
+        return jsonify({"error": "cve_ids must be a non-empty list"}), 400
+    with get_db_rw() as conn:
+        cols_avail = _vulns_columns(conn)
+        if "dispatched" not in cols_avail:
+            return jsonify({"error": "dispatched column not available, run vuln_monitor.py once to migrate"}), 500
+        placeholders = ",".join("?" for _ in cve_ids)
+        conn.execute(
+            f"UPDATE vulns SET dispatched = 1 WHERE cve_id IN ({placeholders})",
+            cve_ids,
+        )
+    return jsonify({"acked": len(cve_ids)})
 
 
 # ── Frontend ──
