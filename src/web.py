@@ -572,8 +572,8 @@ a:hover { text-decoration: underline; }
 </div>
 
 <div class="filter-row" id="typeRow" role="group" aria-label="Filter by type">
-  <button type="button" class="cat-pill active" data-vtype="">All</button>
-  <button type="button" class="cat-pill" data-vtype="RCE">RCE</button>
+  <button type="button" class="cat-pill" data-vtype="">All</button>
+  <button type="button" class="cat-pill active" data-vtype="RCE">RCE</button>
   <button type="button" class="cat-pill" data-vtype="bypass">bypass</button>
   <button type="button" class="cat-pill" data-vtype="other">other</button>
 </div>
@@ -587,18 +587,18 @@ a:hover { text-decoration: underline; }
 </div>
 
 <div class="filter-row" id="prRow" role="group" aria-label="Filter by privileges required">
-  <button type="button" class="cat-pill active" data-pr="">All</button>
-  <button type="button" class="cat-pill" data-pr="N">Unauth</button>
+  <button type="button" class="cat-pill" data-pr="">All</button>
+  <button type="button" class="cat-pill active" data-pr="N">Unauth</button>
   <button type="button" class="cat-pill" data-pr="!N">Auth Required</button>
 </div>
 
 <div class="filter-row" id="excludeRow" role="group" aria-label="Exclude noise">
-  <button type="button" class="cat-pill exclude-pill" data-ex="chrome">Chrome</button>
-  <button type="button" class="cat-pill exclude-pill" data-ex="firefox">Firefox</button>
-  <button type="button" class="cat-pill exclude-pill" data-ex="linux kernel">Linux Kernel</button>
-  <button type="button" class="cat-pill exclude-pill" data-ex="wordpress">WordPress</button>
-  <button type="button" class="cat-pill exclude-pill" data-ex="android">Android</button>
-  <button type="button" class="cat-pill exclude-pill" data-ex="adobe">Adobe</button>
+  <button type="button" class="cat-pill exclude-pill active" data-ex="chrome">Chrome</button>
+  <button type="button" class="cat-pill exclude-pill active" data-ex="firefox">Firefox</button>
+  <button type="button" class="cat-pill exclude-pill active" data-ex="linux kernel">Linux Kernel</button>
+  <button type="button" class="cat-pill exclude-pill active" data-ex="wordpress">WordPress</button>
+  <button type="button" class="cat-pill exclude-pill active" data-ex="android">Android</button>
+  <button type="button" class="cat-pill exclude-pill active" data-ex="adobe">Adobe</button>
 </div>
 
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
@@ -625,8 +625,8 @@ const TYPE_STYLE = {
   "other":  {bg:"#FEF3C7",fg:"#92400e"},
 };
 
-let debounceTimer, activeCat = '', activeType = '', activeDays = '7', activeSeverity = '', activePR = '';
-const activeExcludes = new Set();
+let debounceTimer, activeCat = '', activeType = 'RCE', activeDays = '7', activeSeverity = '', activePR = 'N';
+const activeExcludes = new Set(['chrome','firefox','linux kernel','wordpress','android','adobe']);
 let currentLimit = 100;
 const MAX_LIMIT = __LIMIT_MAX__;
 document.getElementById('loadMoreBtn').addEventListener('click', () => {
