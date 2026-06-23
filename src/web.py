@@ -190,6 +190,10 @@ def api_vulns():
                 where.append("cvss_pr = ?"); params.append(pr.upper())
             elif pr == "!N":
                 where.append("cvss_pr IS NOT NULL AND cvss_pr != 'N'")
+        ui = request.args.get("ui", "").strip()
+        if ui and "cvss_ui" in cols_avail:
+            if ui.upper() in ("N", "R"):
+                where.append("cvss_ui = ?"); params.append(ui.upper())
         reason = request.args.get("reason", "").strip()
         if reason:
             where.append("reason = ?"); params.append(reason)
@@ -207,7 +211,7 @@ def api_vulns():
         base_cols = ["cve_id", "source", "title", "link", "summary", "reason", "pushed",
                      "created_at", "cve_published", "severity", "cvss", "llm_verdict",
                      "llm_notes", "tg_sent"]
-        optional_cols = ["vuln_type", "freshness", "cvss_pr"]
+        optional_cols = ["vuln_type", "freshness", "cvss_pr", "cvss_ui"]
         cols = base_cols + [c for c in optional_cols if c in cols_avail]
         sql = f"SELECT {','.join(cols)} FROM vulns"
         if where:
@@ -220,12 +224,14 @@ def api_vulns():
     has_vt = "vuln_type" in cols_avail
     has_fr = "freshness" in cols_avail
     has_pr = "cvss_pr" in cols_avail
+    has_ui = "cvss_ui" in cols_avail
     return jsonify([{
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
         "vuln_type": r["vuln_type"] if has_vt else None,
         "freshness": r["freshness"] if has_fr else None,
         "pr": r["cvss_pr"] if has_pr else None,
+        "ui": r["cvss_ui"] if has_ui else None,
         "pushed": bool(r["pushed"]),
         "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
         "cve_published": r["cve_published"] if r["cve_published"] != "unknown" else None,
@@ -561,10 +567,10 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill" data-sev="low">Low</button>
 </div>
 
-<div class="filter-row" id="prRow" role="group" aria-label="Filter by privileges required">
+<div class="filter-row" id="prRow" role="group" aria-label="Filter by access conditions">
   <button type="button" class="cat-pill" data-pr="">All</button>
   <button type="button" class="cat-pill active" data-pr="N">Unauth</button>
-  <button type="button" class="cat-pill" data-pr="!N">Auth Required</button>
+  <button type="button" class="cat-pill" data-ui="N">No Interaction</button>
 </div>
 
 <div class="filter-row" id="excludeRow" role="group" aria-label="Exclude noise">
@@ -600,7 +606,7 @@ const TYPE_STYLE = {
   "other":  {bg:"#FEF3C7",fg:"#92400e"},
 };
 
-let debounceTimer, activeDays = '7', activePR = 'N';
+let debounceTimer, activeDays = '7', activePR = 'N', activeUI = '';
 const activeTypes = new Set(['RCE']);
 const activeSevs = new Set();
 const activeSrcs = new Set();
@@ -643,7 +649,18 @@ document.querySelectorAll('#sevRow .cat-pill').forEach(p => p.addEventListener('
   toggleMulti(activeSevs, p.dataset.sev, '#sevRow', 'sev');
 }));
 document.querySelectorAll('#prRow .cat-pill').forEach(p => p.addEventListener('click', () => {
-  activePR = p.dataset.pr; setActive('#prRow', 'pr', activePR); loadVulns();
+  if ('pr' in p.dataset) {
+    if (p.dataset.pr === '') { activePR = ''; activeUI = ''; }
+    else { activePR = activePR === p.dataset.pr ? '' : p.dataset.pr; }
+  } else if ('ui' in p.dataset) {
+    activeUI = activeUI === p.dataset.ui ? '' : p.dataset.ui;
+  }
+  document.querySelectorAll('#prRow .cat-pill').forEach(b => {
+    if ('pr' in b.dataset && b.dataset.pr === '') b.classList.toggle('active', !activePR && !activeUI);
+    else if ('pr' in b.dataset) b.classList.toggle('active', activePR === b.dataset.pr);
+    else if ('ui' in b.dataset) b.classList.toggle('active', activeUI === b.dataset.ui);
+  });
+  loadVulns();
 }));
 document.querySelectorAll('#excludeRow .exclude-pill').forEach(p => p.addEventListener('click', () => {
   const kw = p.dataset.ex;
@@ -745,6 +762,7 @@ async function loadVulns(append=false) {
   if (activeTypes.size) params.set('vuln_type', [...activeTypes].join(','));
   if (activeSevs.size) params.set('severity', [...activeSevs].join(','));
   if (activePR) params.set('pr', activePR);
+  if (activeUI) params.set('ui', activeUI);
   if (activeExcludes.size) params.set('exclude', [...activeExcludes].join(','));
   if (activeDays) params.set('days', activeDays);
   if (document.getElementById('pushedFilter').checked) params.set('pushed', '1');

@@ -2,10 +2,11 @@
 """
 0day/1day RCE vulnerability intelligence aggregator.
 
-Sources (17):
-    Vendor PSIRT (Fortinet/PaloAlto/Cisco/MSRC) + research teams + GHSA
+Sources (15):
+    Vendor PSIRT (Fortinet/PaloAlto/Cisco/MSRC) + Advisory (GHSA)
     + research teams (watchTowr/ZDI/Horizon3/Rapid7) + CISA KEV
-    + vuln databases (Chaitin/ThreatBook) + GitHub PoC search
+    + Exploit/PoC (Sploitus_Citrix/PoC-GitHub) + vuln databases (Chaitin/ThreatBook)
+    + DailyCVE
 
 Flow:
     fetch → dedup (SQLite, CVE/hash key) → RCE keyword score
@@ -78,12 +79,18 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or _user_cfg.get("deepseek_api_
 OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")   or _user_cfg.get("openai_api_key", "")
 LLM_MODEL    = os.getenv("LLM_MODEL")       or _user_cfg.get("llm_model", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL")   or _user_cfg.get("llm_base_url", "")
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE") or _user_cfg.get("llm_temperature", "0.1"))
-LLM_MAX_TOKENS  = int(os.getenv("LLM_MAX_TOKENS")    or _user_cfg.get("llm_max_tokens", "1024"))
-LLM_TIMEOUT     = int(os.getenv("LLM_TIMEOUT")        or _user_cfg.get("llm_timeout", "60"))
-LLM_MAX_CONTEXT = int(os.getenv("LLM_MAX_CONTEXT")    or _user_cfg.get("llm_max_context", "1048576"))
+def _safe_num(raw, cast, default):
+    try:
+        return cast(raw)
+    except (ValueError, TypeError):
+        return default
+
+LLM_TEMPERATURE = _safe_num(os.getenv("LLM_TEMPERATURE") or _user_cfg.get("llm_temperature", "0.1"), float, 0.1)
+LLM_MAX_TOKENS  = _safe_num(os.getenv("LLM_MAX_TOKENS")  or _user_cfg.get("llm_max_tokens", "1024"), int, 1024)
+LLM_TIMEOUT     = _safe_num(os.getenv("LLM_TIMEOUT")      or _user_cfg.get("llm_timeout", "60"), int, 60)
+LLM_MAX_CONTEXT = _safe_num(os.getenv("LLM_MAX_CONTEXT")  or _user_cfg.get("llm_max_context", "1048576"), int, 1048576)
 LLM_REASONING   = os.getenv("LLM_REASONING_EFFORT")   or _user_cfg.get("llm_reasoning_effort", "high")
-LLM_TOP_P       = float(os.getenv("LLM_TOP_P")        or _user_cfg.get("llm_top_p", "0.9"))
+LLM_TOP_P       = _safe_num(os.getenv("LLM_TOP_P")    or _user_cfg.get("llm_top_p", "0.9"), float, 0.9)
 PROXY        = os.getenv("HTTPS_PROXY")  or _user_cfg.get("https_proxy", "")
 
 WECOM_WEBHOOK_KEY      = os.getenv("WECOM_WEBHOOK_KEY")      or _user_cfg.get("wecom_webhook_key", "")
@@ -612,6 +619,7 @@ def init_db(conn):
         ("vuln_type",     "TEXT"),
         ("cvss_vector",   "TEXT"),
         ("cvss_pr",       "TEXT"),
+        ("cvss_ui",       "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
@@ -643,6 +651,7 @@ def init_db(conn):
     conn.execute("UPDATE vulns SET pushed=0 WHERE source IN ('GitHub','PoC-GitHub') AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE freshness='nday' AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND (cvss_pr IS NULL OR cvss_pr != 'N')")
+    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND cvss_ui IS NOT NULL AND cvss_ui != 'N'")
     conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND reason='excluded'")
     conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cve_id     ON vulns(cve_id)     WHERE cve_id IS NOT NULL")
@@ -863,6 +872,13 @@ def _extract_pr(vector):
     if not vector:
         return None
     m = re.search(r"PR:([NLH])", vector)
+    return m.group(1) if m else None
+
+
+def _extract_ui(vector):
+    if not vector:
+        return None
+    m = re.search(r"UI:([NR])", vector)
     return m.group(1) if m else None
 
 
@@ -1098,10 +1114,10 @@ def _backfill_nvd_severity(conn):
             vec = detail.get("vector") or ""
             sql = ("UPDATE vulns SET severity=COALESCE(severity,?), cvss=COALESCE(cvss,?), "
                    "cve_published=COALESCE(cve_published,?), "
-                   "cvss_vector=COALESCE(cvss_vector,?), cvss_pr=COALESCE(cvss_pr,?)")
+                   "cvss_vector=COALESCE(cvss_vector,?), cvss_pr=COALESCE(cvss_pr,?), cvss_ui=COALESCE(cvss_ui,?)")
             params = [detail.get("severity") or "unknown", detail.get("cvss"),
                       detail.get("published") or "unknown",
-                      vec or "N/A", _extract_pr(vec)]
+                      vec or "N/A", _extract_pr(vec), _extract_ui(vec)]
             if vtype_upgrade:
                 sql += ", vuln_type=?"
                 params.append(vtype_upgrade)
@@ -1122,6 +1138,7 @@ def _backfill_nvd_severity(conn):
     # re-evaluate pushed for records that got PR=N after initial insert
     promoted = conn.execute(
         "UPDATE vulns SET pushed=1 WHERE pushed=0 AND cvss_pr='N' "
+        "AND (cvss_ui IS NULL OR cvss_ui='N') "
         "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub') "
         "AND vuln_type IN ('RCE','bypass','other') AND reason != 'excluded' "
         "AND (llm_verdict='confirmed' OR llm_verified=0)"
@@ -1197,13 +1214,14 @@ _VERDICT_PUSH = {"confirmed": 1, "not_relevant": 0, "noise": 0}
 
 _GITHUB_SOURCES = frozenset({"GitHub", "PoC-GitHub"})
 
-def _resolve_pushed(verdict, freshness, source, pr=None):
+def _resolve_pushed(verdict, freshness, source, pr=None, ui=None):
     """Determine pushed value from LLM verdict, respecting hard constraints.
 
     Rules:
       - freshness must be '1day' to push — nday/None/unknown all locked 0
       - GitHub/PoC-GitHub → locked 0, candidate only
       - CVSS PR must be 'N' (unauthenticated) — None/L/H all locked 0
+      - CVSS UI must be 'N' or unknown — 'R' (requires interaction) locked 0
       - LLM can downgrade any record, but cannot override freshness or source trust
     """
     llm_wants_push = _VERDICT_PUSH.get(verdict, 0)
@@ -1212,6 +1230,8 @@ def _resolve_pushed(verdict, freshness, source, pr=None):
     if source in _GITHUB_SOURCES:
         return 0
     if pr != "N":
+        return 0
+    if ui is not None and ui != "N":
         return 0
     return llm_wants_push
 _MAX_TOOL_ROUNDS = 5
@@ -1336,6 +1356,8 @@ _TOOL_DISPATCH = {
 }
 
 
+_E_KEY, _E_CVE, _E_SRC, _E_TITLE, _E_LINK, _E_SUM, _E_REASON, _E_SEV, _E_CVSS, _E_FRESH, _E_PR, _E_UI = range(12)
+
 def _enrich_one(record):
     """Run LLM agent loop on one vulnerability. Returns (verdict, notes) or (None, None)."""
     global _llm_client, _llm_model
@@ -1344,7 +1366,14 @@ def _enrich_one(record):
     if _llm_client is None:
         return None, None
 
-    key, cve_id, source, title, link, summary, reason, severity, cvss, *_ = record
+    cve_id = record[_E_CVE]
+    source = record[_E_SRC]
+    title = record[_E_TITLE]
+    link = record[_E_LINK]
+    summary = record[_E_SUM]
+    reason = record[_E_REASON]
+    severity = record[_E_SEV]
+    cvss = record[_E_CVSS]
     user_msg = (
         f"Assess this vulnerability:\n"
         f"CVE: {cve_id or 'N/A'}\nSource: {source}\nTitle: {title}\n"
@@ -1415,10 +1444,19 @@ def _enrich_one(record):
             # strip markdown fences and prose prefix before JSON
             content = re.sub(r"^```json\s*", "", content)
             content = re.sub(r"```\s*$", "", content)
-            # extract first JSON object if LLM added prose around it
-            m = re.search(r'\{[^{}]*"verdict"[^{}]*\}', content)
-            if m:
-                content = m.group(0)
+            # extract first JSON object containing "verdict" — brace-balanced
+            if not content.startswith("{"):
+                start = content.find('{"verdict"')
+                if start == -1:
+                    start = content.find('{')
+                if start != -1 and '"verdict"' in content[start:]:
+                    depth = 0
+                    for i, ch in enumerate(content[start:], start):
+                        if ch == '{': depth += 1
+                        elif ch == '}': depth -= 1
+                        if depth == 0:
+                            content = content[start:i+1]
+                            break
             try:
                 data = json.loads(content)
                 return data.get("verdict"), data.get("notes", "")
@@ -1760,7 +1798,7 @@ def fetch_github_advisories():
             date_range = f"{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
             for page in (1, 2):
                 try:
-                    r = SESS.get("https://api.github.com/advisories",
+                    r = _get_with_retry(SESS, "https://api.github.com/advisories",
                                  params={"severity": severity, "published": date_range,
                                          "sort": "published", "direction": "desc",
                                          "per_page": 100, "page": page},
@@ -2139,14 +2177,15 @@ def _run(no_push=False):
             if not nvd_vector:
                 nvd_vector = it.get("_cvss_vector")
             pr = _extract_pr(nvd_vector)
-            should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES and pr == "N"
+            ui = _extract_ui(nvd_vector)
+            should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES and pr == "N" and ui in (None, "N")
             conn.execute(
-                "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss,cvss_vector,cvss_pr) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss,cvss_vector,cvss_pr,cvss_ui) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (key, cve_id, it["source"], it["title"][:300], it["link"],
                  it["summary"][:500], reason, vuln_type, freshness, fresh_reason,
                  1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss,
-                 nvd_vector, _extract_pr(nvd_vector)),
+                 nvd_vector, pr, ui),
             )
             if should_push:
                 pushed += 1
@@ -2395,9 +2434,9 @@ def _cmd_rescore_inner():
         init_db(conn)
         _warm_nvd_cache(conn)
         # only rescore records NOT yet verified by LLM — don't override LLM verdicts
-        rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed, cve_published, cvss_pr FROM vulns WHERE llm_verified=0").fetchall()
+        rows = conn.execute("SELECT key, cve_id, source, title, link, summary, reason, pushed, cve_published, cvss_pr, cvss_ui FROM vulns WHERE llm_verified=0").fetchall()
         upgraded = downgraded = unchanged = 0
-        for key, cve_id, source, title, link, summary, old_reason, old_pushed, existing_pub, cvss_pr in rows:
+        for key, cve_id, source, title, link, summary, old_reason, old_pushed, existing_pub, cvss_pr, cvss_ui in rows:
             text = f"{title or ''}\n{summary or ''}"
 
             hit, reason, vuln_type = score(text)
@@ -2440,7 +2479,7 @@ def _cmd_rescore_inner():
                 fresh_reason = "no_cve_low_trust"
                 hit = False
 
-            new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES and cvss_pr == "N") else 0
+            new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES and cvss_pr == "N" and cvss_ui in (None, "N")) else 0
             if reason != old_reason or new_pushed != old_pushed or cve_pub:
                 conn.execute("UPDATE vulns SET reason=?, vuln_type=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
                             (reason, vuln_type, freshness, fresh_reason, new_pushed, cve_pub, key))
@@ -2476,7 +2515,7 @@ def _cmd_enrich_inner(dry=False):
             log.info("enrich: no LLM API key, skipping LLM enrichment")
         else:
             candidates = conn.execute(
-                "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss, freshness, cvss_pr "
+                "SELECT key, cve_id, source, title, link, summary, reason, severity, cvss, freshness, cvss_pr, cvss_ui "
                 "FROM vulns WHERE llm_verified = 0 "
                 "AND reason NOT IN ('excluded', 'no hit') "
                 "ORDER BY created_at DESC LIMIT 500"
@@ -2498,15 +2537,15 @@ def _cmd_enrich_inner(dry=False):
                 # auto-approve: any record from high-trust source + critical CVSS
                 for cve_id, records in by_cve.items():
                     rep = records[0]
-                    any_high_trust = any(r[2] in HIGH_PRIORITY_SOURCES for r in records)
-                    best_cvss = max((r[8] for r in records if r[8]), default=None)
+                    any_high_trust = any(r[_E_SRC] in HIGH_PRIORITY_SOURCES for r in records)
+                    best_cvss = max((r[_E_CVSS] for r in records if r[_E_CVSS]), default=None)
                     if any_high_trust and best_cvss and best_cvss >= 9.0:
                         for rec in records:
-                            pushed_val = _resolve_pushed("confirmed", rec[9], rec[2], rec[10])
+                            pushed_val = _resolve_pushed("confirmed", rec[_E_FRESH], rec[_E_SRC], rec[_E_PR], rec[_E_UI])
                             conn.execute(
                                 "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', "
                                 "llm_notes='auto: high-trust + CVSS>=9.0', pushed=? WHERE key=?",
-                                (pushed_val, rec[0]))
+                                (pushed_val, rec[_E_KEY]))
                         auto_approved += len(records)
                         continue
 
@@ -2516,10 +2555,10 @@ def _cmd_enrich_inner(dry=False):
                         llm_errors += 1
                         continue
                     for rec in records:
-                        pushed_val = _resolve_pushed(verdict, rec[9], rec[2], rec[10])
+                        pushed_val = _resolve_pushed(verdict, rec[_E_FRESH], rec[_E_SRC], rec[_E_PR], rec[_E_UI])
                         conn.execute(
                             "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
-                            (verdict, (notes or "")[:500], pushed_val, rec[0]))
+                            (verdict, (notes or "")[:500], pushed_val, rec[_E_KEY]))
                     llm_processed += 1
                     time.sleep(0.5)
 
@@ -2529,10 +2568,10 @@ def _cmd_enrich_inner(dry=False):
                     if verdict is None:
                         llm_errors += 1
                         continue
-                    pushed_val = _resolve_pushed(verdict, rec[9], rec[2], rec[10])
+                    pushed_val = _resolve_pushed(verdict, rec[_E_FRESH], rec[_E_SRC], rec[_E_PR], rec[_E_UI])
                     conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
-                        (verdict, (notes or "")[:500], pushed_val, rec[0]))
+                        (verdict, (notes or "")[:500], pushed_val, rec[_E_KEY]))
                     llm_processed += 1
                     time.sleep(0.5)
 
@@ -2544,7 +2583,8 @@ def _cmd_enrich_inner(dry=False):
                     fallback = conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', llm_notes='fallback: LLM errors, regex-scored', pushed=1 "
                         "WHERE llm_verified=0 AND vuln_type IN ('RCE','bypass','other') "
-                        "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub') AND cvss_pr='N'"
+                        "AND freshness='1day' AND source NOT IN ('GitHub','PoC-GitHub') AND cvss_pr='N' "
+                        "AND (cvss_ui IS NULL OR cvss_ui='N')"
                     ).rowcount
                     conn.commit()
                     if fallback:
