@@ -1,10 +1,10 @@
 # Vulnpilot API
 
-vuln-monitor 为 vulnpilot dispatcher 提供的接口，用于拉取待分析漏洞和标记已领取。
+vuln-monitor 为 vulnpilot dispatcher 提供的只读接口，用于拉取待分析漏洞。去重由 B 侧自行管理。
 
 ## 鉴权
 
-所有接口共用 web dashboard 的 token（`.web_token` 文件），支持三种方式：
+共用 web dashboard 的 token（`.web_token` 文件），支持三种方式：
 
 ```
 # 1. Authorization header（推荐）
@@ -19,13 +19,9 @@ Cookie: _vmt=<token>
 
 ## GET /api/pending
 
-返回最近 7 天内已推送（pushed=1）且未被领取（dispatched=0）的漏洞，按时间降序排列。
+返回最近 7 天内已推送（pushed=1）的漏洞，按时间降序排列。
 
-**参数：**
-
-| 参数 | 类型 | 必选 | 说明 |
-|---|---|---|---|
-| limit | int | 否 | 最大返回数量，默认 50，范围 1-200 |
+**参数：** 无（固定返回最近 7 天全部符合条件的记录，上限 1000）
 
 **请求示例：**
 
@@ -59,40 +55,13 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 **说明：**
 - 固定 7 天窗口，无外部可控参数
 - 只返回通过评分筛选并推送到 TG 的漏洞
-- 已被 `/api/ack` 标记的不再返回
-- DB 没有 `dispatched` 字段时（未 migration）返回空列表
-
-## POST /api/ack
-
-标记漏洞已被 dispatcher 领取，后续 `/api/pending` 不再返回。
-
-**限制：** 单次最多 100 个 cve_ids。
-
-**请求：**
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"cve_ids": ["CVE-2026-53519", "CVE-2026-54806"]}' \
-  "http://100.x.x.x:8001/api/ack"
-```
-
-**响应：**
-
-```json
-{"acked": 2}
-```
-
-`acked` 返回实际更新的行数（非输入数量）。重复 ack 同一条 CVE 会返回 `{"acked": 0}`。
+- B 侧应自行维护已处理 CVE 的去重（如 `INSERT OR IGNORE`）
 
 **错误：**
 
 | 状态码 | 原因 |
 |---|---|
-| 400 | 缺少 `cve_ids`、空列表、类型不是数组、或超过 100 条 |
 | 403 | token 无效 |
-| 500 | DB 没有 `dispatched` 字段（需要先跑一次 `vuln_monitor.py` 做 migration） |
 
 ## 典型调用流程
 
@@ -102,11 +71,7 @@ dispatcher                         vuln-monitor
     ├── GET /api/pending ───────────────→│
     │←── [{cve_id, title, link, ...}] ──│
     │                                    │
-    ├── (Claude Code 分析)                │
-    │                                    │
-    ├── POST /api/ack ─────────────────→│
-    │   {"cve_ids": ["CVE-2026-53519"]}  │
-    │←── {"acked": 1} ─────────────────│
+    ├── (B 侧去重 + Claude Code 分析)    │
     │                                    │
     ├── (SCP 到 C + TG 通知 Hermes)      │
 ```

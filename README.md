@@ -4,8 +4,8 @@
 
 ## 核心特性
 
-- **17 个数据通道**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus/GitHub/PoC-in-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）
-- **聚焦 RCE**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声
+- **15 个数据源**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus_Citrix/PoC-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）、Advisory（GHSA）
+- **聚焦 RCE + bypass**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声
 - **增量去重**：SQLite WAL 模式，CVE 为主键，60 天 TTL，同一 CVE 跨源只推一次；CVE 年份 > 1 年硬过滤 nday，无例外
 - **多视图查询**：简表 / 详细 / 通知友好 / JSON，支持 CVE/厂商/关键词/时间过滤
 - **Web 仪表盘**：暖色卡片式界面，实时搜索过滤，只绑 localhost（SSH 隧道访问）
@@ -189,6 +189,7 @@ LLM_TOP_P=0.9
 │  ├─ excluded → 不推，不审
 │  ├─ no hit → 不推，不审
 │  ├─ RCE+asset+CVE / RCE+asset / RCE+CVE / RCE → vuln_type=RCE
+│  ├─ bypass+asset+CVE / bypass+CVE / bypass+asset / bypass → vuln_type=bypass
 │  └─ asset+CVE → vuln_type=other
 │
 ├─ 2. freshness（两条路径）
@@ -233,14 +234,14 @@ LLM_TOP_P=0.9
 | `FRESH_SOURCES` | freshness 判定 + LLM 跳工具 | Fortinet/PaloAlto/Cisco/MSRC/CISA_KEV/ZDI/watchTowr/Horizon3/Rapid7/Chaitin/DailyCVE/GHSA |
 | `HIGH_PRIORITY_SOURCES` | auto-confirm (CVSS≥9) | Fortinet/PaloAlto/Cisco/CISA_KEV/ZDI/watchTowr/MSRC/Horizon3/Chaitin/ThreatBook |
 
-**核心规则：** freshness=1day + PR=N 才可推送（nday/NULL/PR≠N 锁 0，hit 同步清零）· GitHub/PoC-GitHub → 仅候选 · 低信任源必须 NVD ≤60 天确认 · LLM verdict 覆写 pushed 但受 freshness/source/PR 硬约束 · LLM 出错兜底走正则
+**核心规则：** freshness=1day + PR=N 才可推送（nday/NULL/PR≠N 锁 0，hit 同步清零）· GitHub/PoC-GitHub → 仅候选 · 低信任源必须 NVD ≤60 天确认 · LLM verdict 覆写 pushed 但受 freshness/source/PR 硬约束 · LLM 出错兜底走正则 · vuln_type 含 RCE/bypass/other 三类
 
 **数据字段：**
 
 | 字段 | 含义 | 示例值 |
 |---|---|---|
-| `reason` | 详细匹配原因 | `RCE+asset+CVE` / `RCE+CVE` / `RCE` / `asset+CVE` |
-| `vuln_type` | 漏洞分类 | `RCE` / `other` |
+| `reason` | 详细匹配原因 | `RCE+asset+CVE` / `RCE+CVE` / `bypass+asset+CVE` / `bypass+CVE` / `asset+CVE` |
+| `vuln_type` | 漏洞分类 | `RCE` / `bypass` / `other` |
 | `freshness` | 新鲜度 | `1day` / `nday` |
 | `freshness_reason` | 判定依据 | `high_trust_source` / `nvd_60d` / `old_cve` / `source_pub_date` / `old_advisory_id` / `no_cve_low_trust` |
 | `llm_verdict` | LLM 判定 | `confirmed` / `not_relevant` / `noise` |
@@ -291,6 +292,17 @@ cd /opt/vuln-monitor && claude
 | RCE 过滤规则 | [`docs/filtering.md`](docs/filtering.md) |
 | 运维、日志、故障定位 | [`docs/operations.md`](docs/operations.md) |
 | Web 仪表盘 | [`docs/web-dashboard.md`](docs/web-dashboard.md) |
+| Vulnpilot API（/api/pending） | [`docs/api-vulnpilot.md`](docs/api-vulnpilot.md) |
+
+## API
+
+vuln-monitor 对外暴露只读接口，供 vulnpilot dispatcher（B 机）拉取待分析漏洞：
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/pending` | GET | 返回最近 7 天已推送的漏洞（固定上限 1000，无外部参数） |
+
+鉴权：`Authorization: Bearer <token>` / `?token=` / Cookie，共用 web dashboard token。B 侧自行维护 CVE 去重。详见 [`docs/api-vulnpilot.md`](docs/api-vulnpilot.md)。
 
 ## 许可
 

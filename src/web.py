@@ -127,20 +127,6 @@ def get_db():
         conn.close()
 
 
-@contextlib.contextmanager
-def get_db_rw():
-    """Context manager for read-write DB access."""
-    conn = sqlite3.connect(str(DB_FILE), timeout=10)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
 
 def _vulns_columns(conn):
     """Set of column names in vulns table (for pre-migration DB compat)."""
@@ -175,13 +161,29 @@ def api_vulns():
                     params.extend([f"%{esc_kw}%"] * 2)
         source = request.args.get("source", "").strip()
         if source:
-            where.append("source = ?"); params.append(source)
+            src_list = [s.strip() for s in source.split(",") if s.strip()][:15]
+            if len(src_list) == 1:
+                where.append("source = ?"); params.append(src_list[0])
+            elif src_list:
+                where.append(f"source IN ({','.join('?' * len(src_list))})")
+                params.extend(src_list)
         vuln_type = request.args.get("vuln_type", "").strip()
         if vuln_type and "vuln_type" in cols_avail:
-            where.append("vuln_type = ?"); params.append(vuln_type)
+            vt_list = [v.strip() for v in vuln_type.split(",") if v.strip()][:10]
+            if len(vt_list) == 1:
+                where.append("vuln_type = ?"); params.append(vt_list[0])
+            elif vt_list:
+                where.append(f"vuln_type IN ({','.join('?' * len(vt_list))})")
+                params.extend(vt_list)
         severity = request.args.get("severity", "").strip().lower()
-        if severity in ("critical", "high", "medium", "low"):
-            where.append("LOWER(severity) = ?"); params.append(severity)
+        if severity:
+            sev_valid = {"critical", "high", "medium", "low"}
+            sev_list = [s.strip() for s in severity.split(",") if s.strip() in sev_valid][:4]
+            if len(sev_list) == 1:
+                where.append("LOWER(severity) = ?"); params.append(sev_list[0])
+            elif sev_list:
+                where.append(f"LOWER(severity) IN ({','.join('?' * len(sev_list))})")
+                params.extend(sev_list)
         pr = request.args.get("pr", "").strip()
         if pr and "cvss_pr" in cols_avail:
             if pr.upper() in ("N", "L", "H"):
@@ -258,20 +260,16 @@ def api_sources():
 
 @app.route("/api/pending")
 def api_pending():
-    """Return pushed vulns not yet dispatched to B-side for analysis."""
+    """Return pushed vulns from last 7 days for B-side dispatcher."""
     with get_db() as conn:
-        cols_avail = _vulns_columns(conn)
-        if "dispatched" not in cols_avail:
-            return jsonify({"vulns": [], "count": 0})
-        params = []
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
-        where = "pushed = 1 AND dispatched = 0 AND created_at > ?"
-        params.append(cutoff)
-        sql = f"""SELECT cve_id, source, title, link, summary, vuln_type, cvss,
-                         severity, reason, created_at
-                  FROM vulns WHERE {where}
-                  ORDER BY created_at DESC LIMIT 1000"""
-        rows = conn.execute(sql, params).fetchall()
+        rows = conn.execute(
+            """SELECT cve_id, source, title, link, summary, vuln_type, cvss,
+                      severity, reason, created_at
+               FROM vulns WHERE pushed = 1 AND created_at > ?
+               ORDER BY created_at DESC LIMIT 1000""",
+            (cutoff,),
+        ).fetchall()
     return jsonify({
         "vulns": [{
             "cve_id": r["cve_id"],
@@ -287,29 +285,6 @@ def api_pending():
         } for r in rows],
         "count": len(rows),
     })
-
-
-@app.route("/api/ack", methods=["POST"])
-def api_ack():
-    """Mark vulns as dispatched so they don't appear in /api/pending again."""
-    data = request.get_json(silent=True)
-    if not data or "cve_ids" not in data:
-        return jsonify({"error": "missing cve_ids"}), 400
-    cve_ids = data["cve_ids"]
-    if not isinstance(cve_ids, list) or not cve_ids:
-        return jsonify({"error": "cve_ids must be a non-empty list"}), 400
-    if len(cve_ids) > 100:
-        return jsonify({"error": "max 100 cve_ids per request"}), 400
-    with get_db_rw() as conn:
-        cols_avail = _vulns_columns(conn)
-        if "dispatched" not in cols_avail:
-            return jsonify({"error": "dispatched column not available, run vuln_monitor.py once to migrate"}), 500
-        placeholders = ",".join("?" for _ in cve_ids)
-        cur = conn.execute(
-            f"UPDATE vulns SET dispatched = 1 WHERE cve_id IN ({placeholders}) AND dispatched = 0",
-            cve_ids,
-        )
-    return jsonify({"acked": cur.rowcount})
 
 
 # ── Frontend ──
@@ -625,7 +600,10 @@ const TYPE_STYLE = {
   "other":  {bg:"#FEF3C7",fg:"#92400e"},
 };
 
-let debounceTimer, activeCat = '', activeType = 'RCE', activeDays = '7', activeSeverity = '', activePR = 'N';
+let debounceTimer, activeDays = '7', activePR = 'N';
+const activeTypes = new Set(['RCE']);
+const activeSevs = new Set();
+const activeSrcs = new Set();
 const activeExcludes = new Set(['chrome','firefox','linux kernel','wordpress','android','adobe']);
 let currentLimit = 100;
 const MAX_LIMIT = __LIMIT_MAX__;
@@ -641,16 +619,28 @@ document.getElementById('pushedFilter').addEventListener('change', () => loadVul
 function setActive(rowSelector, attr, val) {
   document.querySelectorAll(rowSelector + ' .cat-pill').forEach(p => p.classList.toggle('active', p.dataset[attr] === val));
 }
-function updateCatPills() { setActive('#catRow', 'src', activeCat); }
+function setMultiActive(rowSelector, attr, activeSet) {
+  document.querySelectorAll(rowSelector + ' .cat-pill').forEach(p => {
+    const v = p.dataset[attr];
+    p.classList.toggle('active', v === '' ? activeSet.size === 0 : activeSet.has(v));
+  });
+}
+function toggleMulti(activeSet, val, rowSelector, attr) {
+  if (val === '') { activeSet.clear(); }
+  else if (activeSet.has(val)) { activeSet.delete(val); }
+  else { activeSet.add(val); }
+  setMultiActive(rowSelector, attr, activeSet);
+  loadVulns();
+}
 
 document.querySelectorAll('#timeRow .cat-pill').forEach(p => p.addEventListener('click', () => {
   activeDays = p.dataset.days; setActive('#timeRow', 'days', activeDays); loadVulns();
 }));
 document.querySelectorAll('#typeRow .cat-pill').forEach(p => p.addEventListener('click', () => {
-  activeType = p.dataset.vtype; setActive('#typeRow', 'vtype', activeType); loadVulns();
+  toggleMulti(activeTypes, p.dataset.vtype, '#typeRow', 'vtype');
 }));
 document.querySelectorAll('#sevRow .cat-pill').forEach(p => p.addEventListener('click', () => {
-  activeSeverity = p.dataset.sev; setActive('#sevRow', 'sev', activeSeverity); loadVulns();
+  toggleMulti(activeSevs, p.dataset.sev, '#sevRow', 'sev');
 }));
 document.querySelectorAll('#prRow .cat-pill').forEach(p => p.addEventListener('click', () => {
   activePR = p.dataset.pr; setActive('#prRow', 'pr', activePR); loadVulns();
@@ -669,8 +659,7 @@ async function loadSources() {
     row.innerHTML = `<button type="button" class="cat-pill active" data-src="">All</button>` +
       sources.map(s => `<button type="button" class="cat-pill" data-src="${esc(s)}">${esc(s)}</button>`).join('');
     row.querySelectorAll('.cat-pill[data-src]').forEach(p => p.addEventListener('click', () => {
-      activeCat = p.dataset.src;
-      updateCatPills(); loadVulns();
+      toggleMulti(activeSrcs, p.dataset.src, '#catRow', 'src');
     }));
   } catch(e) { console.error('loadSources failed', e); }
 }
@@ -752,9 +741,9 @@ async function loadVulns(append=false) {
   const params = new URLSearchParams();
   const q = document.getElementById('searchInput').value.trim();
   if (q) params.set('q', q);
-  if (activeCat) params.set('source', activeCat);
-  if (activeType) params.set('vuln_type', activeType);
-  if (activeSeverity) params.set('severity', activeSeverity);
+  if (activeSrcs.size) params.set('source', [...activeSrcs].join(','));
+  if (activeTypes.size) params.set('vuln_type', [...activeTypes].join(','));
+  if (activeSevs.size) params.set('severity', [...activeSevs].join(','));
   if (activePR) params.set('pr', activePR);
   if (activeExcludes.size) params.set('exclude', [...activeExcludes].join(','));
   if (activeDays) params.set('days', activeDays);
