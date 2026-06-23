@@ -570,7 +570,7 @@ a:hover { text-decoration: underline; }
 <div class="filter-row" id="prRow" role="group" aria-label="Filter by access conditions">
   <button type="button" class="cat-pill" data-pr="">All</button>
   <button type="button" class="cat-pill active" data-pr="N">Unauth</button>
-  <button type="button" class="cat-pill" data-ui="N">No Interaction</button>
+  <button type="button" class="cat-pill active" data-ui="N">No Interaction</button>
 </div>
 
 <div class="filter-row" id="excludeRow" role="group" aria-label="Exclude noise">
@@ -606,7 +606,7 @@ const TYPE_STYLE = {
   "other":  {bg:"#FEF3C7",fg:"#92400e"},
 };
 
-let debounceTimer, activeDays = '7', activePR = 'N', activeUI = '';
+let debounceTimer, activeDays = '7', activePR = 'N', activeUI = 'N';
 const activeTypes = new Set(['RCE']);
 const activeSevs = new Set();
 const activeSrcs = new Set();
