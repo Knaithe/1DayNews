@@ -612,7 +612,6 @@ def init_db(conn):
         ("vuln_type",     "TEXT"),
         ("cvss_vector",   "TEXT"),
         ("cvss_pr",       "TEXT"),
-        ("dispatched",    "INTEGER DEFAULT 0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
