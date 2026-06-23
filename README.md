@@ -2,6 +2,8 @@
 
 聚合多源 0day/1day RCE 情报，关键词过滤后多通道推送（Telegram / 企业微信 / 钉钉 / 飞书）+ Web 仪表盘。面向安全研究员的个人订阅器。
 
+![Dashboard](docs/dashboard.png)
+
 ## 核心特性
 
 - **15 个数据源**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus_Citrix/PoC-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）、Advisory（GHSA）
