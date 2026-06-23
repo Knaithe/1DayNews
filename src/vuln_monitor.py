@@ -651,6 +651,12 @@ def init_db(conn):
     conn.execute("UPDATE vulns SET pushed=0 WHERE source IN ('GitHub','PoC-GitHub') AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE freshness='nday' AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND (cvss_pr IS NULL OR cvss_pr != 'N')")
+    if "cvss_ui" in _new_cols:
+        conn.execute("""UPDATE vulns SET cvss_ui =
+            CASE WHEN cvss_vector LIKE '%/UI:N/%' OR cvss_vector LIKE '%/UI:N' THEN 'N'
+                 WHEN cvss_vector LIKE '%/UI:R/%' OR cvss_vector LIKE '%/UI:R' THEN 'R'
+                 ELSE NULL END
+            WHERE cvss_vector IS NOT NULL AND cvss_ui IS NULL""")
     conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND cvss_ui IS NOT NULL AND cvss_ui != 'N'")
     conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND reason='excluded'")
     conn.commit()
