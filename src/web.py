@@ -503,14 +503,15 @@ a:hover { text-decoration: underline; }
 .vcard-link { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vcard-link a { color: var(--ink); font-weight: 500; border-bottom: 1px solid var(--ink); }
 .vcard-link a:hover { background: var(--yellow); text-decoration: none; }
-.repro-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--muted); cursor: pointer; user-select: none; margin-top: 2px; }
-.repro-toggle input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
-.repro-toggle .sw { width: 30px; height: 16px; background: var(--white); border: 1px solid var(--ink); border-radius: var(--pill); position: relative; transition: background .25s var(--spring); }
-.repro-toggle .sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; background: var(--ink); border-radius: 50%; transition: transform .25s var(--spring); }
-.repro-toggle input:checked + .sw { background: var(--mint); }
-.repro-toggle input:checked + .sw::after { transform: translateX(14px); }
-.repro-toggle .lbl { transition: color .2s; }
-.repro-toggle input:checked ~ .lbl { color: var(--mint); }
+.repro-btn {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px;
+  border-radius: var(--pill); border: 1px solid var(--muted);
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+  color: var(--muted); background: transparent; cursor: pointer;
+  user-select: none; transition: all .25s var(--spring); opacity: .45;
+}
+.repro-btn:hover { opacity: .75; border-color: var(--mint); }
+.repro-btn.active { opacity: 1; background: var(--mint); color: var(--ink); border-color: var(--ink); }
 
 /* ── Load more ── */
 .load-more-row { max-width: 1260px; margin: 8px auto 32px; padding: 0 40px; display: flex; justify-content: center; }
@@ -722,14 +723,14 @@ document.querySelectorAll('#excludeRow .exclude-pill').forEach(p => p.addEventLi
   loadVulns();
 }));
 
-async function toggleRepro(cveId, checked) {
+async function toggleRepro(cveId, btn) {
+  const on = !btn.classList.contains('active');
   try {
     await fetch('/api/reproduced', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({cve_id: cveId, reproduced: checked})
+      body: JSON.stringify({cve_id: cveId, reproduced: on})
     });
-    const lbl = event.target.closest('.repro-toggle').querySelector('.lbl');
-    lbl.textContent = checked ? 'Reproduced' : 'Not reproduced';
+    btn.classList.toggle('active', on);
   } catch(e) { console.error('toggle failed', e); }
 }
 
@@ -864,11 +865,7 @@ async function loadVulns(append=false) {
         ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
         ${v.llm_verdict?`<div class="vcard-llm" title="${esc(v.llm_notes||'')}"><span class="llm-prefix">AI</span> ${esc(v.llm_verdict)}</div>`:''}
         ${v.url?`<div class="vcard-link"><a href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
-        <label class="repro-toggle" onclick="event.stopPropagation()">
-          <input type="checkbox" ${v.reproduced?'checked':''} onchange="toggleRepro('${esc(v.id)}',this.checked)">
-          <span class="sw"></span>
-          <span class="lbl">${v.reproduced?'Reproduced':'Not reproduced'}</span>
-        </label>
+        <button type="button" class="repro-btn ${v.reproduced?'active':''}" onclick="toggleRepro('${esc(v.id)}',this)">✔ Reproduced</button>
       </div>`;
     }).join('');
   } catch(e) {
