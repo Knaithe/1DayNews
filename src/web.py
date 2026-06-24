@@ -600,14 +600,14 @@ a:hover { text-decoration: underline; }
 <div class="filter-row" id="typeRow" role="group" aria-label="Filter by type">
   <button type="button" class="cat-pill" data-vtype="">All</button>
   <button type="button" class="cat-pill active" data-vtype="RCE">RCE</button>
-  <button type="button" class="cat-pill" data-vtype="bypass">bypass</button>
+  <button type="button" class="cat-pill active" data-vtype="bypass">bypass</button>
   <button type="button" class="cat-pill" data-vtype="other">other</button>
 </div>
 
 <div class="filter-row" id="sevRow" role="group" aria-label="Filter by severity">
-  <button type="button" class="cat-pill active" data-sev="">All</button>
-  <button type="button" class="cat-pill" data-sev="critical">Critical</button>
-  <button type="button" class="cat-pill" data-sev="high">High</button>
+  <button type="button" class="cat-pill" data-sev="">All</button>
+  <button type="button" class="cat-pill active" data-sev="critical">Critical</button>
+  <button type="button" class="cat-pill active" data-sev="high">High</button>
   <button type="button" class="cat-pill" data-sev="medium">Medium</button>
   <button type="button" class="cat-pill" data-sev="low">Low</button>
 </div>
@@ -658,8 +658,8 @@ const TYPE_STYLE = {
 };
 
 let debounceTimer, activeDays = '7', activePR = 'N', activeUI = 'N', activeRepro = '';
-const activeTypes = new Set(['RCE']);
-const activeSevs = new Set();
+const activeTypes = new Set(['RCE','bypass']);
+const activeSevs = new Set(['critical','high']);
 const activeSrcs = new Set();
 const activeExcludes = new Set(['chrome','firefox','linux kernel','wordpress','android','adobe']);
 let currentLimit = 100;
