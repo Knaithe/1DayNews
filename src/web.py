@@ -127,6 +127,18 @@ def get_db():
         conn.close()
 
 
+@contextlib.contextmanager
+def get_db_rw():
+    """Context manager for read-write DB access (only for user-facing toggles)."""
+    conn = sqlite3.connect(str(DB_FILE), timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
 
 def _vulns_columns(conn):
     """Set of column names in vulns table (for pre-migration DB compat)."""
@@ -194,6 +206,12 @@ def api_vulns():
         if ui and "cvss_ui" in cols_avail:
             if ui.upper() in ("N", "R"):
                 where.append("cvss_ui = ?"); params.append(ui.upper())
+        repro = request.args.get("reproduced", "").strip()
+        if repro and "reproduced" in cols_avail:
+            if repro == "1":
+                where.append("reproduced = 1")
+            elif repro == "0":
+                where.append("(reproduced IS NULL OR reproduced = 0)")
         reason = request.args.get("reason", "").strip()
         if reason:
             where.append("reason = ?"); params.append(reason)
@@ -211,7 +229,7 @@ def api_vulns():
         base_cols = ["cve_id", "source", "title", "link", "summary", "reason", "pushed",
                      "created_at", "cve_published", "severity", "cvss", "llm_verdict",
                      "llm_notes", "tg_sent"]
-        optional_cols = ["vuln_type", "freshness", "cvss_pr", "cvss_ui"]
+        optional_cols = ["vuln_type", "freshness", "cvss_pr", "cvss_ui", "reproduced"]
         cols = base_cols + [c for c in optional_cols if c in cols_avail]
         sql = f"SELECT {','.join(cols)} FROM vulns"
         if where:
@@ -225,6 +243,7 @@ def api_vulns():
     has_fr = "freshness" in cols_avail
     has_pr = "cvss_pr" in cols_avail
     has_ui = "cvss_ui" in cols_avail
+    has_repro = "reproduced" in cols_avail
     return jsonify([{
         "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
@@ -232,6 +251,7 @@ def api_vulns():
         "freshness": r["freshness"] if has_fr else None,
         "pr": r["cvss_pr"] if has_pr else None,
         "ui": r["cvss_ui"] if has_ui else None,
+        "reproduced": bool(r["reproduced"]) if has_repro and r["reproduced"] is not None else False,
         "pushed": bool(r["pushed"]),
         "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
         "cve_published": r["cve_published"] if r["cve_published"] != "unknown" else None,
@@ -260,6 +280,22 @@ def api_sources():
     with get_db() as conn:
         rows = conn.execute("SELECT DISTINCT source FROM vulns WHERE source IS NOT NULL ORDER BY source").fetchall()
     return jsonify([r["source"] for r in rows])
+
+
+@app.route("/api/reproduced", methods=["POST"])
+def api_reproduced():
+    """Toggle reproduced flag for a vulnerability by key (cve_id)."""
+    data = request.get_json(silent=True) or {}
+    cve_id = (data.get("cve_id") or "").strip()
+    if not cve_id:
+        return jsonify({"error": "cve_id required"}), 400
+    val = 1 if data.get("reproduced") else 0
+    with get_db_rw() as conn:
+        cols = _vulns_columns(conn)
+        if "reproduced" not in cols:
+            conn.execute("ALTER TABLE vulns ADD COLUMN reproduced INTEGER DEFAULT 0")
+        conn.execute("UPDATE vulns SET reproduced=? WHERE cve_id=?", (val, cve_id))
+    return jsonify({"ok": True, "cve_id": cve_id, "reproduced": val})
 
 
 # ── Vulnpilot API (for B-side dispatcher) ──
@@ -467,6 +503,14 @@ a:hover { text-decoration: underline; }
 .vcard-link { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vcard-link a { color: var(--ink); font-weight: 500; border-bottom: 1px solid var(--ink); }
 .vcard-link a:hover { background: var(--yellow); text-decoration: none; }
+.repro-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--muted); cursor: pointer; user-select: none; margin-top: 2px; }
+.repro-toggle input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.repro-toggle .sw { width: 30px; height: 16px; background: var(--white); border: 1px solid var(--ink); border-radius: var(--pill); position: relative; transition: background .25s var(--spring); }
+.repro-toggle .sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; background: var(--ink); border-radius: 50%; transition: transform .25s var(--spring); }
+.repro-toggle input:checked + .sw { background: var(--mint); }
+.repro-toggle input:checked + .sw::after { transform: translateX(14px); }
+.repro-toggle .lbl { transition: color .2s; }
+.repro-toggle input:checked ~ .lbl { color: var(--mint); }
 
 /* ── Load more ── */
 .load-more-row { max-width: 1260px; margin: 8px auto 32px; padding: 0 40px; display: flex; justify-content: center; }
@@ -573,6 +617,12 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill active" data-ui="N">No Interaction</button>
 </div>
 
+<div class="filter-row" id="reproRow" role="group" aria-label="Filter by reproduced">
+  <button type="button" class="cat-pill active" data-repro="">All</button>
+  <button type="button" class="cat-pill" data-repro="1">Reproduced</button>
+  <button type="button" class="cat-pill" data-repro="0">Not Yet</button>
+</div>
+
 <div class="filter-row" id="excludeRow" role="group" aria-label="Exclude noise">
   <button type="button" class="cat-pill exclude-pill active" data-ex="chrome">Chrome</button>
   <button type="button" class="cat-pill exclude-pill active" data-ex="firefox">Firefox</button>
@@ -606,7 +656,7 @@ const TYPE_STYLE = {
   "other":  {bg:"#FEF3C7",fg:"#92400e"},
 };
 
-let debounceTimer, activeDays = '7', activePR = 'N', activeUI = 'N';
+let debounceTimer, activeDays = '7', activePR = 'N', activeUI = 'N', activeRepro = '';
 const activeTypes = new Set(['RCE']);
 const activeSevs = new Set();
 const activeSrcs = new Set();
@@ -662,12 +712,26 @@ document.querySelectorAll('#prRow .cat-pill').forEach(p => p.addEventListener('c
   });
   loadVulns();
 }));
+document.querySelectorAll('#reproRow .cat-pill').forEach(p => p.addEventListener('click', () => {
+  activeRepro = p.dataset.repro; setActive('#reproRow', 'repro', activeRepro); loadVulns();
+}));
 document.querySelectorAll('#excludeRow .exclude-pill').forEach(p => p.addEventListener('click', () => {
   const kw = p.dataset.ex;
   if (activeExcludes.has(kw)) { activeExcludes.delete(kw); p.classList.remove('active'); }
   else { activeExcludes.add(kw); p.classList.add('active'); }
   loadVulns();
 }));
+
+async function toggleRepro(cveId, checked) {
+  try {
+    await fetch('/api/reproduced', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cve_id: cveId, reproduced: checked})
+    });
+    const lbl = event.target.closest('.repro-toggle').querySelector('.lbl');
+    lbl.textContent = checked ? 'Reproduced' : 'Not reproduced';
+  } catch(e) { console.error('toggle failed', e); }
+}
 
 async function loadSources() {
   try {
@@ -763,6 +827,7 @@ async function loadVulns(append=false) {
   if (activeSevs.size) params.set('severity', [...activeSevs].join(','));
   if (activePR) params.set('pr', activePR);
   if (activeUI) params.set('ui', activeUI);
+  if (activeRepro !== '') params.set('reproduced', activeRepro);
   if (activeExcludes.size) params.set('exclude', [...activeExcludes].join(','));
   if (activeDays) params.set('days', activeDays);
   if (document.getElementById('pushedFilter').checked) params.set('pushed', '1');
@@ -799,6 +864,11 @@ async function loadVulns(append=false) {
         ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
         ${v.llm_verdict?`<div class="vcard-llm" title="${esc(v.llm_notes||'')}"><span class="llm-prefix">AI</span> ${esc(v.llm_verdict)}</div>`:''}
         ${v.url?`<div class="vcard-link"><a href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
+        <label class="repro-toggle" onclick="event.stopPropagation()">
+          <input type="checkbox" ${v.reproduced?'checked':''} onchange="toggleRepro('${esc(v.id)}',this.checked)">
+          <span class="sw"></span>
+          <span class="lbl">${v.reproduced?'Reproduced':'Not reproduced'}</span>
+        </label>
       </div>`;
     }).join('');
   } catch(e) {

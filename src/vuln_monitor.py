@@ -620,6 +620,7 @@ def init_db(conn):
         ("cvss_vector",   "TEXT"),
         ("cvss_pr",       "TEXT"),
         ("cvss_ui",       "TEXT"),
+        ("reproduced",   "INTEGER DEFAULT 0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
