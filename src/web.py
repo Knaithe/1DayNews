@@ -865,7 +865,7 @@ async function loadVulns(append=false) {
         ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
         ${v.llm_verdict?`<div class="vcard-llm" title="${esc(v.llm_notes||'')}"><span class="llm-prefix">AI</span> ${esc(v.llm_verdict)}</div>`:''}
         ${v.url?`<div class="vcard-link"><a href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
-        <button type="button" class="repro-btn ${v.reproduced?'active':''}" onclick="toggleRepro('${esc(v.id)}',this)">✔ Reproduced</button>
+        <button type="button" class="repro-btn ${v.reproduced?'active':''}" onclick="toggleRepro('${esc(v.id)}',this)">✔ Repro</button>
       </div>`;
     }).join('');
   } catch(e) {
