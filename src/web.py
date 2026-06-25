@@ -226,7 +226,7 @@ def api_vulns():
             params.extend([cutoff_date, cutoff_ts])
 
         # column list — drop optional ones missing in pre-migration DBs
-        base_cols = ["cve_id", "source", "title", "link", "summary", "reason", "pushed",
+        base_cols = ["key", "cve_id", "source", "title", "link", "summary", "reason", "pushed",
                      "created_at", "cve_published", "severity", "cvss", "llm_verdict",
                      "llm_notes", "tg_sent"]
         optional_cols = ["vuln_type", "freshness", "cvss_pr", "cvss_ui", "reproduced"]
@@ -245,7 +245,7 @@ def api_vulns():
     has_ui = "cvss_ui" in cols_avail
     has_repro = "reproduced" in cols_avail
     return jsonify([{
-        "id": r["cve_id"], "source": r["source"], "title": r["title"],
+        "key": r["key"], "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
         "vuln_type": r["vuln_type"] if has_vt else None,
         "freshness": r["freshness"] if has_fr else None,
@@ -284,18 +284,18 @@ def api_sources():
 
 @app.route("/api/reproduced", methods=["POST"])
 def api_reproduced():
-    """Toggle reproduced flag for a vulnerability by key (cve_id)."""
+    """Toggle reproduced flag for a vulnerability by internal key."""
     data = request.get_json(silent=True) or {}
-    cve_id = (data.get("cve_id") or "").strip()
-    if not cve_id:
-        return jsonify({"error": "cve_id required"}), 400
+    key = (data.get("key") or "").strip()
+    if not key:
+        return jsonify({"error": "key required"}), 400
     val = 1 if data.get("reproduced") else 0
     with get_db_rw() as conn:
         cols = _vulns_columns(conn)
         if "reproduced" not in cols:
             conn.execute("ALTER TABLE vulns ADD COLUMN reproduced INTEGER DEFAULT 0")
-        conn.execute("UPDATE vulns SET reproduced=? WHERE cve_id=?", (val, cve_id))
-    return jsonify({"ok": True, "cve_id": cve_id, "reproduced": val})
+        conn.execute("UPDATE vulns SET reproduced=? WHERE key=?", (val, key))
+    return jsonify({"ok": True, "key": key, "reproduced": val})
 
 
 # ── Vulnpilot API (for B-side dispatcher) ──
@@ -723,14 +723,14 @@ document.querySelectorAll('#excludeRow .exclude-pill').forEach(p => p.addEventLi
   loadVulns();
 }));
 
-async function toggleRepro(cveId, btn) {
+async function toggleRepro(key, btn) {
   const on = !btn.classList.contains('active');
   try {
-    await fetch('/api/reproduced', {
+    const r = await fetch('/api/reproduced', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({cve_id: cveId, reproduced: on})
+      body: JSON.stringify({key, reproduced: on})
     });
-    btn.classList.toggle('active', on);
+    if (r.ok) btn.classList.toggle('active', on);
   } catch(e) { console.error('toggle failed', e); }
 }
 
@@ -865,7 +865,7 @@ async function loadVulns(append=false) {
         ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
         ${v.llm_verdict?`<div class="vcard-llm" title="${esc(v.llm_notes||'')}"><span class="llm-prefix">AI</span> ${esc(v.llm_verdict)}</div>`:''}
         ${v.url?`<div class="vcard-link"><a href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
-        <button type="button" class="repro-btn ${v.reproduced?'active':''}" onclick="toggleRepro('${esc(v.id)}',this)">✔ Reproduced</button>
+        <button type="button" class="repro-btn ${v.reproduced?'active':''}" onclick="toggleRepro('${esc(v.key)}',this)">✔ Reproduced</button>
       </div>`;
     }).join('');
   } catch(e) {
