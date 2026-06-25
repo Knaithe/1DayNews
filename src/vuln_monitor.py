@@ -1167,7 +1167,9 @@ def _backfill_nvd_severity(conn):
 # ================== LLM ENRICHMENT ==================
 # System prompt: load from DATA_DIR/llm_prompt.txt if exists, else use default.
 _LLM_PROMPT_FILE = DATA_DIR / "llm_prompt.txt"
-_LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. Today is {today}. Determine whether a vulnerability is genuine and worth alerting on.
+_LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. Today is {today}. The current year is {year}. Determine whether a vulnerability is genuine and worth alerting on.
+
+IMPORTANT: CVE-{year}-* are CURRENT-YEAR vulnerabilities, not future-dated or speculative. Do NOT dismiss them based on the year number.
 
 ## Verdict categories:
 - confirmed: Genuine vulnerability affecting real, widely-deployed products. Worth pushing.
@@ -1180,8 +1182,9 @@ _LLM_SYSTEM_PROMPT_DEFAULT = """You are a vulnerability intelligence analyst. To
 3. "not_relevant" for ANY of: DoS-only / crash-only, library-level bugs not directly exploitable in production, info disclosure with no escalation path, authenticated-only local exploits, niche products (<1000 deployments), Linux kernel subsystem patches (staging/ocfs2/fbdev/media/ALSA/i2c/s390).
 4. CVSS is a REFERENCE only — a high CVSS DoS is still not_relevant, a low CVSS pre-auth RCE is still confirmed.
 5. GitHub repos: check if the repo has actual exploit code vs empty placeholder. 0-star personal forks with no code = noise.
-6. Use tools to verify when title/summary is ambiguous.
+6. Use tools to verify when title/summary is ambiguous or truncated.
 7. If you find a public exploit/PoC, mention it in notes — this is valuable intelligence.
+8. Do NOT underestimate WordPress plugin deployment — popular plugins (OttoKit, Elementor, WooCommerce addons, etc.) often have 100K+ active installs even if the developer is not well-known.
 
 Output ONLY JSON (no markdown):
 {"verdict": "confirmed|not_relevant|noise", "notes": "one-sentence rationale"}
@@ -1189,15 +1192,17 @@ Output ONLY JSON (no markdown):
 
 def _get_llm_prompt():
     """Load system prompt from file (if exists) or use default."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    year = now.strftime("%Y")
     if _LLM_PROMPT_FILE.exists():
         try:
             custom = _LLM_PROMPT_FILE.read_text(encoding="utf-8").strip()
             if custom:
-                return custom.replace("{today}", today)
+                return custom.replace("{today}", today).replace("{year}", year)
         except Exception:
             pass
-    return _LLM_SYSTEM_PROMPT_DEFAULT.replace("{today}", today)
+    return _LLM_SYSTEM_PROMPT_DEFAULT.replace("{today}", today).replace("{year}", year)
 
 _ENRICH_TOOLS = [
     {"type": "function", "function": {
