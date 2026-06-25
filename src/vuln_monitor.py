@@ -164,8 +164,8 @@ THREATBOOK_API_URL = "https://x.threatbook.com/v5/node/vul_module/homePage"
 # ================== RCE PATTERNS ==================
 RCE_PATTERNS = [
     # naming
-    r"\bRCE\b", r"remote code execution", r"arbitrary (code|command) execution",
-    r"execute arbitrary (code|command)", r"execution of arbitrary (code|command)",
+    r"\bRCE\b", r"remote code execution", r"arbitrary (code|commands?|OS commands?) execution",
+    r"execute arbitrary (code|commands?|OS commands?)", r"execution of arbitrary (code|commands?|OS commands?)",
     r"code injection", r"command injection", r"OS command injection",
     # Chinese
     r"远程代码执行", r"远程命令执行", r"代码执行漏洞", r"命令执行漏洞", r"任意代码执行", r"反序列化漏洞",
