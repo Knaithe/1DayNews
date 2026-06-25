@@ -1001,7 +1001,10 @@ def _nvd_published_date(cve_id):
     detail = _nvd_detail(cve_id)
     if detail and detail.get("published"):
         pub_str = detail["published"]
-        dt = datetime.fromisoformat(pub_str).replace(tzinfo=timezone.utc)
+        try:
+            dt = datetime.fromisoformat(pub_str).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None, None
         return dt, pub_str
     return None, None
 
@@ -1826,11 +1829,12 @@ def fetch_github_advisories():
                         cvss_str = f" (CVSS {cvss})" if cvss else ""
                         sev_str = f" [{sev.upper()}]" if sev else ""
                         full_text = desc or summary
+                        display_summary = (desc or summary)[:500] + cvss_str
                         out.append({
                             "source": "GHSA",
                             "title": f"{sev_str} {cve} {summary[:200]}".strip(),
                             "link": adv.get("html_url", ""),
-                            "summary": f"{summary}{cvss_str}",
+                            "summary": display_summary,
                             "text": f"{cve} {full_text}",
                             "_severity": sev.lower() if sev else None,
                             "_cvss": cvss,
