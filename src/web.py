@@ -213,6 +213,8 @@ def api_vulns():
         if repro and "reproduced" in cols_avail:
             if repro == "1":
                 where.append("reproduced = 1")
+            elif repro == "-1":
+                where.append("reproduced = -1")
             elif repro == "0":
                 where.append("(reproduced IS NULL OR reproduced = 0)")
         reason = request.args.get("reason", "").strip()
@@ -254,7 +256,7 @@ def api_vulns():
         "freshness": r["freshness"] if has_fr else None,
         "pr": r["cvss_pr"] if has_pr else None,
         "ui": r["cvss_ui"] if has_ui else None,
-        "reproduced": bool(r["reproduced"]) if has_repro and r["reproduced"] is not None else False,
+        "reproduced": r["reproduced"] if has_repro and r["reproduced"] is not None else 0,
         "pushed": bool(r["pushed"]),
         "tg_sent": bool(r["tg_sent"]) if r["tg_sent"] is not None else None,
         "cve_published": r["cve_published"] if r["cve_published"] != "unknown" else None,
@@ -292,7 +294,9 @@ def api_reproduced():
     key = (data.get("key") or "").strip()
     if not key:
         return jsonify({"error": "key required"}), 400
-    val = 1 if data.get("reproduced") else 0
+    val = int(data.get("reproduced", 0))
+    if val not in (-1, 0, 1):
+        return jsonify({"error": "reproduced must be -1, 0, or 1"}), 400
     for attempt in range(3):
         try:
             with get_db_rw() as conn:
@@ -519,8 +523,9 @@ a:hover { text-decoration: underline; }
   color: var(--muted); background: transparent; cursor: pointer;
   user-select: none; transition: all .25s var(--spring); opacity: .45;
 }
-.repro-btn:hover { opacity: .75; border-color: var(--mint); }
-.repro-btn.active { opacity: 1; background: var(--mint); color: var(--ink); border-color: var(--ink); }
+.repro-btn:hover { opacity: .75; }
+.repro-btn.success { opacity: 1; background: var(--mint); color: var(--ink); border-color: var(--ink); }
+.repro-btn.failed { opacity: 1; background: #e74c3c; color: #fff; border-color: #c0392b; }
 
 /* ── Load more ── */
 .load-more-row { max-width: 1260px; margin: 8px auto 32px; padding: 0 40px; display: flex; justify-content: center; }
@@ -630,6 +635,7 @@ a:hover { text-decoration: underline; }
 <div class="filter-row" id="reproRow" role="group" aria-label="Filter by reproduced">
   <button type="button" class="cat-pill active" data-repro="">All</button>
   <button type="button" class="cat-pill" data-repro="1">Reproduced</button>
+  <button type="button" class="cat-pill" data-repro="-1">Failed</button>
   <button type="button" class="cat-pill" data-repro="0">Not Yet</button>
 </div>
 
@@ -732,16 +738,29 @@ document.querySelectorAll('#excludeRow .exclude-pill').forEach(p => p.addEventLi
   loadVulns();
 }));
 
+const REPRO_STATES = [
+  {val: 0, cls: '',        text: '? Unverified'},
+  {val: 1, cls: 'success', text: '✔ Reproduced'},
+  {val:-1, cls: 'failed',  text: '✘ Failed'},
+];
+function reproState(v) { return REPRO_STATES.find(s => s.val === v) || REPRO_STATES[0]; }
+function setReproBtn(btn, st) {
+  btn.className = 'repro-btn' + (st.cls ? ' ' + st.cls : '');
+  btn.textContent = st.text;
+  btn.dataset.repro = st.val;
+}
 async function toggleRepro(key, btn) {
-  const on = !btn.classList.contains('active');
-  btn.classList.toggle('active', on);
+  const cur = parseInt(btn.dataset.repro || '0');
+  const next = cur === 0 ? 1 : cur === 1 ? -1 : 0;
+  const prev = reproState(cur), nxt = reproState(next);
+  setReproBtn(btn, nxt);
   try {
     const r = await fetch('/api/reproduced', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({key: key, reproduced: on})
+      body: JSON.stringify({key: key, reproduced: next})
     });
-    if (!r.ok) btn.classList.toggle('active', !on);
-  } catch(e) { btn.classList.toggle('active', !on); }
+    if (!r.ok) setReproBtn(btn, prev);
+  } catch(e) { setReproBtn(btn, prev); }
 }
 
 async function loadSources() {
@@ -875,7 +894,7 @@ async function loadVulns(append=false) {
         ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
         ${v.llm_verdict?`<div class="vcard-llm" title="${esc(v.llm_notes||'')}"><span class="llm-prefix">AI</span> ${esc(v.llm_verdict)}</div>`:''}
         ${v.url?`<div class="vcard-link"><a href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
-        <button type="button" class="repro-btn ${v.reproduced?'active':''}" onclick="toggleRepro('${esc(v.key)}',this)">✔ Reproduced</button>
+        <button type="button" class="repro-btn ${v.reproduced===1?'success':v.reproduced===-1?'failed':''}" data-repro="${v.reproduced||0}" onclick="toggleRepro('${esc(v.key)}',this)">${v.reproduced===1?'✔ Reproduced':v.reproduced===-1?'✘ Failed':'? Unverified'}</button>
       </div>`;
     }).join('');
   } catch(e) {
