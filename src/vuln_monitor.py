@@ -143,6 +143,8 @@ RSS_FEEDS = [
     ("Horizon3",    "https://www.horizon3.ai/feed/"),
     ("Rapid7",      "https://www.rapid7.com/blog/rss/"),
     ("DailyCVE",    "https://dailycve.com/feed"),
+    # ---- CERT (structured advisories, high CVE density) ----
+    ("CERT_CC",     "https://www.kb.cert.org/vuls/atomfeed/"),
     # VMware (blog/marketing, 0% CVE) — removed
     # ProjectDisc (product marketing, 0% CVE) — removed
     # GreyNoise (trend analysis, 10% CVE) — removed
@@ -1806,7 +1808,7 @@ def fetch_github_advisories():
             end = now - timedelta(days=weeks_ago * 7)
             start = end - timedelta(days=7)
             date_range = f"{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
-            for page in (1, 2):
+            for page in range(1, 5):
                 try:
                     r = _get_with_retry(SESS, "https://api.github.com/advisories",
                                  params={"severity": severity, "published": date_range,
