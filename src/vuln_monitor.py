@@ -2559,6 +2559,7 @@ def _cmd_enrich_inner(dry=False):
                                 "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', "
                                 "llm_notes='auto: high-trust + CVSS>=9.0', pushed=? WHERE key=?",
                                 (pushed_val, rec[_E_KEY]))
+                        conn.commit()
                         auto_approved += len(records)
                         continue
 
@@ -2572,6 +2573,7 @@ def _cmd_enrich_inner(dry=False):
                         conn.execute(
                             "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                             (verdict, (notes or "")[:500], pushed_val, rec[_E_KEY]))
+                    conn.commit()
                     llm_processed += 1
                     time.sleep(0.5)
 
@@ -2585,10 +2587,9 @@ def _cmd_enrich_inner(dry=False):
                     conn.execute(
                         "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
                         (verdict, (notes or "")[:500], pushed_val, rec[_E_KEY]))
+                    conn.commit()
                     llm_processed += 1
                     time.sleep(0.5)
-
-                conn.commit()
                 log.info(f"enrich: auto={auto_approved} llm={llm_processed} errors={llm_errors}")
 
                 # fallback: too many LLM errors → push regex-scored items

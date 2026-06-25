@@ -130,8 +130,10 @@ def get_db():
 @contextlib.contextmanager
 def get_db_rw():
     """Context manager for read-write DB access (only for user-facing toggles)."""
-    conn = sqlite3.connect(str(DB_FILE), timeout=5)
+    conn = sqlite3.connect(str(DB_FILE), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     try:
         yield conn
         conn.commit()
@@ -290,12 +292,18 @@ def api_reproduced():
     if not key:
         return jsonify({"error": "key required"}), 400
     val = 1 if data.get("reproduced") else 0
-    with get_db_rw() as conn:
-        cols = _vulns_columns(conn)
-        if "reproduced" not in cols:
-            conn.execute("ALTER TABLE vulns ADD COLUMN reproduced INTEGER DEFAULT 0")
-        conn.execute("UPDATE vulns SET reproduced=? WHERE key=?", (val, key))
-    return jsonify({"ok": True, "key": key, "reproduced": val})
+    for attempt in range(3):
+        try:
+            with get_db_rw() as conn:
+                cols = _vulns_columns(conn)
+                if "reproduced" not in cols:
+                    conn.execute("ALTER TABLE vulns ADD COLUMN reproduced INTEGER DEFAULT 0")
+                conn.execute("UPDATE vulns SET reproduced=? WHERE key=?", (val, key))
+            return jsonify({"ok": True, "key": key, "reproduced": val})
+        except sqlite3.OperationalError:
+            if attempt == 2:
+                return jsonify({"error": "database busy, try again"}), 503
+            import time; time.sleep(1)
 
 
 # ── Vulnpilot API (for B-side dispatcher) ──
