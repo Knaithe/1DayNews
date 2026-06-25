@@ -13,6 +13,7 @@ import hmac
 import secrets
 import sqlite3
 import os
+import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -303,7 +304,7 @@ def api_reproduced():
         except sqlite3.OperationalError:
             if attempt == 2:
                 return jsonify({"error": "database busy, try again"}), 503
-            import time; time.sleep(1)
+            time.sleep(1)
 
 
 # ── Vulnpilot API (for B-side dispatcher) ──
@@ -733,13 +734,14 @@ document.querySelectorAll('#excludeRow .exclude-pill').forEach(p => p.addEventLi
 
 async function toggleRepro(key, btn) {
   const on = !btn.classList.contains('active');
+  btn.classList.toggle('active', on);
   try {
     const r = await fetch('/api/reproduced', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({key, reproduced: on})
+      body: JSON.stringify({key: key, reproduced: on})
     });
-    if (r.ok) btn.classList.toggle('active', on);
-  } catch(e) { console.error('toggle failed', e); }
+    if (!r.ok) btn.classList.toggle('active', !on);
+  } catch(e) { btn.classList.toggle('active', !on); }
 }
 
 async function loadSources() {
