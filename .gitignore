@@ -57,5 +57,6 @@ tmp/
 vuln_cache_remote.db
 vuln_cache_remote.db-shm
 vuln_cache_remote.db-wal
+vuln_cache_prod.db
 .agents/
 skills-lock.json

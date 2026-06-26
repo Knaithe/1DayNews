@@ -171,11 +171,14 @@ RCE_PATTERNS = [
     r"code injection", r"command injection", r"OS command injection",
     # Chinese
     r"远程代码执行", r"远程命令执行", r"代码执行漏洞", r"命令执行漏洞", r"任意代码执行", r"反序列化漏洞",
-    # auth prerequisite
-    r"unauthenticated", r"pre[- ]?auth(entication)?", r"\bunauth\b",
-    r"no authentication (required|needed)", r"anonymous\s+(access|rce|exec)",
+    # NOTE: 'unauthenticated'/'pre-auth'/'unauth' are auth *prerequisites*, not RCE
+    # indicators — kept OUT of RCE_PATTERNS so unauth privesc/SQLi/info-disclosure
+    # don't get mislabeled RCE. Real unauth RCE is still caught by the exec keywords
+    # above (\bRCE\b, 'remote code execution', ...). Deserialization primitives below
+    # carry RCE on their own merits.
     # deserialization / injection
     r"deserializ(ation|ing)", r"insecure deserialization", r"unsafe deserialization",
+    r"object injection", r"\bunserialize\b", r"pop chain", r"gadget chain",
     r"\bSSTI\b", r"server[- ]side template injection",
     r"\bSSRF\b.*(RCE|code exec|chain|gadget)",
     r"\bXXE\b.*(RCE|exec|chain)",
@@ -291,7 +294,7 @@ ASSET_KEYWORDS = [
     "harbor","quay","nexus","artifactory","jfrog",
 
     # ----- CI/CD / devtools / package managers -----
-    "jenkins","gitlab","gitea","gogs","github enterprise","github actions","bitbucket","bitbucket server","subversion","svn","mercurial","perforce","cvs",
+    "jenkins","gitlab","gitea","gogs","github enterprise","github actions","bitbucket","bitbucket server","subversion","svn","mercurial","perforce",
     "teamcity","bamboo","circleci","buildkite","drone","woodpecker","concourse","travis","azure devops","vsts","tfs","azure pipelines",
     "docker registry","distribution",
     "sonarqube","sonar","snyk","fortify","checkmarx","veracode",
@@ -819,21 +822,6 @@ _BYPASS_RE = re.compile("|".join(f"(?:{p})" for p in BYPASS_PATTERNS), re.I)
 _EXCLUDE_RE = re.compile("|".join(f"(?:{p})" for p in EXCLUDE_PATTERNS), re.I)
 _ASSET_KW_SET = frozenset(ASSET_KEYWORDS)
 
-_UNAUTH_ONLY_RE = re.compile(
-    r"unauthenticated|pre[- ]?auth(entication)?|\bunauth\b"
-    r"|no authentication (required|needed)|anonymous\s+(access|rce|exec)",
-    re.I,
-)
-_FILE_READ_RE = re.compile(
-    r"(arbitrary|unauthorized)\s+file\s+read"
-    r"|file\s+(read|disclos)"
-    r"|information\s+disclos"
-    r"|path\s+traversal(?!.*(write|overwrite|exec|upload|RCE))"
-    r"|directory\s+traversal(?!.*(write|overwrite|exec|upload|RCE))"
-    r"|任意文件读取",
-    re.I,
-)
-
 
 def score(text):
     """Score text for exploitability. Returns (hit, reason, vuln_type).
@@ -848,14 +836,6 @@ def score(text):
     asset  = any(k in low for k in _ASSET_KW_SET)
     cve    = bool(CVE_RE.search(text))
     bypass = bool(_BYPASS_RE.search(text))
-    # unauth + file-read-only (no code exec) → bypass, not RCE
-    # only downgrade when ALL RCE matches are unauth-only (no real exec indicator)
-    if rce and _FILE_READ_RE.search(text):
-        rce_hits = [m.group() for m in _RCE_RE.finditer(text)]
-        if rce_hits and all(_UNAUTH_ONLY_RE.fullmatch(h) for h in rce_hits):
-            rce = False
-            if not bypass:
-                bypass = True
     if rce and asset and cve:
         return True, "RCE+asset+CVE", "RCE"
     if rce and asset:
