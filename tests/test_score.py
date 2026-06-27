@@ -224,3 +224,17 @@ def test_ssrf_with_rce_before_not_excluded():
     _, reason, vt = _score("CVE-x webhook",
                            "Remote Code Execution and Server-Side Request Forgery in the webhook handler.")
     assert vt == "RCE", f"RCE before SSRF must not be excluded (reason={reason})"
+
+
+def test_execute_arbitrary_sql_commands_not_rce():
+    # CVE-2019-25728: 'execute arbitrary SQL commands' is SQLi — the modifier
+    # slot must not let 'SQL' through to match 'commands'
+    _, reason, vt = _score("CVE-2019-25728 Care2x",
+                           "The flaw allows an attacker to execute arbitrary SQL commands on the backend.")
+    assert vt != "RCE", f"'execute arbitrary SQL commands' must not be RCE (reason={reason})"
+
+
+def test_execute_arbitrary_os_commands_still_rce():
+    # the fix must keep genuine OS/root command execution as RCE
+    _, reason, vt = _score("CVE-x", "Allows an unauthenticated attacker to execute arbitrary OS commands.")
+    assert vt == "RCE", f"'execute arbitrary OS commands' should be RCE (reason={reason})"

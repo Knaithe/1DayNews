@@ -173,9 +173,9 @@ def _ab(acro):
 # ================== RCE PATTERNS ==================
 RCE_PATTERNS = [
     # naming
-    _ab("RCE"), r"remote code execution", r"arbitrary (?:\w+ ){0,3}(?:code|commands?) execution",
+    _ab("RCE"), r"remote code execution", r"arbitrary (?:\w+ ){0,3}(?:code|(?<!sql )commands?) execution",
     r"(?<![a-zA-Z])command execution(?![a-zA-Z])", r"(?<![a-zA-Z])code execution(?![a-zA-Z])",  # bare exec forms
-    r"execute arbitrary (?:\w+ ){0,3}(?:code|commands?)", r"execution of arbitrary (?:\w+ ){0,3}(?:code|commands?)",
+    r"execute arbitrary (?:\w+ ){0,3}(?:code|(?<!sql )commands?)", r"execution of arbitrary (?:\w+ ){0,3}(?:code|(?<!sql )commands?)",
     r"code injection", r"(?<!SQL )command injection", r"OS command injection",
     # Chinese
     r"远程代码执行", r"远程命令执行", r"代码执行漏洞", r"命令执行漏洞", r"任意代码执行", r"反序列化漏洞",
