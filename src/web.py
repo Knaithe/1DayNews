@@ -620,11 +620,16 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill" data-days="60">60 days</button>
 </div>
 
-<div class="filter-row" id="typeRow" role="group" aria-label="Filter by type">
-  <button type="button" class="cat-pill" data-vtype="">All</button>
-  <button type="button" class="cat-pill active" data-vtype="RCE">RCE</button>
-  <button type="button" class="cat-pill active" data-vtype="bypass">bypass</button>
-  <button type="button" class="cat-pill" data-vtype="other">other</button>
+<div class="filter-row" id="typeRow" role="group" aria-label="Filter by category">
+  <button type="button" class="cat-pill" data-cat="">All</button>
+  <button type="button" class="cat-pill active" data-cat="RCE">RCE</button>
+  <button type="button" class="cat-pill active" data-cat="bypass">bypass</button>
+  <button type="button" class="cat-pill" data-cat="SQLi">SQLi</button>
+  <button type="button" class="cat-pill" data-cat="privilege escalation">privilege escalation</button>
+  <button type="button" class="cat-pill" data-cat="data leak">data leak</button>
+  <button type="button" class="cat-pill" data-cat="XSS">XSS</button>
+  <button type="button" class="cat-pill" data-cat="DoS">DoS</button>
+  <button type="button" class="cat-pill" data-cat="other">other</button>
 </div>
 
 <div class="filter-row" id="sevRow" role="group" aria-label="Filter by severity">
@@ -676,14 +681,19 @@ const SRC_STYLE = {
   Rapid7:    {bg:"#CFFAFE",fg:"#0e7490"}, Chaitin:  {bg:"#D1FAE5",fg:"#065f46"},
   ThreatBook:{bg:"#E0F2FE",fg:"#0c4a6e"}, GitHub:   {bg:"#EDE9FE",fg:"#5b21b6"},
 };
-const TYPE_STYLE = {
-  "RCE":    {bg:"#FEE2E2",fg:"#991b1b"},
-  "bypass": {bg:"#DBEAFE",fg:"#1e40af"},
-  "other":  {bg:"#FEF3C7",fg:"#92400e"},
+const CATEGORY_STYLE = {
+  "RCE":                   {bg:"#FEE2E2",fg:"#991b1b"},
+  "SQLi":                  {bg:"#EDE9FE",fg:"#5b21b6"},
+  "bypass":                {bg:"#DBEAFE",fg:"#1e40af"},
+  "privilege escalation":  {bg:"#FFEDD5",fg:"#9a3412"},
+  "data leak":             {bg:"#FEF3C7",fg:"#92400e"},
+  "XSS":                   {bg:"#FCE7F3",fg:"#9d174d"},
+  "DoS":                   {bg:"#E5E7EB",fg:"#374151"},
+  "other":                 {bg:"#F1F5F9",fg:"#475569"},
 };
 
 let debounceTimer, activeDays = '7', activePR = 'N', activeUI = 'N', activeRepro = '';
-const activeTypes = new Set(['RCE','bypass']);
+const activeCats = new Set(['RCE','bypass']);
 const activeSevs = new Set(['critical','high']);
 const activeSrcs = new Set();
 const activeExcludes = new Set(['chrome','firefox','linux kernel','wordpress','android','adobe']);
@@ -719,7 +729,7 @@ document.querySelectorAll('#timeRow .cat-pill').forEach(p => p.addEventListener(
   activeDays = p.dataset.days; setActive('#timeRow', 'days', activeDays); loadVulns();
 }));
 document.querySelectorAll('#typeRow .cat-pill').forEach(p => p.addEventListener('click', () => {
-  toggleMulti(activeTypes, p.dataset.vtype, '#typeRow', 'vtype');
+  toggleMulti(activeCats, p.dataset.cat, '#typeRow', 'cat');
 }));
 document.querySelectorAll('#sevRow .cat-pill').forEach(p => p.addEventListener('click', () => {
   toggleMulti(activeSevs, p.dataset.sev, '#sevRow', 'sev');
@@ -866,7 +876,7 @@ async function loadVulns(append=false) {
   const q = document.getElementById('searchInput').value.trim();
   if (q) params.set('q', q);
   if (activeSrcs.size) params.set('source', [...activeSrcs].join(','));
-  if (activeTypes.size) params.set('vuln_type', [...activeTypes].join(','));
+  if (activeCats.size) params.set('category', [...activeCats].join(','));
   if (activeSevs.size) params.set('severity', [...activeSevs].join(','));
   if (activePR) params.set('pr', activePR);
   if (activeUI) params.set('ui', activeUI);
@@ -892,11 +902,11 @@ async function loadVulns(append=false) {
     moreBtn.textContent = currentLimit >= MAX_LIMIT ? `Reached display cap (${MAX_LIMIT})` : 'Load more';
     container.innerHTML = vulns.map((v,i) => {
       const ss = SRC_STYLE[v.source] || {bg:'#F3F4F6',fg:'#374151'};
-      const ts = TYPE_STYLE[v.vuln_type] || {bg:'#F3F4F6',fg:'#6B7280'};
+      const cs = CATEGORY_STYLE[v.category] || {bg:'#F3F4F6',fg:'#6B7280'};
       return `<div class="vcard" style="animation:fadeUp .4s ${i*.03}s both">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
-          ${v.vuln_type&&TYPE_STYLE[v.vuln_type]?`<span class="reason-badge" style="background:${ts.bg};color:${ts.fg}">${esc(v.vuln_type)}</span>`:''}
+          ${v.category&&CATEGORY_STYLE[v.category]?`<span class="reason-badge" style="background:${cs.bg};color:${cs.fg}">${esc(v.category)}</span>`:''}
           ${sevBadge(v)}
           ${v.pr==='N'?'<span class="pr-badge">Unauth</span>':''}
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
