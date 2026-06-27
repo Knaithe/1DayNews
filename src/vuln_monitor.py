@@ -857,6 +857,41 @@ def score(text):
     return False, "no hit", None
 
 
+# ================== CATEGORY (dashboard filter dimension) ==================
+# One coarser "category" label per record, derived from vuln_type + keywords.
+# Priority order (first match wins): RCE > SQLi > bypass > privilege escalation
+# > data leak > XSS > DoS > other. Resolves overlaps (e.g. SQLi-dump -> SQLi,
+# path-traversal-read -> data leak). Stored in the `category` column.
+CATEGORY_KEYWORDS = [
+    ("SQLi",                 [r"sql injection", r"\bsqli\b"]),
+    ("bypass",               [r"auth(?:entication|orization)?\s*(?:bypass|weak|flaw)",
+                              r"access control", r"improper access", r"permission\s*(?:bypass|flaw)",
+                              r"\bRBAC\b", r"security (?:feature )?bypass", r"broken access"]),
+    ("privilege escalation", [r"privilege escalation", r"\bprivesc\b", r"elevation of privilege", r"权限提升"]),
+    ("data leak",            [r"arbitrary file read", r"file read", r"path traversal", r"directory traversal",
+                              r"\bLFI\b", r"information disclosure", r"sensitive (?:data|information)",
+                              r"data (?:leak|exposure|disclos)", r"source (?:code )?disclos",
+                              r"credential(?:s)? leak", r"任意文件读取", r"信息泄露"]),
+    ("XSS",                  [r"\bxss\b", r"cross[- ]site scripting", r"\bcsrf\b", r"open redirect"]),
+    ("DoS",                  [r"\bdos\b", r"denial of service", r"\bcrash(?:es|ed)?\b"]),
+]
+
+def classify_category(vuln_type, text):
+    """Return one dashboard category label for a record.
+
+    Priority: RCE (by vuln_type) > keyword classes > bypass (by vuln_type) > other.
+    """
+    if vuln_type == "RCE":
+        return "RCE"
+    low = (text or "").lower()
+    for cat, patterns in CATEGORY_KEYWORDS:
+        if any(re.search(p, low) for p in patterns):
+            return cat
+    if vuln_type == "bypass":
+        return "bypass"
+    return "other"
+
+
 def _extract_pr(vector):
     if not vector:
         return None
