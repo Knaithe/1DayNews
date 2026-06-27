@@ -2152,6 +2152,7 @@ def _run(no_push=False):
 
             # ── Exploitability (severity) ──
             hit, reason, vuln_type = score(it["text"])
+            category = classify_category(vuln_type, it["text"])
 
             # ── Freshness — ALL records with CVE get cve_published + freshness ──
             cve_pub = None
@@ -2214,10 +2215,10 @@ def _run(no_push=False):
             ui = _extract_ui(nvd_vector)
             should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES and pr == "N" and ui in (None, "N")
             conn.execute(
-                "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss,cvss_vector,cvss_pr,cvss_ui) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,category,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss,cvss_vector,cvss_pr,cvss_ui) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (key, cve_id, it["source"], it["title"][:300], it["link"],
-                 it["summary"][:500], reason, vuln_type, freshness, fresh_reason,
+                 it["summary"][:500], reason, vuln_type, category, freshness, fresh_reason,
                  1 if should_push else 0, now, cve_pub, nvd_severity, nvd_cvss,
                  nvd_vector, pr, ui),
             )
@@ -2474,6 +2475,7 @@ def _cmd_rescore_inner():
             text = f"{title or ''}\n{summary or ''}"
 
             hit, reason, vuln_type = score(text)
+            category = classify_category(vuln_type, text)
             cve_pub = None
             freshness = None
             fresh_reason = None
@@ -2515,8 +2517,8 @@ def _cmd_rescore_inner():
 
             new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES and cvss_pr == "N" and cvss_ui in (None, "N")) else 0
             if reason != old_reason or new_pushed != old_pushed or cve_pub:
-                conn.execute("UPDATE vulns SET reason=?, vuln_type=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
-                            (reason, vuln_type, freshness, fresh_reason, new_pushed, cve_pub, key))
+                conn.execute("UPDATE vulns SET reason=?, vuln_type=?, category=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
+                            (reason, vuln_type, category, freshness, fresh_reason, new_pushed, cve_pub, key))
                 if new_pushed > old_pushed:
                     upgraded += 1
                 elif new_pushed < old_pushed:
