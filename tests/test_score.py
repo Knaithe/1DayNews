@@ -102,3 +102,61 @@ def test_cvss_does_not_trigger_cvs_asset():
     )
     assert vt == "RCE"
     assert "asset" not in reason, f"'CVSS' falsely matched 'cvs' asset (reason={reason})"
+
+
+# --- gap fix: deserialization verb forms & 'execute arbitrary <X> commands' ---
+# These phrasings are RCE but were missed once 'unauthenticated' stopped being a
+# blanket RCE trigger. See audit of CVE-2026-40860 / -11860 / -48909 / -49188 / -35906.
+
+def test_deserialized_verb_form_is_rce():
+    # CVE-2026-40860 camel-jms — past tense 'deserialized' (not 'deserialization')
+    _, reason, vt = _score(
+        "CVE-2026-40860 camel-jms untrusted JMS payload handling",
+        "JmsBinding.extractBodyFromJms() deserialized the payload of incoming JMS ObjectMessage values via javax.jms. (CVSS 9.8)",
+    )
+    assert vt == "RCE", f"'deserialized' (verb) should be RCE (reason={reason})"
+
+
+def test_deserializes_cookie_is_rce():
+    # CVE-2026-48909 SP LMS — 'deserializes' user-controlled cookie
+    _, reason, vt = _score(
+        "CVE-2026-48909 SP LMS (com_splms) cookie handling",
+        "SP LMS deserializes user-controlled cookie data without validation. (CVSS 9.8)",
+    )
+    assert vt == "RCE", f"'deserializes' (verb) should be RCE (reason={reason})"
+
+
+def test_execute_arbitrary_root_commands_is_rce():
+    # CVE-2026-49188 ai_cmd — adjective 'root' between 'arbitrary' and 'commands'
+    _, reason, vt = _score(
+        "CVE-2026-49188 ai_cmd runs with root via popen",
+        "The ai_cmd utility pipes socket input to popen() to execute arbitrary root commands. (CVSS 9.8)",
+    )
+    assert vt == "RCE", f"'execute arbitrary root commands' should be RCE (reason={reason})"
+
+
+def test_execute_arbitrary_system_commands_is_rce():
+    # CVE-2026-35906 T3 CPE debug CGI — 'system' between 'arbitrary' and 'commands'
+    _, reason, vt = _score(
+        "CVE-2026-35906 T3 CPE undocumented debug CGI endpoint",
+        "A debug CGI endpoint lets attackers execute arbitrary system commands as root. (CVSS 9.6)",
+    )
+    assert vt == "RCE", f"'execute arbitrary system commands' should be RCE (reason={reason})"
+
+
+def test_dos_deserialization_not_rce():
+    # broadening deserialization must NOT turn DoS-deserialization into RCE (EXCLUDE wins)
+    _, reason, vt = _score(
+        "CVE-2026-42570 Svelte devalue memory exhaustion",
+        "Svelte devalue: DoS via sparse array deserialization causing excessive memory allocation. (CVSS 7.5)",
+    )
+    assert vt != "RCE", f"DoS-deserialization must not be RCE (reason={reason})"
+
+
+def test_execute_arbitrary_sql_queries_not_rce():
+    # 'execute arbitrary SELECT SQL queries' is SQLi — broadened exec pattern must not catch it
+    _, reason, vt = _score(
+        "CVE-2026-8335 Aix-DB missing auth on llm endpoint",
+        "A missing auth check lets clients execute arbitrary SELECT SQL queries and retrieve data. (CVSS 8.0)",
+    )
+    assert vt != "RCE", f"SQLi must not be RCE (reason={reason})"

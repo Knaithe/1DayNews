@@ -166,8 +166,8 @@ THREATBOOK_API_URL = "https://x.threatbook.com/v5/node/vul_module/homePage"
 # ================== RCE PATTERNS ==================
 RCE_PATTERNS = [
     # naming
-    r"\bRCE\b", r"remote code execution", r"arbitrary (code|commands?|OS commands?) execution",
-    r"execute arbitrary (code|commands?|OS commands?)", r"execution of arbitrary (code|commands?|OS commands?)",
+    r"\bRCE\b", r"remote code execution", r"arbitrary (?:\w+ ){0,3}(?:code|commands?) execution",
+    r"execute arbitrary (?:\w+ ){0,3}(?:code|commands?)", r"execution of arbitrary (?:\w+ ){0,3}(?:code|commands?)",
     r"code injection", r"command injection", r"OS command injection",
     # Chinese
     r"远程代码执行", r"远程命令执行", r"代码执行漏洞", r"命令执行漏洞", r"任意代码执行", r"反序列化漏洞",
@@ -177,7 +177,7 @@ RCE_PATTERNS = [
     # above (\bRCE\b, 'remote code execution', ...). Deserialization primitives below
     # carry RCE on their own merits.
     # deserialization / injection
-    r"deserializ(ation|ing)", r"insecure deserialization", r"unsafe deserialization",
+    r"deserializ\w*",  # all forms: deserialize/deserialized/deserializes/deserializing/deserialization/deserializer
     r"object injection", r"\bunserialize\b", r"pop chain", r"gadget chain",
     r"\bSSTI\b", r"server[- ]side template injection",
     r"\bSSRF\b.*(RCE|code exec|chain|gadget)",
