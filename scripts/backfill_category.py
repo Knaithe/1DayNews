@@ -20,6 +20,7 @@ def main():
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
+    v.init_db(conn)  # ensure the `category` column exists before backfilling
     rows = conn.execute("SELECT key, title, summary, vuln_type FROM vulns").fetchall()
     dist = Counter()
     for r in rows:
