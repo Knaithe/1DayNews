@@ -163,43 +163,51 @@ CHAITIN_API_URL = "https://stack.chaitin.com/api/v2/vuln/list/"
 THREATBOOK_API_URL = "https://x.threatbook.com/v5/node/vul_module/homePage"
 
 
+def _ab(acro):
+    """Acronym wrapped in ASCII-letter boundaries. Unlike \\b, this still matches
+    when the acronym is glued to CJK characters (Python's \\b treats CJK as \\w,
+    so \\bRCE\\b misses '认证绕过RCE漏洞')."""
+    return f"(?<![a-zA-Z]){acro}(?![a-zA-Z])"
+
+
 # ================== RCE PATTERNS ==================
 RCE_PATTERNS = [
     # naming
-    r"\bRCE\b", r"remote code execution", r"arbitrary (?:\w+ ){0,3}(?:code|commands?) execution",
+    _ab("RCE"), r"remote code execution", r"arbitrary (?:\w+ ){0,3}(?:code|commands?) execution",
+    r"(?<![a-zA-Z])command execution(?![a-zA-Z])", r"(?<![a-zA-Z])code execution(?![a-zA-Z])",  # bare exec forms
     r"execute arbitrary (?:\w+ ){0,3}(?:code|commands?)", r"execution of arbitrary (?:\w+ ){0,3}(?:code|commands?)",
-    r"code injection", r"command injection", r"OS command injection",
+    r"code injection", r"(?<!SQL )command injection", r"OS command injection",
     # Chinese
     r"远程代码执行", r"远程命令执行", r"代码执行漏洞", r"命令执行漏洞", r"任意代码执行", r"反序列化漏洞",
     # NOTE: 'unauthenticated'/'pre-auth'/'unauth' are auth *prerequisites*, not RCE
     # indicators — kept OUT of RCE_PATTERNS so unauth privesc/SQLi/info-disclosure
     # don't get mislabeled RCE. Real unauth RCE is still caught by the exec keywords
-    # above (\bRCE\b, 'remote code execution', ...). Deserialization primitives below
-    # carry RCE on their own merits.
+    # above. Deserialization primitives below carry RCE on their own merits.
     # deserialization / injection
     r"deserializ\w*",  # all forms: deserialize/deserialized/deserializes/deserializing/deserialization/deserializer
     r"object injection", r"\bunserialize\b", r"pop chain", r"gadget chain",
-    r"\bSSTI\b", r"server[- ]side template injection",
-    r"\bSSRF\b.*(RCE|code exec|chain|gadget)",
-    r"\bXXE\b.*(RCE|exec|chain)",
-    r"SQL injection.*(RCE|xp_cmdshell|OS cmd|command|exec)",
-    r"prototype pollution.*(RCE|exec|gadget|chain)",
-    r"\bJNDI\b", r"\bOGNL\b",
+    _ab("SSTI"), r"server[- ]side template injection",
+    _ab("SSRF") + r".*(?:RCE|code exec|chain|gadget)",
+    _ab("XXE") + r".*(?:RCE|exec|chain)",
+    r"SQL injection.*(?:RCE|xp_cmdshell|OS cmd|command\b|exec\b)",  # exec\b/command\b: avoid matching 'execute'/'commands'
+    r"prototype pollution.*(?:RCE|exec|gadget|chain)",
+    _ab("JNDI"), _ab("OGNL"),
     # memory corruption
     r"memory corruption", r"stack[- ]?(based )?(buffer )?overflow", r"heap[- ]?(based )?(buffer )?overflow",
-    r"use[- ]after[- ]free\b", r"\bUAF\b", r"double free",
-    r"type confusion", r"out[- ]of[- ]bounds? (read|write)", r"\bOOB\b",
-    r"integer overflow.*(exec|RCE|oob)",
-    r"race condition.*(exec|RCE|kernel)",
-    # file upload / traversal escalating to exec
-    r"(unrestricted|arbitrary) file upload",
+    r"use[- ]after[- ]free\b", _ab("UAF"), r"double free",
+    r"type confusion", r"out[- ]of[- ]bounds? (read|write)", _ab("OOB"),
+    r"integer overflow.*(?:exec|RCE|oob)",
+    r"race condition.*(?:exec|RCE|kernel)",
+    # file upload / traversal / file-write escalating to exec
+    r"(?:unrestricted|arbitrary|unauthenticated|unauth) file upload",
     r"任意文件上传", r"文件上传漏洞",
-    r"(path|directory) traversal.*(write|overwrite|exec|upload|RCE)",
-    r"webshell", r"arbitrary file write.*(exec|RCE|service)",
+    r"(?:path|directory) traversal.*(?:write|overwrite|exec|upload|RCE)",
+    r"webshell",
+    r"arbitrary file write", r"(?:create|overwrite|truncate) arbitrary files?",
     # in-the-wild / value tags
     r"exploited in the wild", r"active(ly)? exploited", r"in[- ]the[- ]wild exploit",
     r"zero[- ]?day\b", r"\b0[- ]?day\b",
-    r"exploit chain", r"full chain", r"pre[- ]auth.*(chain|code exec|RCE)",
+    r"exploit chain", r"full chain", r"pre[- ]auth.*(?:chain|code exec|RCE)",
     # famous exploit nicknames
     r"log4shell", r"spring4shell", r"proxyshell", r"proxylogon", r"proxynotshell",
     r"bluekeep", r"eternalblue", r"shellshock", r"heartbleed",
@@ -214,7 +222,7 @@ BYPASS_PATTERNS = [
     r"bypass\s*auth(entication|orization)?",
     r"access control bypass",
     r"permission bypass",
-    r"\bRBAC\b.*bypass", r"bypass.*\bRBAC\b",
+    _ab("RBAC") + r".*bypass", r"bypass.*" + _ab("RBAC"),
     r"security (feature )?bypass",
     r"account takeover",
     r"session (hijack|fixation|steal)",
@@ -409,15 +417,15 @@ ASSET_KEYWORDS = [
 
 # ================== EXCLUDE ==================
 EXCLUDE_PATTERNS = [
-    r"\bXSS\b", r"cross[- ]site[- ]scripting",
-    r"\bCSRF\b", r"cross[- ]site request forgery",
+    _ab("XSS"), r"cross[- ]site[- ]scripting",
+    _ab("CSRF"), r"cross[- ]site request forgery",
     r"clickjacking", r"open redirect", r"host header injection",
     r"information disclosure(?!.*(pre-?auth|unauth|RCE|chain|exploit|credential))",
     r"authenticated admin(?!.*(chain|bypass|RCE|0[- ]?day))",
     r"local privilege escalation(?!.*(chain|RCE|kernel 0[- ]?day))",
-    r"\bDoS\b(?!.*(unauth|pre-?auth|chain|kernel))",
+    _ab("DoS") + r"(?!.*(unauth|pre-?auth|chain|kernel))",
     r"denial of service(?!.*(unauth|pre-?auth|chain|kernel))",
-    r"\bSSRF\b(?!.*(RCE|code exec|chain|bypass))",
+    _ab("SSRF") + r"(?!.*(RCE|code exec|chain|bypass))",
     # Linux kernel subsystem patches (not enterprise-exploitable)
     r"\b(?:staging|ocfs2|fbdev|ALSA|media|usb: gadget|i2c:|s390/|rtnetlink|bcache|tracing):",
     # Apache library-level crashes/bugs (not enterprise-exploitable RCE)
@@ -823,6 +831,16 @@ _BYPASS_RE = re.compile("|".join(f"(?:{p})" for p in BYPASS_PATTERNS), re.I)
 _EXCLUDE_RE = re.compile("|".join(f"(?:{p})" for p in EXCLUDE_PATTERNS), re.I)
 _ASSET_KW_SET = frozenset(ASSET_KEYWORDS)
 
+# Unambiguous RCE indicators. If any is present, the noise EXCLUDE filters (XSS/
+# CSRF/SSRF/info-disclosure/DoS) are bypassed — an XSS->RCE or "RCE ... SSRF"
+# chain is still RCE regardless of which term appears first or which is stronger.
+_STRONG_RCE_RE = re.compile(
+    _ab("RCE") + r"|remote code execution"
+    r"|arbitrary (?:\w+ ){0,3}(?:code|commands?) execution"
+    r"|execute arbitrary (?:\w+ ){0,3}(?:code|commands?)",
+    re.I,
+)
+
 
 def score(text):
     """Score text for exploitability. Returns (hit, reason, vuln_type).
@@ -830,7 +848,7 @@ def score(text):
     reason: detailed match info (RCE+asset/CVE, bypass+asset/CVE, asset+CVE, etc.)
     vuln_type: simplified classification (RCE / bypass / other / None)
     """
-    if _EXCLUDE_RE.search(text):
+    if not _STRONG_RCE_RE.search(text) and _EXCLUDE_RE.search(text):
         return False, "excluded", None
     low = text.lower()
     rce    = bool(_RCE_RE.search(text))
@@ -889,12 +907,14 @@ def classify_category(vuln_type, text, reason=None):
     Priority: RCE (by vuln_type) > excluded->other > keyword classes
     (SQLi > privilege escalation > bypass > SSRF > data leak > XSS > DoS)
     > bypass (by vuln_type) > other. Memory-corruption is never DoS.
+    MSRC 'Elevation of Privilege' (local mem-corruption) reads as RCE via score()
+    but is really privilege escalation.
     """
-    if vuln_type == "RCE":
+    low = (text or "").lower()
+    if vuln_type == "RCE" and "elevation of privilege" not in low:
         return "RCE"
     if reason == "excluded":
         return "other"
-    low = (text or "").lower()
     for cat, patterns in CATEGORY_KEYWORDS:
         if any(re.search(p, low) for p in patterns):
             if cat == "DoS" and _MEMCORRUPT_RE.search(low):

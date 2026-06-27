@@ -116,3 +116,9 @@ def test_elevation_of_privilege_is_privesc_even_with_access_control():
     # Microsoft 'Elevation of Privilege' should be privesc even if the summary
     # also mentions access-control language (privesc checked before bypass)
     assert _cls("other", "Azure HorizonDB Elevation of Privilege with access control flaw") == "privilege escalation"
+
+
+def test_elevation_of_privilege_local_msrc_is_privesc_not_rce():
+    # HIGH-3: MSRC 'Elevation of Privilege' reads as RCE via score() (mem corruption)
+    # but is really local privilege escalation — category should be privesc.
+    assert _cls("RCE", "Azure HorizonDB Elevation of Privilege Vulnerability") == "privilege escalation"

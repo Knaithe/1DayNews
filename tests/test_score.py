@@ -160,3 +160,67 @@ def test_execute_arbitrary_sql_queries_not_rce():
         "A missing auth check lets clients execute arbitrary SELECT SQL queries and retrieve data. (CVSS 8.0)",
     )
     assert vt != "RCE", f"SQLi must not be RCE (reason={reason})"
+
+
+# --- score() precision/recall overhaul (full audit 2026-06-27) ---
+
+def test_sqli_execute_queries_not_rce():
+    # CRITICAL-1: bare 'exec' in SQLi-chain pattern must not match 'execute'
+    _, reason, vt = _score("CVE-2026-3325 MegaCMS SQL injection",
+                           "SQL injection lets an unauthenticated attacker execute arbitrary SQL queries.")
+    assert vt != "RCE", f"SQLi 'execute queries' must not be RCE (reason={reason})"
+
+
+def test_sqli_xp_cmdshell_chain_still_rce():
+    # CRITICAL-1 fix must still catch genuine SQLi->RCE chains
+    _, reason, vt = _score("CVE-x sqli", "SQL injection via xp_cmdshell used to exec OS commands.")
+    assert vt == "RCE", f"xp_cmdshell SQLi->RCE chain should be RCE (reason={reason})"
+
+
+def test_acronym_glued_to_chinese_is_rce():
+    # CRITICAL-2: \b fails at CJK boundaries; '认证绕过RCE漏洞' must be RCE
+    _, reason, vt = _score("CVE-x 认证绕过RCE漏洞", "攻击者可远程执行任意代码。")
+    assert vt == "RCE", f"acronym glued to Chinese must be RCE (reason={reason})"
+
+
+def test_sql_command_injection_not_rce():
+    # HIGH-2: 'SQL command injection' is SQLi, not RCE
+    _, reason, vt = _score("CVE-x login", "SQL command injection in the login endpoint allows auth bypass.")
+    assert vt != "RCE", f"'SQL command injection' must not be RCE (reason={reason})"
+
+
+def test_os_command_injection_still_rce():
+    _, reason, vt = _score("CVE-x ping", "OS command injection via the ping endpoint.")
+    assert vt == "RCE"
+
+
+def test_bare_command_execution_is_rce():
+    # A (recall): bare 'command execution' without 'arbitrary' before it
+    _, reason, vt = _score("CVE-2026-38615 DedeCMS", "DedeCMS is vulnerable to unauthenticated command execution.")
+    assert vt == "RCE", f"bare 'command execution' should be RCE (reason={reason})"
+
+
+def test_arbitrary_file_write_is_rce():
+    # A (recall): arbitrary file write / create / truncate (file-write primitive -> RCE)
+    _, reason, vt = _score("CVE-2026-20253 Splunk",
+                           "An unauthenticated user could create or truncate arbitrary files via the sidecar endpoint.")
+    assert vt == "RCE", f"arbitrary file write/create/truncate should be RCE (reason={reason})"
+
+
+def test_xss_to_rce_chain_not_excluded():
+    # HIGH-1: XSS chaining to RCE must not be excluded by the XSS filter
+    _, reason, vt = _score("CVE-2026-44670 YesWiki", "Stored XSS via Attribute View Name to Electron Renderer RCE.")
+    assert vt == "RCE", f"XSS->RCE chain must not be excluded (reason={reason})"
+
+
+def test_plain_xss_still_not_rce():
+    # the RCE-override must not break plain XSS exclusion
+    _, reason, vt = _score("CVE-x comments", "A stored XSS in the comment field allows cookie theft.")
+    assert vt != "RCE", f"plain XSS must not become RCE (reason={reason})"
+
+
+def test_ssrf_with_rce_before_not_excluded():
+    # MEDIUM: RCE appearing BEFORE 'SSRF' must still prevent SSRF exclusion
+    _, reason, vt = _score("CVE-x webhook",
+                           "Remote Code Execution and Server-Side Request Forgery in the webhook handler.")
+    assert vt == "RCE", f"RCE before SSRF must not be excluded (reason={reason})"
