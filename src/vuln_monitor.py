@@ -899,6 +899,15 @@ CATEGORY_KEYWORDS = [
 _MEMCORRUPT_RE = re.compile(
     r"buffer overflow|heap overflow|stack overflow|use[- ]after[- ]free|\buaf\b"
     r"|out[- ]of[- ]bounds|memory corruption|type confusion|integer overflow", re.I)
+# privilege-escalation language (noun + verb forms) for the RCE->privesc guard
+_PRIVESC_RE = re.compile(
+    r"privilege escalation|elevation of privilege|privilege elevation|elevat\w* privileges?",
+    re.I)
+# strong RCE language in a TITLE — if present, don't downgrade to privesc
+_TITLE_RCE_RE = re.compile(
+    _ab("RCE") + r"|remote code execution|command injection|code injection"
+    r"|command execution|code execution|arbitrary code",
+    re.I)
 
 
 def classify_category(vuln_type, text, reason=None):
@@ -907,11 +916,16 @@ def classify_category(vuln_type, text, reason=None):
     Priority: RCE (by vuln_type) > excluded->other > keyword classes
     (SQLi > privilege escalation > bypass > SSRF > data leak > XSS > DoS)
     > bypass (by vuln_type) > other. Memory-corruption is never DoS.
-    MSRC 'Elevation of Privilege' (local mem-corruption) reads as RCE via score()
-    but is really privilege escalation.
+    A vuln scored RCE is re-routed to privilege escalation when its TITLE says so
+    (without also claiming code/command execution) or when it's a local
+    memory-corruption EoP — so genuine RCEs aren't downgraded.
     """
     low = (text or "").lower()
-    if vuln_type == "RCE" and "elevation of privilege" not in low:
+    if vuln_type == "RCE":
+        title_low = low.split("\n", 1)[0]
+        title_is_privesc = bool(_PRIVESC_RE.search(title_low)) and not _TITLE_RCE_RE.search(title_low)
+        if title_is_privesc or (_MEMCORRUPT_RE.search(low) and _PRIVESC_RE.search(low)):
+            return "privilege escalation"
         return "RCE"
     if reason == "excluded":
         return "other"

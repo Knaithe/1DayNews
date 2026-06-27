@@ -122,3 +122,25 @@ def test_elevation_of_privilege_local_msrc_is_privesc_not_rce():
     # HIGH-3: MSRC 'Elevation of Privilege' reads as RCE via score() (mem corruption)
     # but is really local privilege escalation — category should be privesc.
     assert _cls("RCE", "Azure HorizonDB Elevation of Privilege Vulnerability") == "privilege escalation"
+
+
+def test_rce_title_privilege_escalation_is_privesc():
+    # title-led: a vuln scored RCE whose TITLE says 'privilege escalation' is privesc
+    assert _cls("RCE", "Cisco ISE Authenticated Privilege Escalation Vulnerability") == "privilege escalation"
+
+
+def test_rce_command_injection_title_stays_rce():
+    # must NOT downgrade a genuine RCE whose title claims command injection + RCE,
+    # even if its summary later mentions elevating privileges
+    assert _cls("RCE", "Cisco Command Injection and Remote Code Execution\n"
+                       "An attacker could elevate privileges after exploitation.") == "RCE"
+
+
+def test_rce_memcorruption_elevate_privileges_is_privesc():
+    # local memory-corruption + 'elevate privileges' (verb) = local privesc
+    assert _cls("RCE", "Use after free in Windows Hyper-V\n"
+                       "allows an authorized attacker to elevate privileges locally.") == "privilege escalation"
+
+
+def test_plain_rce_title_stays_rce():
+    assert _cls("RCE", "Remote Code Execution in nginx via crafted request") == "RCE"
