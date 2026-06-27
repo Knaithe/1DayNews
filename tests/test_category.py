@@ -61,3 +61,21 @@ def test_sqli_beats_data_leak():
 
 def test_path_traversal_is_data_leak():
     assert _cls("other", "path traversal to read sensitive files") == "data leak"
+
+
+def test_init_db_adds_category_column(tmp_path):
+    db = str(tmp_path / "t.db")
+    c = sqlite3.connect(db)
+    # a pre-migration DB with the original baseline columns, but no category
+    c.execute("CREATE TABLE vulns (key TEXT PRIMARY KEY, cve_id TEXT, source TEXT, "
+              "title TEXT NOT NULL, link TEXT, summary TEXT, reason TEXT, vuln_type TEXT, "
+              "freshness TEXT, freshness_reason TEXT, pushed INTEGER DEFAULT 0, "
+              "created_at REAL NOT NULL, cve_published TEXT, severity TEXT, cvss REAL, "
+              "llm_verified INTEGER DEFAULT 0, llm_verdict TEXT, llm_notes TEXT, "
+              "tg_sent INTEGER DEFAULT 0, wecom_sent INTEGER DEFAULT 0, "
+              "dingtalk_sent INTEGER DEFAULT 0, feishu_sent INTEGER DEFAULT 0, "
+              "cvss_vector TEXT, cvss_pr TEXT)")
+    v.init_db(c)
+    cols = [r[1] for r in c.execute("PRAGMA table_info(vulns)").fetchall()]
+    assert "category" in cols
+    c.close()
