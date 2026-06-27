@@ -623,9 +623,10 @@ a:hover { text-decoration: underline; }
 <div class="filter-row" id="typeRow" role="group" aria-label="Filter by category">
   <button type="button" class="cat-pill" data-cat="">All</button>
   <button type="button" class="cat-pill active" data-cat="RCE">RCE</button>
-  <button type="button" class="cat-pill active" data-cat="bypass">bypass</button>
   <button type="button" class="cat-pill" data-cat="SQLi">SQLi</button>
   <button type="button" class="cat-pill" data-cat="privilege escalation">privilege escalation</button>
+  <button type="button" class="cat-pill active" data-cat="bypass">bypass</button>
+  <button type="button" class="cat-pill" data-cat="SSRF">SSRF</button>
   <button type="button" class="cat-pill" data-cat="data leak">data leak</button>
   <button type="button" class="cat-pill" data-cat="XSS">XSS</button>
   <button type="button" class="cat-pill" data-cat="DoS">DoS</button>
@@ -686,6 +687,7 @@ const CATEGORY_STYLE = {
   "SQLi":                  {bg:"#EDE9FE",fg:"#5b21b6"},
   "bypass":                {bg:"#DBEAFE",fg:"#1e40af"},
   "privilege escalation":  {bg:"#FFEDD5",fg:"#9a3412"},
+  "SSRF":                  {bg:"#DCFCE7",fg:"#166534"},
   "data leak":             {bg:"#FEF3C7",fg:"#92400e"},
   "XSS":                   {bg:"#FCE7F3",fg:"#9d174d"},
   "DoS":                   {bg:"#E5E7EB",fg:"#374151"},

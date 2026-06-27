@@ -11,36 +11,41 @@ Add finer-grained vulnerability category filters to the web dashboard, so users 
 
 The audit of the RCE relabel (vuln_type=RCE 3493 → 1756) showed the "other" bucket contains distinct, useful sub-types: SQLi, auth/access-control bypass, file read, info disclosure, privesc, DoS, XSS. None of these is a stored field today. This spec adds a derived `category` column and exposes it as dashboard filter pills.
 
-## Category scheme (8 classes, one per record, priority order)
+## Category scheme (9 classes, one per record, priority order)
 
-Priority — more specific / more exploitable first; resolves overlaps automatically:
+Priority — first keyword match wins; excluded records and memory-corruption are handled specially:
 
 ```
-RCE > SQLi > bypass > privilege escalation > data leak > XSS > DoS > other
+RCE > SQLi > privilege escalation > bypass > SSRF > data leak > XSS > DoS > other
 ```
 
-Labels follow the existing UI convention (acronyms uppercase, words/phrases lowercase — matches the current `RCE` / `bypass` / `other` pills):
+Labels follow the existing UI convention (acronyms uppercase, words/phrases lowercase):
 
 | label | assigned when |
 |---|---|
 | `RCE` | `vuln_type = RCE` |
 | `SQLi` | sql injection / sqli |
-| `bypass` | auth/authz/access-control/permission/RBAC/security-feature bypass (认证·访问控制·越权) |
 | `privilege escalation` | privilege escalation / privesc / 提权 / elevation of privilege |
-| `data leak` | arbitrary/unauthorized file read, path/directory traversal, LFI, information disclosure, sensitive data, source/credential disclosure (file-read + info-disclosure **merged**) |
+| `bypass` | auth/authz/access-control/permission/RBAC/security-feature bypass, IDOR, account takeover, impersonation |
+| `SSRF` | server-side request forgery / ssrf |
+| `data leak` | arbitrary/unauthorized file read, path/directory traversal, LFI / local file inclusion, information disclosure, sensitive data, source/credential disclosure (file-read + info-disclosure **merged**) |
 | `XSS` | xss / cross-site scripting / csrf / open redirect |
 | `DoS` | dos / denial of service / crash |
 | `other` | fallback |
 
-**Overlap resolution (by priority):** SQLi dump → `SQLi` (not data leak); path traversal reading a sensitive file → `data leak`; "unauthenticated privilege escalation" → `privilege escalation` (no bypass keyword present).
+**Special handling:**
+- `reason = excluded` → `other` (excluded records are noise; never claim a category).
+- Memory-corruption (buffer overflow / use-after-free / out-of-bounds / type confusion / integer overflow) is RCE-class, never `DoS` → falls to `other`.
+
+**Overlap resolution (by priority):** SQLi dump → `SQLi` (not data leak); path traversal reading a sensitive file → `data leak`; "elevation of privilege" with access-control language → `privilege escalation` (privesc checked before bypass).
 
 The `category` column stores the label string directly — same pattern as `vuln_type` storing `"RCE"` / `"bypass"`. No separate key/label mapping.
 
 ## Components
 
-### `classify_category(vuln_type, text)` — `src/vuln_monitor.py`
+### `classify_category(vuln_type, text, reason=None)` — `src/vuln_monitor.py`
 
-Pure function, returns one of the 8 labels:
+Pure function, returns one of the 9 labels:
 
 ```python
 CATEGORY_KEYWORDS = [   # ordered; first match wins

@@ -9,8 +9,8 @@ os.environ.setdefault("VULN_DATA_DIR", "")
 import src.vuln_monitor as v
 
 
-def _cls(vuln_type, text):
-    return v.classify_category(vuln_type, text)
+def _cls(vuln_type, text, reason=None):
+    return v.classify_category(vuln_type, text, reason)
 
 
 def test_rce_by_vuln_type():
@@ -79,3 +79,40 @@ def test_init_db_adds_category_column(tmp_path):
     cols = [r[1] for r in c.execute("PRAGMA table_info(vulns)").fetchall()]
     assert "category" in cols
     c.close()
+
+
+# ── refinement: recall gaps, precision, new SSRF class ──
+
+def test_data_leak_local_file_inclusion_full_phrase():
+    # 'local file inclusion' full phrase (not just 'LFI' abbreviation)
+    assert _cls("other", "CVE-x Local file inclusion via view parameter") == "data leak"
+
+
+def test_bypass_idor():
+    assert _cls("other", "CVE-x Insecure Direct Object Reference (IDOR) in /api/user") == "bypass"
+
+
+def test_bypass_account_takeover():
+    assert _cls("other", "CVE-x account takeover via password reset poisoning") == "bypass"
+
+
+def test_ssrf():
+    assert _cls("other", "CVE-x Server-Side Request Forgery (SSRF) in webhook") == "SSRF"
+
+
+def test_excluded_records_are_other():
+    # excluded records are noise; never claim a specific category
+    assert _cls(None, "SQL Injection in login", reason="excluded") == "other"
+    assert _cls("other", "denial of service via crash", reason="excluded") == "other"
+
+
+def test_dos_not_when_memory_corruption():
+    # heap/UAF/OOB is RCE-class, not DoS, even when 'crash'/'denial of service' is mentioned
+    assert _cls("other", "heap buffer overflow causing application crash") == "other"
+    assert _cls("other", "use-after-free leading to denial of service") == "other"
+
+
+def test_elevation_of_privilege_is_privesc_even_with_access_control():
+    # Microsoft 'Elevation of Privilege' should be privesc even if the summary
+    # also mentions access-control language (privesc checked before bypass)
+    assert _cls("other", "Azure HorizonDB Elevation of Privilege with access control flaw") == "privilege escalation"

@@ -859,34 +859,46 @@ def score(text):
 
 
 # ================== CATEGORY (dashboard filter dimension) ==================
-# One coarser "category" label per record, derived from vuln_type + keywords.
-# Priority order (first match wins): RCE > SQLi > bypass > privilege escalation
-# > data leak > XSS > DoS > other. Resolves overlaps (e.g. SQLi-dump -> SQLi,
-# path-traversal-read -> data leak). Stored in the `category` column.
+# One coarser "category" label per record, derived from vuln_type + reason + keywords.
+# Priority (first keyword match wins): RCE > SQLi > privilege escalation > bypass
+# > SSRF > data leak > XSS > DoS > other. Excluded records -> other (they're noise).
+# Memory-corruption (overflow/UAF/OOB) is RCE-class, never DoS. Stored in `category`.
 CATEGORY_KEYWORDS = [
     ("SQLi",                 [r"sql injection", r"\bsqli\b"]),
+    ("privilege escalation", [r"privilege escalation", r"\bprivesc\b", r"elevation of privilege", r"权限提升"]),
     ("bypass",               [r"auth(?:entication|orization)?\s*(?:bypass|weak|flaw)",
                               r"access control", r"improper access", r"permission\s*(?:bypass|flaw)",
-                              r"\bRBAC\b", r"security (?:feature )?bypass", r"broken access"]),
-    ("privilege escalation", [r"privilege escalation", r"\bprivesc\b", r"elevation of privilege", r"权限提升"]),
+                              r"\bRBAC\b", r"security (?:feature )?bypass", r"broken access",
+                              r"\bIDOR\b", r"insecure direct object", r"account takeover", r"impersonation"]),
+    ("SSRF",                 [r"server[- ]side request forgery", r"\bssrf\b"]),
     ("data leak",            [r"arbitrary file read", r"file read", r"path traversal", r"directory traversal",
-                              r"\bLFI\b", r"information disclosure", r"sensitive (?:data|information)",
-                              r"data (?:leak|exposure|disclos)", r"source (?:code )?disclos",
-                              r"credential(?:s)? leak", r"任意文件读取", r"信息泄露"]),
+                              r"\bLFI\b", r"local file inclusion", r"information disclosure",
+                              r"sensitive (?:data|information)", r"data (?:leak|exposure|disclos)",
+                              r"source (?:code )?disclos", r"credential(?:s)? leak", r"任意文件读取", r"信息泄露"]),
     ("XSS",                  [r"\bxss\b", r"cross[- ]site scripting", r"\bcsrf\b", r"open redirect"]),
     ("DoS",                  [r"\bdos\b", r"denial of service", r"\bcrash(?:es|ed)?\b"]),
 ]
+_MEMCORRUPT_RE = re.compile(
+    r"buffer overflow|heap overflow|stack overflow|use[- ]after[- ]free|\buaf\b"
+    r"|out[- ]of[- ]bounds|memory corruption|type confusion|integer overflow", re.I)
 
-def classify_category(vuln_type, text):
+
+def classify_category(vuln_type, text, reason=None):
     """Return one dashboard category label for a record.
 
-    Priority: RCE (by vuln_type) > keyword classes > bypass (by vuln_type) > other.
+    Priority: RCE (by vuln_type) > excluded->other > keyword classes
+    (SQLi > privilege escalation > bypass > SSRF > data leak > XSS > DoS)
+    > bypass (by vuln_type) > other. Memory-corruption is never DoS.
     """
     if vuln_type == "RCE":
         return "RCE"
+    if reason == "excluded":
+        return "other"
     low = (text or "").lower()
     for cat, patterns in CATEGORY_KEYWORDS:
         if any(re.search(p, low) for p in patterns):
+            if cat == "DoS" and _MEMCORRUPT_RE.search(low):
+                return "other"  # overflow/UAF/OOB is RCE-class, not DoS
             return cat
     if vuln_type == "bypass":
         return "bypass"
@@ -2152,7 +2164,7 @@ def _run(no_push=False):
 
             # ── Exploitability (severity) ──
             hit, reason, vuln_type = score(it["text"])
-            category = classify_category(vuln_type, it["text"])
+            category = classify_category(vuln_type, it["text"], reason)
 
             # ── Freshness — ALL records with CVE get cve_published + freshness ──
             cve_pub = None
@@ -2475,7 +2487,7 @@ def _cmd_rescore_inner():
             text = f"{title or ''}\n{summary or ''}"
 
             hit, reason, vuln_type = score(text)
-            category = classify_category(vuln_type, text)
+            category = classify_category(vuln_type, text, reason)
             cve_pub = None
             freshness = None
             fresh_reason = None
