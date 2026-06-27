@@ -190,6 +190,14 @@ def api_vulns():
             elif vt_list:
                 where.append(f"vuln_type IN ({','.join('?' * len(vt_list))})")
                 params.extend(vt_list)
+        category = request.args.get("category", "").strip()
+        if category and "category" in cols_avail:
+            cat_list = [c.strip() for c in category.split(",") if c.strip()][:12]
+            if len(cat_list) == 1:
+                where.append("category = ?"); params.append(cat_list[0])
+            elif cat_list:
+                where.append(f"category IN ({','.join('?' * len(cat_list))})")
+                params.extend(cat_list)
         severity = request.args.get("severity", "").strip().lower()
         if severity:
             sev_valid = {"critical", "high", "medium", "low"}
@@ -232,7 +240,7 @@ def api_vulns():
         base_cols = ["key", "cve_id", "source", "title", "link", "summary", "reason", "pushed",
                      "created_at", "cve_published", "severity", "cvss", "llm_verdict",
                      "llm_notes", "tg_sent"]
-        optional_cols = ["vuln_type", "freshness", "cvss_pr", "cvss_ui", "reproduced"]
+        optional_cols = ["vuln_type", "category", "freshness", "cvss_pr", "cvss_ui", "reproduced"]
         cols = base_cols + [c for c in optional_cols if c in cols_avail]
         sql = f"SELECT {','.join(cols)} FROM vulns"
         if where:
@@ -247,10 +255,12 @@ def api_vulns():
     has_pr = "cvss_pr" in cols_avail
     has_ui = "cvss_ui" in cols_avail
     has_repro = "reproduced" in cols_avail
+    has_cat = "category" in cols_avail
     return jsonify([{
         "key": r["key"], "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
         "vuln_type": r["vuln_type"] if has_vt else None,
+        "category": r["category"] if has_cat else None,
         "freshness": r["freshness"] if has_fr else None,
         "pr": r["cvss_pr"] if has_pr else None,
         "ui": r["cvss_ui"] if has_ui else None,
