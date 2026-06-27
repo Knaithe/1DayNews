@@ -92,6 +92,12 @@ def test_bypass_idor():
     assert _cls("other", "CVE-x Insecure Direct Object Reference (IDOR) in /api/user") == "bypass"
 
 
+def test_bypass_idor_acronym_alone():
+    # 'IDOR' acronym alone (no 'insecure direct object' full phrase) — regression
+    # guard for the case-sensitivity bug (uppercase acronym vs lowercased text)
+    assert _cls("other", "wger Vulnerable to IDOR: a user can access other users' data") == "bypass"
+
+
 def test_bypass_account_takeover():
     assert _cls("other", "CVE-x account takeover via password reset poisoning") == "bypass"
 

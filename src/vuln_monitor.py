@@ -930,7 +930,7 @@ def classify_category(vuln_type, text, reason=None):
     if reason == "excluded":
         return "other"
     for cat, patterns in CATEGORY_KEYWORDS:
-        if any(re.search(p, low) for p in patterns):
+        if any(re.search(p, low, re.I) for p in patterns):
             if cat == "DoS" and _MEMCORRUPT_RE.search(low):
                 return "other"  # overflow/UAF/OOB is RCE-class, not DoS
             return cat
