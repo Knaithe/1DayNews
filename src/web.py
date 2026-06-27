@@ -282,9 +282,13 @@ def api_stats():
         total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
         pushed = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
         sources = conn.execute("SELECT source, COUNT(*) as n FROM vulns WHERE source IS NOT NULL AND created_at > strftime('%%s','now') - 7*86400 GROUP BY source ORDER BY n DESC").fetchall()
+        cat_rows = conn.execute("SELECT COALESCE(category,'(none)') c, COUNT(*) n FROM vulns GROUP BY category").fetchall()
+        repro_rows = conn.execute("SELECT reproduced, COUNT(*) n FROM vulns GROUP BY reproduced").fetchall()
     return jsonify({
         "total": total, "pushed": pushed,
         "sources": {r["source"]: r["n"] for r in sources},
+        "categories": {r["c"]: r["n"] for r in cat_rows},
+        "reproduced": {str(r["reproduced"]): r["n"] for r in repro_rows},
     })
 
 
@@ -436,6 +440,25 @@ a:hover { text-decoration: underline; }
 .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; white-space: nowrap; }
 @media (max-width: 900px) { .nav-tagline { display: none; } }
 
+/* ── Floating left stats sidebar (fixed; desktop only) ── */
+.side-stats { display: none; }
+@media (min-width: 1100px) {
+  body { padding-left: 152px; }
+  .side-stats {
+    display: block; position: fixed; left: 0; top: 0; width: 152px; height: 100vh;
+    overflow-y: auto; z-index: 25; background: var(--cream);
+    border-right: 1px solid var(--ink); padding: 16px 12px; box-shadow: var(--shadow-soft);
+  }
+  .side-stats h4 { font: 700 10px/1 'Poppins',sans-serif; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); margin: 16px 0 6px; }
+  .side-stats h4:first-child { margin-top: 0; }
+  .side-row { display: flex; justify-content: space-between; align-items: center;
+    padding: 3px 2px; font-size: 13px; }
+  .side-row .lbl { color: var(--body); display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .side-row .num { font-family: 'Unbounded', sans-serif; font-weight: 700; color: var(--ink); font-size: 12px; }
+  .side-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+}
+
 /* ── Pushed toggle (switch) ── */
 .pushed-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink); cursor: pointer; user-select: none; }
 .pushed-toggle input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
@@ -583,6 +606,8 @@ a:hover { text-decoration: underline; }
 </head>
 <body>
 <a class="skip-link" href="#cardList">Skip to results</a>
+
+<aside class="side-stats" id="sideStats" aria-label="Category statistics"></aside>
 
 <nav class="nav">
   <div class="nav-inner">
@@ -810,6 +835,20 @@ async function loadStats() {
       <span class="stat-item"><span class="stat-num">${srcCount}</span><span class="stat-label">Active Sources</span></span>
     `;
     document.getElementById('srcCount').textContent = srcCount;
+
+    // floating left sidebar: category + reproduced counts (global totals)
+    const CAT_ORDER = ['RCE','SQLi','bypass','privilege escalation','data leak','XSS','DoS','SSRF','other'];
+    const CAT_COLOR = {RCE:'#991b1b',SQLi:'#5b21b6',bypass:'#1e40af','privilege escalation':'#9a3412','data leak':'#92400e',XSS:'#9d174d',DoS:'#374151',SSRF:'#166534',other:'#475569'};
+    const cats = d.categories || {};
+    const catRows = CAT_ORDER.filter(c => cats[c])
+      .map(c => `<div class="side-row"><span class="lbl"><span class="side-dot" style="background:${CAT_COLOR[c]||'#999'}"></span>${esc(c)}</span><span class="num">${cats[c]}</span></div>`).join('');
+    const rep = d.reproduced || {};
+    const ss = document.getElementById('sideStats');
+    if (ss) ss.innerHTML = `<h4>Categories</h4>${catRows}` +
+      `<h4>Reproduced</h4>` +
+      `<div class="side-row"><span class="lbl">↻ Testing</span><span class="num">${rep['2']||0}</span></div>` +
+      `<div class="side-row"><span class="lbl">✔ Reproduced</span><span class="num">${rep['1']||0}</span></div>` +
+      `<div class="side-row"><span class="lbl">✘ Failed</span><span class="num">${rep['-1']||0}</span></div>`;
   } catch(e) { console.error('loadStats failed', e); }
 }
 
@@ -930,6 +969,7 @@ async function loadVulns(append=false) {
 }
 
 loadSources(); loadStats(); loadVulns();
+setInterval(loadStats, 60000);  // refresh sidebar + stats as new vulns arrive
 </script>
 <style>
 @keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
