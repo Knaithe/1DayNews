@@ -444,7 +444,7 @@ a:hover { text-decoration: underline; }
 .side-stats { display: none; }
 @media (min-width: 900px) {
   .side-stats {
-    display: block; position: fixed; left: 14px; top: 74px; width: 162px;
+    display: block; position: fixed; left: 14px; top: 50%; transform: translateY(-50%); width: 162px;
     max-height: calc(100vh - 90px); overflow-y: auto; z-index: 30;
     background: var(--white); border: 1px solid var(--ink); border-radius: 14px;
     box-shadow: var(--shadow-hard); padding: 12px 12px 10px;
