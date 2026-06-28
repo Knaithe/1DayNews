@@ -665,7 +665,7 @@ def init_db(conn):
     # enforce hard locks on existing data: GitHub/nday/excluded must not remain pushed
     conn.execute("UPDATE vulns SET pushed=0 WHERE source IN ('GitHub','PoC-GitHub') AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE freshness='nday' AND pushed=1")
-    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND (cvss_pr IS NULL OR cvss_pr != 'N')")
+    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND cvss_pr IS NOT NULL AND cvss_pr != 'N'")
     if "cvss_ui" in _new_cols:
         conn.execute("""UPDATE vulns SET cvss_ui =
             CASE WHEN cvss_vector LIKE '%/UI:N/%' OR cvss_vector LIKE '%/UI:N' THEN 'N'
@@ -1299,7 +1299,10 @@ def _resolve_pushed(verdict, freshness, source, pr=None, ui=None):
     Rules:
       - freshness must be '1day' to push — nday/None/unknown all locked 0
       - GitHub/PoC-GitHub → locked 0, candidate only
-      - CVSS PR must be 'N' (unauthenticated) — None/L/H all locked 0
+      - CVSS PR 'L'/'H' (authenticated) locked 0; 'N' OR unknown allowed.
+        A missing vector (pr=None) is a data gap, not evidence of being
+        authenticated — it must not block an LLM-confirmed 1day vuln.
+        (CVE-2026-12569: a critical RCE with no NVD CVSS was silently dropped.)
       - CVSS UI must be 'N' or unknown — 'R' (requires interaction) locked 0
       - LLM can downgrade any record, but cannot override freshness or source trust
     """
@@ -1308,7 +1311,7 @@ def _resolve_pushed(verdict, freshness, source, pr=None, ui=None):
         return 0
     if source in _GITHUB_SOURCES:
         return 0
-    if pr != "N":
+    if pr not in (None, "N"):
         return 0
     if ui is not None and ui != "N":
         return 0
