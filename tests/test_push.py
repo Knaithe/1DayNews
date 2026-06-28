@@ -53,3 +53,33 @@ def test_llm_downgrade_still_blocked():
     # LLM can downgrade even when all hard constraints pass
     assert vm._resolve_pushed("not_relevant", "1day", "GHSA", "N", "N") == 0
     assert vm._resolve_pushed("noise", "1day", "GHSA", None, None) == 0
+
+
+# --- Telegram 429 retry_after parsing (backlog burst must not loop forever) ---
+
+class _FakeResp:
+    def __init__(self, payload=None, raise_json=False):
+        self.status_code = 429
+        self.text = "err"
+        self._payload = payload
+        self._raise = raise_json
+
+    def json(self):
+        if self._raise:
+            raise ValueError("no json")
+        return self._payload
+
+
+def test_tg_retry_after_parsed():
+    r = _FakeResp({"ok": False, "error_code": 429, "parameters": {"retry_after": 15}})
+    assert vm._tg_retry_after(r) == 15
+
+
+def test_tg_retry_after_missing_parameters():
+    # 429 with no parameters block → 0 (caller falls back to its own backoff)
+    assert vm._tg_retry_after(_FakeResp({"ok": False, "error_code": 429})) == 0
+
+
+def test_tg_retry_after_garbage_json():
+    # non-JSON / unparseable body → 0, never an exception
+    assert vm._tg_retry_after(_FakeResp(raise_json=True)) == 0

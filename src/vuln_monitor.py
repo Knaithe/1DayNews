@@ -1974,28 +1974,53 @@ def format_msg(it, reason):
         f"<i>match: {tg_escape(reason)}</i>"
     )[:4000]
 
+def _tg_retry_after(response):
+    """Seconds Telegram told us to wait on a 429, or 0 if not parseable.
+
+    Telegram returns {"parameters": {"retry_after": <sec>}} on 429. We must
+    honour it — ignoring it turns a burst (e.g. a backfilled backlog) into a
+    permanent 429 loop that never delivers.
+    """
+    try:
+        return int((response.json() or {}).get("parameters", {}).get("retry_after") or 0)
+    except Exception:
+        return 0
+
+
+def _tg_send_one(chat_id, msg, _retried=False):
+    """Send one Telegram message. On 429, sleep retry_after and retry once."""
+    try:
+        r = SESS.post(
+            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": msg,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as ex:
+        log.warning(f"TG err {chat_id}: {type(ex).__name__}")
+        return False
+    if r.status_code == 429 and not _retried:
+        wait = _tg_retry_after(r) or 1
+        log.warning(f"TG push {chat_id} 429: rate-limited, sleeping {wait}s then retrying")
+        time.sleep(wait)
+        return _tg_send_one(chat_id, msg, _retried=True)
+    if r.status_code != 200:
+        log.warning(f"TG push {chat_id} {r.status_code}: {r.text[:200]}")
+        return False
+    return True
+
+
 def send_telegram(msg):
     if not (TG_BOT_TOKEN and TG_CHAT_IDS):
         log.info(f"[DRY] {msg[:500]}")
         return True
     ok = True
     for chat_id in TG_CHAT_IDS:
-        try:
-            r = SESS.post(
-                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": msg,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": False,
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-            if r.status_code != 200:
-                log.warning(f"TG push {chat_id} {r.status_code}: {r.text[:200]}")
-                ok = False
-        except Exception as ex:
-            log.warning(f"TG err {chat_id}: {type(ex).__name__}")
+        if not _tg_send_one(chat_id, msg):
             ok = False
     return ok
 
