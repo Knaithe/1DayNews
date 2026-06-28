@@ -440,18 +440,27 @@ a:hover { text-decoration: underline; }
 .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; white-space: nowrap; }
 @media (max-width: 900px) { .nav-tagline { display: none; } }
 
-/* ── Floating left stats sidebar (fixed; desktop only) ── */
+/* ── Floating stats card (fixed, overlays content; desktop only) ── */
 .side-stats { display: none; }
-@media (min-width: 1100px) {
-  body { padding-left: 152px; }
+@media (min-width: 900px) {
   .side-stats {
-    display: block; position: fixed; left: 0; top: 0; width: 152px; height: 100vh;
-    overflow-y: auto; z-index: 25; background: var(--cream);
-    border-right: 1px solid var(--ink); padding: 16px 12px; box-shadow: var(--shadow-soft);
+    display: block; position: fixed; left: 14px; top: 74px; width: 162px;
+    max-height: calc(100vh - 90px); overflow-y: auto; z-index: 30;
+    background: var(--white); border: 1px solid var(--ink); border-radius: 14px;
+    box-shadow: var(--shadow-hard); padding: 12px 12px 10px;
   }
+  .side-head { display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--sand); }
+  .side-title { font: 700 10px/1 'Poppins',sans-serif; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); }
+  .side-toggle { border: none; background: none; cursor: pointer; color: var(--muted);
+    font-size: 13px; line-height: 1; padding: 0 2px; transition: transform .15s ease; }
+  .side-stats.collapsed .side-body { display: none; }
+  .side-stats.collapsed { width: auto; }
+  .side-stats.collapsed .side-toggle { transform: rotate(-90deg); }
   .side-stats h4 { font: 700 10px/1 'Poppins',sans-serif; text-transform: uppercase;
-    letter-spacing: 1px; color: var(--muted); margin: 16px 0 6px; }
-  .side-stats h4:first-child { margin-top: 0; }
+    letter-spacing: 1px; color: var(--muted); margin: 14px 0 6px; }
+  .side-stats h4:first-child { margin-top: 2px; }
   .side-row { display: flex; justify-content: space-between; align-items: center;
     padding: 3px 2px; font-size: 13px; }
   .side-row .lbl { color: var(--body); display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -607,7 +616,11 @@ a:hover { text-decoration: underline; }
 <body>
 <a class="skip-link" href="#cardList">Skip to results</a>
 
-<aside class="side-stats" id="sideStats" aria-label="Category statistics"></aside>
+<aside class="side-stats" id="sideStats" aria-label="Category statistics">
+  <div class="side-head"><span class="side-title">Stats</span>
+    <button type="button" class="side-toggle" id="sideToggle" aria-label="Collapse stats">▾</button></div>
+  <div class="side-body" id="sideStatsBody"></div>
+</aside>
 
 <nav class="nav">
   <div class="nav-inner">
@@ -836,15 +849,15 @@ async function loadStats() {
     `;
     document.getElementById('srcCount').textContent = srcCount;
 
-    // floating left sidebar: category + reproduced counts (global totals)
+    // floating stats card: category + reproduced counts (global totals)
     const CAT_ORDER = ['RCE','SQLi','bypass','privilege escalation','data leak','XSS','DoS','SSRF','other'];
     const CAT_COLOR = {RCE:'#991b1b',SQLi:'#5b21b6',bypass:'#1e40af','privilege escalation':'#9a3412','data leak':'#92400e',XSS:'#9d174d',DoS:'#374151',SSRF:'#166534',other:'#475569'};
     const cats = d.categories || {};
     const catRows = CAT_ORDER.filter(c => cats[c])
       .map(c => `<div class="side-row"><span class="lbl"><span class="side-dot" style="background:${CAT_COLOR[c]||'#999'}"></span>${esc(c)}</span><span class="num">${cats[c]}</span></div>`).join('');
     const rep = d.reproduced || {};
-    const ss = document.getElementById('sideStats');
-    if (ss) ss.innerHTML = `<h4>Categories</h4>${catRows}` +
+    const body = document.getElementById('sideStatsBody');
+    if (body) body.innerHTML = `<h4>Categories</h4>${catRows}` +
       `<h4>Reproduced</h4>` +
       `<div class="side-row"><span class="lbl">↻ Testing</span><span class="num">${rep['2']||0}</span></div>` +
       `<div class="side-row"><span class="lbl">✔ Reproduced</span><span class="num">${rep['1']||0}</span></div>` +
@@ -968,8 +981,21 @@ async function loadVulns(append=false) {
   }
 }
 
+// Floating stats card: collapse toggle (persisted) — survives 60s reloads since
+// the toggle is a static element, only #sideStatsBody is re-rendered.
+(function(){
+  const ss = document.getElementById('sideStats');
+  const tg = document.getElementById('sideToggle');
+  if (!ss || !tg) return;
+  if (localStorage.getItem('sideStatsCollapsed') === '1') ss.classList.add('collapsed');
+  tg.addEventListener('click', () => {
+    const collapsed = ss.classList.toggle('collapsed');
+    localStorage.setItem('sideStatsCollapsed', collapsed ? '1' : '0');
+  });
+})();
+
 loadSources(); loadStats(); loadVulns();
-setInterval(loadStats, 60000);  // refresh sidebar + stats as new vulns arrive
+setInterval(loadStats, 60000);  // refresh stats card + stats bar as new vulns arrive
 </script>
 <style>
 @keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
