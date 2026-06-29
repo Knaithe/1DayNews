@@ -42,8 +42,13 @@ def test_data_leak_info_disclosure():
     assert _cls("other", "CVE-x sensitive information disclosure of user data") == "data leak"
 
 
-def test_xss():
-    assert _cls("other", "CVE-x stored XSS in comment field") == "XSS"
+def test_xss_in_combined_bucket():
+    # XSS keywords route into the merged XSS/SSRF bucket
+    assert _cls("other", "CVE-x stored XSS in comment field") == "XSS/SSRF"
+
+
+def test_csrf_in_combined_bucket():
+    assert _cls("other", "CVE-x CSRF in admin panel") == "XSS/SSRF"
 
 
 def test_dos():
@@ -102,8 +107,9 @@ def test_bypass_account_takeover():
     assert _cls("other", "CVE-x account takeover via password reset poisoning") == "bypass"
 
 
-def test_ssrf():
-    assert _cls("other", "CVE-x Server-Side Request Forgery (SSRF) in webhook") == "SSRF"
+def test_ssrf_in_combined_bucket():
+    # SSRF keywords route into the merged XSS/SSRF bucket
+    assert _cls("other", "CVE-x Server-Side Request Forgery (SSRF) in webhook") == "XSS/SSRF"
 
 
 def test_excluded_records_are_other():
@@ -150,3 +156,79 @@ def test_rce_memcorruption_elevate_privileges_is_privesc():
 
 def test_plain_rce_title_stays_rce():
     assert _cls("RCE", "Remote Code Execution in nginx via crafted request") == "RCE"
+
+
+# ── escape: sandbox / container / VM / hypervisor escape (distinct from privesc) ──
+
+def test_escape_container():
+    assert _cls("other", "Docker container escape via privileged mode") == "escape"
+
+
+def test_escape_container_hardening_bypass():
+    # GHSA-8qf9-pc52-j7cm trigger sample (title form)
+    assert _cls("other", "Gitea act_runner with Docker backend container hardening bypass") == "escape"
+
+
+def test_escape_act_runner_full_summary():
+    # GHSA-8qf9-pc52-j7cm full advisory text — container appears BEFORE 'escape',
+    # so the bidirectional pattern must catch this even though title lacks 'escape'.
+    title = "[CRITICAL] CVE-2026-58053 Gitea act_runner with the Docker backend"
+    summary = ("Gitea act_runner with the Docker backend (through act 0.262.0) passes a "
+               "workflow's container.options string to the Docker job container's HostConfig "
+               "and, when configured with privileged: false, forces only the Privileged flag "
+               "off while merging options such as --pid=host, --cap-add, and --security-opt "
+               "unchanged. A user who can run a workflow on a Docker-backed runner can create "
+               "a job container with host namespaces and broad capabilities and escape to the "
+               "host as root despite privileged mode being disabled.")
+    assert _cls("other", f"{title}\n{summary}") == "escape"
+
+
+def test_escape_sandbox():
+    assert _cls("other", "Chrome Sandbox Escape via Mojo UAF") == "escape"
+
+
+def test_escape_sandbox_breakout():
+    assert _cls("other", "VM2 Sandbox Breakout Through __lookupGetter__") == "escape"
+
+
+def test_escape_sandbox_bypass_counts_as_escape():
+    # sandbox bypass is semantically a sandbox escape
+    assert _cls("other", "gVisor sandbox bypass via syscall confusion") == "escape"
+
+
+def test_escape_vm_hypervisor():
+    assert _cls("other", "KVM hypervisor escape via virtio") == "escape"
+
+
+def test_escape_guest_to_host():
+    assert _cls("other", "Hyper-V Guest-to-Host Code Execution") == "escape"
+
+
+def test_escape_chinese():
+    assert _cls("other", "Docker 容器逃逸漏洞 CVE-x") == "escape"
+    assert _cls("other", "VirtualBox 虚拟机逃逸") == "escape"
+
+
+def test_escape_overrides_rce():
+    # vuln_type=RCE + sandbox escape language → escape wins over RCE
+    assert _cls("RCE", "vm2 has a Sandbox Escape via Promise Constructor") == "escape"
+
+
+def test_escape_not_lpe_title():
+    # title says Local Privilege Escalation → fall back to existing privesc path,
+    # NOT escape (user instruction: don't conflate with privesc)
+    assert _cls("other",
+                "Docker Desktop Enhanced Container Isolation Exposed Dangerous Function "
+                "Local Privilege Escalation Vulnerability") != "escape"
+
+
+def test_escape_not_llm_jailbreak():
+    # LLM model jailbreak / prompt injection is a different concept
+    assert _cls("other",
+                "LLM Jailbreak via Chain-of-Logic Injection in sandbox prompt") != "escape"
+
+
+def test_escape_overrides_excluded():
+    # escape is checked BEFORE the excluded->other gate; an explicit escape
+    # signal should not be hidden as noise even when score() marks it excluded
+    assert _cls(None, "vm2 has a Sandbox Escape Vulnerability", reason="excluded") == "escape"

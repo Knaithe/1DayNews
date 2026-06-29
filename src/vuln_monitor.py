@@ -878,8 +878,9 @@ def score(text):
 
 # ================== CATEGORY (dashboard filter dimension) ==================
 # One coarser "category" label per record, derived from vuln_type + reason + keywords.
-# Priority (first keyword match wins): RCE > SQLi > privilege escalation > bypass
-# > SSRF > data leak > XSS > DoS > other. Excluded records -> other (they're noise).
+# Priority: escape > RCE (by vuln_type) > excluded->other > keyword classes
+# (SQLi > privilege escalation > bypass > XSS/SSRF > data leak > DoS)
+# > bypass (by vuln_type) > other. Excluded records -> other (they're noise).
 # Memory-corruption (overflow/UAF/OOB) is RCE-class, never DoS. Stored in `category`.
 CATEGORY_KEYWORDS = [
     ("SQLi",                 [r"sql injection", r"\bsqli\b"]),
@@ -888,12 +889,12 @@ CATEGORY_KEYWORDS = [
                               r"access control", r"improper access", r"permission\s*(?:bypass|flaw)",
                               r"\bRBAC\b", r"security (?:feature )?bypass", r"broken access",
                               r"\bIDOR\b", r"insecure direct object", r"account takeover", r"impersonation"]),
-    ("SSRF",                 [r"server[- ]side request forgery", r"\bssrf\b"]),
+    ("XSS/SSRF",             [r"server[- ]side request forgery", r"\bssrf\b",
+                              r"\bxss\b", r"cross[- ]site scripting", r"\bcsrf\b", r"open redirect"]),
     ("data leak",            [r"arbitrary file read", r"file read", r"path traversal", r"directory traversal",
                               r"\bLFI\b", r"local file inclusion", r"information disclosure",
                               r"sensitive (?:data|information)", r"data (?:leak|exposure|disclos)",
                               r"source (?:code )?disclos", r"credential(?:s)? leak", r"任意文件读取", r"信息泄露"]),
-    ("XSS",                  [r"\bxss\b", r"cross[- ]site scripting", r"\bcsrf\b", r"open redirect"]),
     ("DoS",                  [r"\bdos\b", r"denial of service", r"\bcrash(?:es|ed)?\b"]),
 ]
 _MEMCORRUPT_RE = re.compile(
@@ -909,20 +910,64 @@ _TITLE_RCE_RE = re.compile(
     r"|command execution|code execution|arbitrary code",
     re.I)
 
+# sandbox / container / VM escape (a distinct severity dimension above RCE).
+# Matches bidirectionally — escape verb may appear before or after the isolation noun.
+# Examples: 'Sandbox Escape', 'container escape', 'guest-to-host', 'container hardening
+# bypass', 'sandbox bypass', '...job container ... and escape to the host as root...',
+# 容器/沙箱/虚拟机/虚拟化逃逸.
+_ESCAPE_RE = re.compile(
+    # 1. explicit <thing>-escape / <thing>-breakout (hyphen or space, high precision)
+    r"\b(?:container|sandbox(?:ed|ing|es)?|namespace|chroot|hypervisor|"
+    r"kvm|vmware|virtualbox|hyper[- ]?v|qemu|docker|kubernetes|k8s|kata|"
+    r"vm|virtual\s+machine|jail)[\s-]+(?:escape|breakout)\b"
+    # 2. escape/breakout VERB → container/host noun (within 40 chars)
+    r"|\b(?:escape|breakout|escaping|escapes)\b[^\n]{0,40}\b"
+    r"(?:container|sandbox|namespace|chroot|hypervisor|vm|virtual\s+machine|guest|host)\b"
+    # 3. container/sandbox/etc noun → escape/breakout verb (within 80 chars, single line)
+    # catches '...job container with host namespaces ... and escape to the host...'
+    r"|\b(?:container|sandbox|namespace|chroot|hypervisor|vm|virtual\s+machine|guest)\b"
+    r"[^\n]{0,80}\b(?:escape|breakout|escapes|escaping)\b"
+    # 4. canonical phrases
+    r"|\bguest[- ]?to[- ]?host\b"
+    r"|\bcontainer\s+hardening\s+bypass\b"
+    r"|\bcontainer\s+isolation\s+(?:bypass|escape|broken)\b"
+    r"|\b(?:sandbox|sandboxed|sandboxes)\s+(?:bypass|escape|breakout)\b"
+    r"|\bhost\s+namespaces?\s+(?:access|gain|injection|join|breakout)\b"
+    # 5. Chinese
+    r"|容器逃逸|沙箱逃逸|虚拟机?逃逸|虚拟化逃逸|hyper[- ]?v\s*逃逸",
+    re.I)
+# LPE in TITLE → NOT escape (user instruction: do not conflate with privesc).
+# Defers e.g. ZDI 'Docker Desktop ... Local Privilege Escalation' back to the
+# normal privesc path.
+_ESCAPE_TITLE_LPE_RE = re.compile(
+    r"\blocal\s+privilege\s+escalation\b|\blpe\b",
+    re.I)
+# LLM model jailbreak / prompt injection → NOT escape (different concept than
+# sandbox/container escape; the latter crosses a process-isolation boundary).
+_LLM_JAILBREAK_RE = re.compile(
+    r"prompt\s+injection|chain[- ]of[- ]logic|"
+    r"(?:llm|model|chatbot|ai)\s+jailbreak",
+    re.I)
+
 
 def classify_category(vuln_type, text, reason=None):
     """Return one dashboard category label for a record.
 
-    Priority: RCE (by vuln_type) > excluded->other > keyword classes
-    (SQLi > privilege escalation > bypass > SSRF > data leak > XSS > DoS)
+    Priority: escape > RCE (by vuln_type) > excluded->other > keyword classes
+    (SQLi > privilege escalation > bypass > XSS/SSRF > data leak > DoS)
     > bypass (by vuln_type) > other. Memory-corruption is never DoS.
     A vuln scored RCE is re-routed to privilege escalation when its TITLE says so
     (without also claiming code/command execution) or when it's a local
     memory-corruption EoP — so genuine RCEs aren't downgraded.
+    Sandbox/container/VM escape is checked first (more specific severity dimension
+    than RCE); LPE-titled and LLM-jailbreak records are explicitly excluded.
     """
     low = (text or "").lower()
+    title_low = low.split("\n", 1)[0]
+    if _ESCAPE_RE.search(low) and not _ESCAPE_TITLE_LPE_RE.search(title_low) \
+            and not _LLM_JAILBREAK_RE.search(low):
+        return "escape"
     if vuln_type == "RCE":
-        title_low = low.split("\n", 1)[0]
         title_is_privesc = bool(_PRIVESC_RE.search(title_low)) and not _TITLE_RCE_RE.search(title_low)
         if title_is_privesc or (_MEMCORRUPT_RE.search(low) and _PRIVESC_RE.search(low)):
             return "privilege escalation"

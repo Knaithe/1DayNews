@@ -660,13 +660,13 @@ a:hover { text-decoration: underline; }
 
 <div class="filter-row" id="typeRow" role="group" aria-label="Filter by category">
   <button type="button" class="cat-pill" data-cat="">All</button>
+  <button type="button" class="cat-pill active" data-cat="escape">escape</button>
   <button type="button" class="cat-pill active" data-cat="RCE">RCE</button>
   <button type="button" class="cat-pill" data-cat="SQLi">SQLi</button>
   <button type="button" class="cat-pill" data-cat="privilege escalation">privilege escalation</button>
   <button type="button" class="cat-pill active" data-cat="bypass">bypass</button>
-  <button type="button" class="cat-pill" data-cat="SSRF">SSRF</button>
+  <button type="button" class="cat-pill" data-cat="XSS/SSRF">XSS/SSRF</button>
   <button type="button" class="cat-pill" data-cat="data leak">data leak</button>
-  <button type="button" class="cat-pill" data-cat="XSS">XSS</button>
   <button type="button" class="cat-pill" data-cat="DoS">DoS</button>
   <button type="button" class="cat-pill" data-cat="other">other</button>
 </div>
@@ -721,19 +721,19 @@ const SRC_STYLE = {
   ThreatBook:{bg:"#E0F2FE",fg:"#0c4a6e"}, GitHub:   {bg:"#EDE9FE",fg:"#5b21b6"},
 };
 const CATEGORY_STYLE = {
+  "escape":                {bg:"#FFE4E6",fg:"#9f1239"},
   "RCE":                   {bg:"#FEE2E2",fg:"#991b1b"},
   "SQLi":                  {bg:"#EDE9FE",fg:"#5b21b6"},
   "bypass":                {bg:"#DBEAFE",fg:"#1e40af"},
   "privilege escalation":  {bg:"#FFEDD5",fg:"#9a3412"},
-  "SSRF":                  {bg:"#DCFCE7",fg:"#166534"},
+  "XSS/SSRF":              {bg:"#DCFCE7",fg:"#166534"},
   "data leak":             {bg:"#FEF3C7",fg:"#92400e"},
-  "XSS":                   {bg:"#FCE7F3",fg:"#9d174d"},
   "DoS":                   {bg:"#E5E7EB",fg:"#374151"},
   "other":                 {bg:"#F1F5F9",fg:"#475569"},
 };
 
 let debounceTimer, activeDays = '7', activePR = 'N', activeUI = 'N', activeRepro = '';
-const activeCats = new Set(['RCE','bypass']);
+const activeCats = new Set(['escape','RCE','bypass']);
 const activeSevs = new Set(['critical','high']);
 const activeSrcs = new Set();
 const activeExcludes = new Set(['chrome','firefox','linux kernel','wordpress','android','adobe']);
@@ -850,8 +850,8 @@ async function loadStats() {
     document.getElementById('srcCount').textContent = srcCount;
 
     // floating stats card: category + reproduced counts (global totals)
-    const CAT_ORDER = ['RCE','SQLi','bypass','privilege escalation','data leak','XSS','DoS','SSRF','other'];
-    const CAT_COLOR = {RCE:'#991b1b',SQLi:'#5b21b6',bypass:'#1e40af','privilege escalation':'#9a3412','data leak':'#92400e',XSS:'#9d174d',DoS:'#374151',SSRF:'#166534',other:'#475569'};
+    const CAT_ORDER = ['escape','RCE','SQLi','bypass','privilege escalation','data leak','XSS/SSRF','DoS','other'];
+    const CAT_COLOR = {escape:'#9f1239',RCE:'#991b1b',SQLi:'#5b21b6',bypass:'#1e40af','privilege escalation':'#9a3412','data leak':'#92400e','XSS/SSRF':'#166534',DoS:'#374151',other:'#475569'};
     const cats = d.categories || {};
     const catRows = CAT_ORDER.filter(c => cats[c])
       .map(c => `<div class="side-row"><span class="lbl"><span class="side-dot" style="background:${CAT_COLOR[c]||'#999'}"></span>${esc(c)}</span><span class="num">${cats[c]}</span></div>`).join('');
