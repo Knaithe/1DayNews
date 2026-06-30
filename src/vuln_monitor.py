@@ -29,6 +29,7 @@ import logging
 import platform
 import sqlite3
 import argparse
+import defusedxml.ElementTree as ET
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -127,18 +128,16 @@ ALERT_COOLDOWN_SEC = 3600
 
 RSS_FEEDS = [
     # ---- vendor PSIRT ----
-    # Citrix, F5, Assetnote intentionally omitted: no working RSS as of 2026.
-    #   Citrix — Salesforce SPA (covered by watchTowr + KEV JSON).
-    #   F5     — my.f5.com SPA (no working RSS as of 2026).
-    #   Assetnote — dropped RSS after Searchlight acquisition.
-    ("Fortinet",    "https://www.fortiguard.com/rss/ir.xml"),
+    # Citrix/F5/Assetnote: no working RSS as of 2026.
+    # Fortinet/MSRC/watchTowr: their RSS froze in 2026-Q2 (still 200 but serves a
+    #   months-old snapshot) — moved to dedicated fetchers below
+    #   (fetch_fortinet / fetch_msrc / fetch_watchtowr).
     ("PaloAlto",    "https://security.paloaltonetworks.com/rss.xml"),
     ("Cisco",       "https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml"),
-    ("MSRC",        "https://api.msrc.microsoft.com/update-guide/rss"),
     # ---- exploit aggregator (low quality but unique CVE coverage, enriched via NVD backfill) ----
     ("Sploitus_Citrix",   "https://sploitus.com/rss?query=citrix"),
     # ---- research teams (vuln-focused, not blogs/marketing) ----
-    ("watchTowr",   "https://labs.watchtowr.com/rss/"),
+    # watchTowr moved to fetch_watchtowr (posts sitemap) — its RSS froze in 2026-Q2.
     ("ZDI",         "https://www.zerodayinitiative.com/rss/published/"),
     ("Horizon3",    "https://www.horizon3.ai/feed/"),
     ("Rapid7",      "https://www.rapid7.com/blog/rss/"),
@@ -161,6 +160,18 @@ CHAITIN_API_URL = "https://stack.chaitin.com/api/v2/vuln/list/"
 
 # ThreatBook (微步在线) — public homePage endpoint, returns premium + highrisk vulns.
 THREATBOOK_API_URL = "https://x.threatbook.com/v5/node/vul_module/homePage"
+
+# Microsoft MSRC — CVRF XML API (the RSS feed was deprecated in 2026 and now
+# serves a frozen months-old snapshot).
+MSRC_CVRF_API      = "https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/{alias}"
+_MONTH_ABBR        = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+# Fortinet PSIRT — ir.xml RSS froze in 2026-Q2 (serves an April snapshot);
+# scrape the live portal HTML for FG-IR-* advisories instead.
+FORTINET_PSIRT_URL = "https://www.fortiguard.com/psirt"
+# watchTowr labs — RSS froze in 2026-Q2; the posts sitemap is live and each
+# vulnerability writeup's URL slug carries its CVE-Id (e.g. ...-cve-2026-8037/).
+WATCHTOWR_SITEMAP  = "https://labs.watchtowr.com/sitemap-posts.xml"
 
 
 def _ab(acro):
@@ -879,7 +890,7 @@ def score(text):
 # ================== CATEGORY (dashboard filter dimension) ==================
 # One coarser "category" label per record, derived from vuln_type + reason + keywords.
 # Priority: escape > RCE (by vuln_type) > excluded->other > keyword classes
-# (SQLi > privilege escalation > bypass > XSS/SSRF > data leak > DoS)
+# (SQLi > privilege escalation > bypass > data leak > XSS/SSRF > DoS)
 # > bypass (by vuln_type) > other. Excluded records -> other (they're noise).
 # Memory-corruption (overflow/UAF/OOB) is RCE-class, never DoS. Stored in `category`.
 CATEGORY_KEYWORDS = [
@@ -889,12 +900,12 @@ CATEGORY_KEYWORDS = [
                               r"access control", r"improper access", r"permission\s*(?:bypass|flaw)",
                               r"\bRBAC\b", r"security (?:feature )?bypass", r"broken access",
                               r"\bIDOR\b", r"insecure direct object", r"account takeover", r"impersonation"]),
-    ("XSS/SSRF",             [r"server[- ]side request forgery", r"\bssrf\b",
-                              r"\bxss\b", r"cross[- ]site scripting", r"\bcsrf\b", r"open redirect"]),
     ("data leak",            [r"arbitrary file read", r"file read", r"path traversal", r"directory traversal",
                               r"\bLFI\b", r"local file inclusion", r"information disclosure",
                               r"sensitive (?:data|information)", r"data (?:leak|exposure|disclos)",
                               r"source (?:code )?disclos", r"credential(?:s)? leak", r"任意文件读取", r"信息泄露"]),
+    ("XSS/SSRF",             [r"server[- ]side request forgery", r"\bssrf\b",
+                              r"\bxss\b", r"cross[- ]site scripting", r"\bcsrf\b", r"open redirect"]),
     ("DoS",                  [r"\bdos\b", r"denial of service", r"\bcrash(?:es|ed)?\b"]),
 ]
 _MEMCORRUPT_RE = re.compile(
@@ -920,12 +931,20 @@ _ESCAPE_RE = re.compile(
     r"\b(?:container|sandbox(?:ed|ing|es)?|namespace|chroot|hypervisor|"
     r"kvm|vmware|virtualbox|hyper[- ]?v|qemu|docker|kubernetes|k8s|kata|"
     r"vm|virtual\s+machine|jail)[\s-]+(?:escape|breakout)\b"
-    # 2. escape/breakout VERB → container/host noun (within 40 chars)
-    r"|\b(?:escape|breakout|escaping|escapes)\b[^\n]{0,40}\b"
-    r"(?:container|sandbox|namespace|chroot|hypervisor|vm|virtual\s+machine|guest|host)\b"
-    # 3. container/sandbox/etc noun → escape/breakout verb (within 80 chars, single line)
-    # catches '...job container with host namespaces ... and escape to the host...'
-    r"|\b(?:container|sandbox|namespace|chroot|hypervisor|vm|virtual\s+machine|guest)\b"
+    # 2. escape/breakout VERB governed by a motion preposition (to/from/into/out of)
+    #    OR directly taking a strong isolation noun. Requiring a governing preposition
+    #    (or a strong-noun object) disambiguates the isolation-boundary sense from
+    #    the quoting/encoding sense: 'escape to the host' / 'break out of the
+    #    container' / 'escaping the sandbox' match, but 'escape sequence in the host
+    #    header' / 'escape shell args' / 'escape the SQL quoting' do not.
+    r"|\b(?:escape|escapes|escaping|breakouts?|break(?:ing)?\s+out)\b\s+"
+    r"(?:(?:to|from|into|out\s+of)\s+(?:the\s+|a\s+)?"
+    r"(?:container|sandbox|namespace|chroot|hypervisor|host|vm|virtual\s+machine|guest)"
+    r"|(?:the\s+|a\s+)?(?:container|sandbox|namespace|chroot|hypervisor|virtual\s+machine))\b"
+    # 3. isolation noun → escape/breakout verb (within 80 chars, single line).
+    #    Strong nouns only — host/vm/guest excluded here (too generic without a
+    #    governing preposition; covered by branch 2 when led by to/from).
+    r"|\b(?:container|sandbox|namespace|chroot|hypervisor|virtual\s+machine)\b"
     r"[^\n]{0,80}\b(?:escape|breakout|escapes|escaping)\b"
     # 4. canonical phrases
     r"|\bguest[- ]?to[- ]?host\b"
@@ -933,8 +952,10 @@ _ESCAPE_RE = re.compile(
     r"|\bcontainer\s+isolation\s+(?:bypass|escape|broken)\b"
     r"|\b(?:sandbox|sandboxed|sandboxes)\s+(?:bypass|escape|breakout)\b"
     r"|\bhost\s+namespaces?\s+(?:access|gain|injection|join|breakout)\b"
-    # 5. Chinese
-    r"|容器逃逸|沙箱逃逸|虚拟机?逃逸|虚拟化逃逸|hyper[- ]?v\s*逃逸",
+    # 5. Chinese — full CJK clauses + a Latin noun glued directly to 逃逸
+    #    (\b does not fire at the CJK boundary, so 'container逃逸' needs its own alt)
+    r"|容器逃逸|沙箱逃逸|虚拟机?逃逸|虚拟化逃逸|hyper[- ]?v\s*逃逸"
+    r"|(?:container|sandbox|hypervisor|vm|docker|kvm|qemu|virtualbox|virtual\s+machine|jail)逃逸",
     re.I)
 # LPE in TITLE → NOT escape (user instruction: do not conflate with privesc).
 # Defers e.g. ZDI 'Docker Desktop ... Local Privilege Escalation' back to the
@@ -954,7 +975,7 @@ def classify_category(vuln_type, text, reason=None):
     """Return one dashboard category label for a record.
 
     Priority: escape > RCE (by vuln_type) > excluded->other > keyword classes
-    (SQLi > privilege escalation > bypass > XSS/SSRF > data leak > DoS)
+    (SQLi > privilege escalation > bypass > data leak > XSS/SSRF > DoS)
     > bypass (by vuln_type) > other. Memory-corruption is never DoS.
     A vuln scored RCE is re-routed to privilege escalation when its TITLE says so
     (without also claiming code/command execution) or when it's a local
@@ -964,8 +985,15 @@ def classify_category(vuln_type, text, reason=None):
     """
     low = (text or "").lower()
     title_low = low.split("\n", 1)[0]
-    if _ESCAPE_RE.search(low) and not _ESCAPE_TITLE_LPE_RE.search(title_low) \
-            and not _LLM_JAILBREAK_RE.search(low):
+    # escape wins unless the TITLE brands it something else: a plain LPE with no
+    # escape token (→ privesc path) or an LLM jailbreak. Both are title-level
+    # signals, so they are checked on title_low only — a body mention of "prompt
+    # injection"/"jailbreak" must not suppress a real sandbox/container escape.
+    title_has_lpe = bool(_ESCAPE_TITLE_LPE_RE.search(title_low))
+    title_is_escape = bool(_ESCAPE_RE.search(title_low))
+    if (_ESCAPE_RE.search(low)
+            and not (title_has_lpe and not title_is_escape)
+            and not _LLM_JAILBREAK_RE.search(title_low)):
         return "escape"
     if vuln_type == "RCE":
         title_is_privesc = bool(_PRIVESC_RE.search(title_low)) and not _TITLE_RCE_RE.search(title_low)
@@ -1967,6 +1995,156 @@ def fetch_github_advisories():
     return out
 
 
+def _parse_msrc_cvrf(xml_bytes):
+    """Parse a MSRC CVRF security bundle (XML) into CVE-level items."""
+    out = []
+    try:
+        root = ET.fromstring(xml_bytes)
+    except Exception:
+        return out
+    for vuln in root.findall(".//{*}Vulnerability"):
+        cve_el = vuln.find("{*}CVE")
+        cve = (cve_el.text or "").strip() if cve_el is not None else ""
+        if not re.match(r"^CVE-\d{4}-\d+$", cve):
+            continue
+        title_el = vuln.find("{*}Title")
+        title = (title_el.text or "").strip() if title_el is not None else ""
+        full = f"[MSRC] {cve} {title}".strip()
+        out.append({
+            "source": "MSRC",
+            "title": full[:300],
+            "link": f"https://msrc.microsoft.com/update-guide/vulnerability/{cve}",
+            "summary": title[:500],
+            "text": f"{full}\n{title}",
+        })
+    return out
+
+
+def fetch_msrc():
+    """Microsoft MSRC — CVRF XML API. The RSS feed was deprecated in 2026 (it now
+    serves a frozen April snapshot). The /updates list is unsorted and polluted
+    with Mariner notes, so we fetch the last 2 real monthly bundles by constructed
+    alias (YYYY-Mon) and parse the CVRF XML. Each bundle carries 1000+ CVEs;
+    score() filters the noise.
+    """
+    out = []
+    now = datetime.now(timezone.utc)
+    aliases = []
+    for back in range(0, 2):  # current + previous month
+        y, m = now.year, now.month - back
+        while m <= 0:
+            m += 12
+            y -= 1
+        aliases.append(f"{y}-{_MONTH_ABBR[m - 1]}")
+    for alias in aliases:
+        try:
+            r = _get_with_retry(SESS, MSRC_CVRF_API.format(alias=alias),
+                                timeout=90, headers={"User-Agent": "vuln-monitor/1.0"})
+            if r.status_code != 200:
+                continue
+            out.extend(_parse_msrc_cvrf(r.content))
+        except Exception as ex:
+            log.warning(f"MSRC {alias} err: {ex}")
+    seen, deduped = set(), []
+    for it in out:
+        if it["title"] in seen:
+            continue
+        seen.add(it["title"])
+        deduped.append(it)
+    return deduped
+
+
+_FORTINET_ROW_RE = re.compile(
+    r"<div class=\"row\" onclick=\"location\.href\s*=\s*'/psirt/(FG-IR-\d+-\d+)'\">"
+    r".*?<b>FG-IR-\d+-\d+\s*(.*?)</b>"
+    r".*?<b class=\"cve\">(CVE-[\d-]+)</b>"
+    r"(?:.*?<small>(.*?)</small>)?",
+    re.S)
+
+
+def _parse_fortinet_psirt(html):
+    """Parse the Fortinet PSIRT portal HTML into FG-IR advisory items.
+
+    Only advisories that carry a CVE are returned (about half of them); the rest
+    have no CVE to track and are skipped.
+    """
+    out = []
+    for m in _FORTINET_ROW_RE.finditer(html):
+        fgir, title, cve, desc = (m.group(1), m.group(2).strip(), m.group(3),
+                                  (m.group(4) or ""))
+        desc = re.sub(r"<[^>]+>", " ", desc).strip()
+        full = f"[Fortinet] {fgir} {cve} {title}".strip()
+        out.append({
+            "source": "Fortinet",
+            "title": full[:300],
+            "link": f"https://www.fortiguard.com/psirt/{fgir}",
+            "summary": desc[:500],
+            "text": f"{full}\n{desc}",
+        })
+    return out
+
+
+def fetch_fortinet():
+    """Fortinet PSIRT — the ir.xml RSS froze in 2026-Q2 (serves an April snapshot).
+    Scrape the live portal HTML for FG-IR-* advisories instead.
+    """
+    out = []
+    try:
+        r = _get_with_retry(SESS, FORTINET_PSIRT_URL, timeout=REQUEST_TIMEOUT,
+                            headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
+        if r.status_code != 200:
+            log.warning(f"Fortinet HTTP {r.status_code}")
+            return out
+        out = _parse_fortinet_psirt(r.text)
+    except Exception as ex:
+        log.warning(f"Fortinet err: {ex}")
+    return out
+
+
+_WATCHTOWR_ENTRY_RE = re.compile(
+    r"<url>\s*<loc>([^<]+)</loc>\s*<lastmod>([^<]+)</lastmod>", re.S)
+
+
+def _parse_watchtowr_sitemap(xml):
+    """Parse watchTowr's posts sitemap into items, keeping only CVE-tagged posts."""
+    out = []
+    for loc, lastmod in _WATCHTOWR_ENTRY_RE.findall(xml):
+        m = re.search(r"cve-(\d{4}-\d+)", loc, re.I)
+        if not m:
+            continue  # non-vulnerability blog post
+        cve = "CVE-" + m.group(1)
+        slug = loc.rstrip("/").split("/")[-1]
+        slug = re.sub(r"-cve-\d+-\d+", "", slug, flags=re.I).replace("-", " ").strip()
+        pub = lastmod[:10]
+        full = f"[watchTowr] {cve} {slug}"
+        out.append({
+            "source": "watchTowr",
+            "title": full[:300],
+            "link": loc,
+            "summary": f"published: {pub}. {slug}",
+            "text": f"{full}\n{slug}",
+            "_pub_date": pub,
+        })
+    return out
+
+
+def fetch_watchtowr():
+    """watchTowr labs — RSS froze in 2026-Q2; the posts sitemap is live and each
+    vulnerability writeup's URL slug carries its CVE-Id (e.g. ...-cve-2026-8037/).
+    """
+    out = []
+    try:
+        r = _get_with_retry(SESS, WATCHTOWR_SITEMAP, timeout=REQUEST_TIMEOUT,
+                            headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            log.warning(f"watchTowr HTTP {r.status_code}")
+            return out
+        out = _parse_watchtowr_sitemap(r.text)
+    except Exception as ex:
+        log.warning(f"watchTowr err: {ex}")
+    return out
+
+
 def _fetch_all_sources():
     """Collect items from all configured sources. Used by _run() and cmd_rebuild()."""
     items = []
@@ -1978,7 +2156,9 @@ def _fetch_all_sources():
     for name, func in [("CISA_KEV", fetch_kev_json), ("Chaitin", fetch_chaitin),
                         ("ThreatBook", fetch_threatbook),
                         ("PoC-GitHub", fetch_poc_in_github),
-                        ("GHSA", fetch_github_advisories)]:
+                        ("GHSA", fetch_github_advisories),
+                        ("MSRC", fetch_msrc), ("Fortinet", fetch_fortinet),
+                        ("watchTowr", fetch_watchtowr)]:
         batch = func()
         counts[name] = len(batch)
         items.extend(batch)

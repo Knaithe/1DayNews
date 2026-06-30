@@ -215,11 +215,11 @@ def test_escape_overrides_rce():
 
 
 def test_escape_not_lpe_title():
-    # title says Local Privilege Escalation → fall back to existing privesc path,
-    # NOT escape (user instruction: don't conflate with privesc)
+    # title is a plain Local Privilege Escalation with NO escape token → fall back
+    # to the existing privesc path (user instruction: don't conflate plain LPE with escape)
     assert _cls("other",
                 "Docker Desktop Enhanced Container Isolation Exposed Dangerous Function "
-                "Local Privilege Escalation Vulnerability") != "escape"
+                "Local Privilege Escalation Vulnerability") == "privilege escalation"
 
 
 def test_escape_not_llm_jailbreak():
@@ -232,3 +232,53 @@ def test_escape_overrides_excluded():
     # escape is checked BEFORE the excluded->other gate; an explicit escape
     # signal should not be hidden as noise even when score() marks it excluded
     assert _cls(None, "vm2 has a Sandbox Escape Vulnerability", reason="excluded") == "escape"
+
+
+# ── escape regex tightening: ordinary "escape" verbs must NOT hijack other categories ──
+# 'escape' is also the standard verb for URL/HTML/quote encoding; bare proximity
+# to host/vm/guest must not re-classify XSS / SQLi / path-traversal as escape.
+
+def test_escape_fp_url_escape_near_host():
+    # URL escape SEQUENCES near 'host header' — encoding, not isolation escape
+    assert _cls("XSS", "CVE-x URL escape sequence mishandling in the Host header parser") != "escape"
+
+
+def test_escape_fp_escape_quoting_near_guest_host():
+    # 'escape the SQL quoting' + guest/host nouns — SQLi, not escape
+    assert _cls("SQLi", "CVE-x escape the SQL quoting and reach the guest DB on the host") != "escape"
+
+
+def test_escape_fp_vm_snapshot_escape_args():
+    # 'escape shell arguments' + 'VM snapshot' — arg handling, not VM escape
+    assert _cls("other", "CVE-x fails to escape shell arguments in the VM snapshot service") != "escape"
+
+
+def test_escape_fp_percent_escape_host_header():
+    assert _cls("other", "CVE-x uses percent-escape to smuggle a host header") != "escape"
+
+
+# ── LLM-jailbreak guard is TITLE-scoped: a body mention must not suppress a real escape ──
+
+def test_escape_not_suppressed_by_incidental_llm_jailbreak_in_body():
+    title = "Vertex AI Sandbox Escape"
+    body = "A sandbox escape in the agent runtime. May also be chained with LLM jailbreak techniques."
+    assert _cls("RCE", f"{title}\n{body}") == "escape"
+
+
+# ── Latin isolation noun glued to a CJK escape verb (\b fails at the CJK boundary) ──
+
+def test_escape_latin_noun_cjk_verb():
+    assert _cls("other", "Docker container逃逸漏洞 CVE-x") == "escape"
+
+
+# ── data-leak precedence restored over the merged XSS/SSRF bucket ──
+
+def test_data_leak_beats_xss_when_both_present():
+    # info-disclosure + XSS -> data leak (pre-merge behavior), not XSS/SSRF
+    assert _cls("other", "CVE-x information disclosure via stored XSS in admin panel") == "data leak"
+
+
+# ── dual-titled '... and Sandbox Escape' is an escape, not privesc ──
+
+def test_escape_with_lpe_in_title_still_escape():
+    assert _cls("RCE", "VMware Tools Local Privilege Escalation and Sandbox Escape") == "escape"
