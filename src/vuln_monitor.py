@@ -1641,14 +1641,36 @@ def _is_fresh(source, text):
 
     Returns (fresh: bool, pub_date_str: str or None, reason: str).
     reason explains WHY: old_cve / nvd_60d / high_trust_source / no_cve_low_trust.
+
+    FRESH_SOURCES (vendor PSIRT / research feeds) are trusted to disclose only
+    new issues, so their verdict is 'fresh unless every CVE is >1yr old' — and
+    that check needs only the CVE id, NOT NVD. Skipping the per-CVE NVD lookup
+    here is what keeps a multi-thousand-CVE MSRC bundle from stalling the whole
+    run on rate-limited NVD calls (and breaching systemd's RuntimeMaxSec).
     """
     cves = CVE_RE.findall(text)
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=_FRESHNESS_DAYS)
-    year = now.year
+    year = datetime.now(timezone.utc).year
+
+    def _all_old():
+        if not cves:
+            return False
+        for c in cves:
+            try:
+                if int(c.split("-")[1]) >= year - 1:
+                    return False
+            except (IndexError, ValueError):
+                return False
+        return True
+
+    if source in FRESH_SOURCES:
+        if _all_old():
+            return False, None, "old_cve"
+        return True, None, "high_trust_source"
+
+    # low-trust sources: require per-CVE NVD confirmation (year alone isn't trusted)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_FRESHNESS_DAYS)
     latest_pub_str = None
     has_nvd_confirmed_recent = False
-    has_recent_year = False
     for c in cves:
         pub_dt, pub_str = _nvd_published_date(c.upper())
         if pub_str:
@@ -1656,35 +1678,10 @@ def _is_fresh(source, text):
                 latest_pub_str = pub_str
             if pub_dt and pub_dt >= cutoff:
                 has_nvd_confirmed_recent = True
-        else:
-            # NVD unavailable — track year for high-trust fallback only
-            try:
-                cve_year = int(c.split("-")[1])
-                if cve_year >= year - 1:
-                    has_recent_year = True
-            except (IndexError, ValueError):
-                pass
-    # hard cutoff: if ALL CVEs are > 1 year old → nday
-    if cves:
-        all_old = True
-        for c in cves:
-            try:
-                cve_year = int(c.split("-")[1])
-                if cve_year >= year - 1:
-                    all_old = False
-                    break
-            except (IndexError, ValueError):
-                all_old = False
-                break
-        if all_old:
-            return False, latest_pub_str, "old_cve"
-    # high-trust sources: trust timeliness (NVD confirmed OR recent CVE year)
-    if source in FRESH_SOURCES:
-        return True, latest_pub_str, "high_trust_source"
-    # low-trust sources: no CVE = can't verify
     if not cves:
         return False, None, "no_cve_low_trust"
-    # low-trust with CVE: require actual NVD confirmation, year fallback not trusted
+    if _all_old():
+        return False, latest_pub_str, "old_cve"
     if has_nvd_confirmed_recent:
         return True, latest_pub_str, "nvd_60d"
     return False, latest_pub_str, "nvd_60d"
