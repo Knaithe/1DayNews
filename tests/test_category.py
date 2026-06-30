@@ -154,6 +154,13 @@ def test_rce_memcorruption_elevate_privileges_is_privesc():
                        "allows an authorized attacker to elevate privileges locally.") == "privilege escalation"
 
 
+def test_rce_memcorruption_with_rce_title_stays_rce():
+    # heap overflow whose TITLE says RCE must NOT be downgraded to privesc,
+    # even when the body mentions privilege escalation
+    assert _cls("RCE", "Heap Buffer Overflow RCE in Linux Kernel\n"
+                       "An attacker can elevate privileges via a crafted packet.") == "RCE"
+
+
 def test_plain_rce_title_stays_rce():
     assert _cls("RCE", "Remote Code Execution in nginx via crafted request") == "RCE"
 

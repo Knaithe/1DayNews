@@ -214,7 +214,8 @@ RCE_PATTERNS = [
     r"任意文件上传", r"文件上传漏洞",
     r"(?:path|directory) traversal.*(?:write|overwrite|exec|upload|\bRCE\b)",
     r"webshell",
-    r"arbitrary file write", r"(?:create|overwrite|truncate) arbitrary files?",
+    r"arbitrary file write.*(?:exec|\bRCE\b|code|service|root|shell)",
+    r"(?:create|overwrite|truncate) arbitrary files?.*(?:exec|\bRCE\b|code|service|root|shell)",
     # in-the-wild / value tags
     r"exploited in the wild", r"active(ly)? exploited", r"in[- ]the[- ]wild exploit",
     r"zero[- ]?day\b", r"\b0[- ]?day\b",
@@ -676,7 +677,7 @@ def init_db(conn):
     # enforce hard locks on existing data: GitHub/nday/excluded must not remain pushed
     conn.execute("UPDATE vulns SET pushed=0 WHERE source IN ('GitHub','PoC-GitHub') AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE freshness='nday' AND pushed=1")
-    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND cvss_pr IS NOT NULL AND cvss_pr != 'N'")
+    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND (cvss_pr IS NULL OR cvss_pr != 'N')")
     if "cvss_ui" in _new_cols:
         conn.execute("""UPDATE vulns SET cvss_ui =
             CASE WHEN cvss_vector LIKE '%/UI:N/%' OR cvss_vector LIKE '%/UI:N' THEN 'N'
@@ -997,7 +998,7 @@ def classify_category(vuln_type, text, reason=None):
         return "escape"
     if vuln_type == "RCE":
         title_is_privesc = bool(_PRIVESC_RE.search(title_low)) and not _TITLE_RCE_RE.search(title_low)
-        if title_is_privesc or (_MEMCORRUPT_RE.search(low) and _PRIVESC_RE.search(low)):
+        if title_is_privesc or (_MEMCORRUPT_RE.search(low) and _PRIVESC_RE.search(low) and not _TITLE_RCE_RE.search(title_low)):
             return "privilege escalation"
         return "RCE"
     if reason == "excluded":
@@ -1372,10 +1373,7 @@ def _resolve_pushed(verdict, freshness, source, pr=None, ui=None):
     Rules:
       - freshness must be '1day' to push — nday/None/unknown all locked 0
       - GitHub/PoC-GitHub → locked 0, candidate only
-      - CVSS PR 'L'/'H' (authenticated) locked 0; 'N' OR unknown allowed.
-        A missing vector (pr=None) is a data gap, not evidence of being
-        authenticated — it must not block an LLM-confirmed 1day vuln.
-        (CVE-2026-12569: a critical RCE with no NVD CVSS was silently dropped.)
+      - CVSS PR must be 'N' (unauthenticated) — None/L/H all locked 0
       - CVSS UI must be 'N' or unknown — 'R' (requires interaction) locked 0
       - LLM can downgrade any record, but cannot override freshness or source trust
     """
@@ -1384,7 +1382,7 @@ def _resolve_pushed(verdict, freshness, source, pr=None, ui=None):
         return 0
     if source in _GITHUB_SOURCES:
         return 0
-    if pr not in (None, "N"):
+    if pr != "N":
         return 0
     if ui is not None and ui != "N":
         return 0
@@ -1640,44 +1638,21 @@ def _is_fresh(source, text):
     """Is this a fresh vulnerability disclosure (1day), not an nday rehash?
 
     Returns (fresh: bool, pub_date_str: str or None, reason: str).
-    reason explains WHY: old_cve / nvd_60d / high_trust_source / no_cve_low_trust.
+    reason explains WHY: old_cve / nvd_60d / high_trust_source / nvd_stale /
+    no_cve_low_trust.
 
-    FRESH_SOURCES (vendor PSIRT / research feeds) are trusted to disclose only
-    new issues, so their verdict is 'fresh unless every CVE is >1yr old' — and
-    that check needs only the CVE id, NOT NVD. Skipping the per-CVE NVD lookup
-    here is what keeps a multi-thousand-CVE MSRC bundle from stalling the whole
-    run on rate-limited NVD calls (and breaching systemd's RuntimeMaxSec).
+    ALL sources go through NVD verification — even high-trust vendor PSIRTs.
+    An extra layer of checking never hurts: if a vuln is genuinely fresh, NVD
+    will confirm it. High-trust sources fall back to CVE-year when NVD has no
+    data yet (new CVEs not indexed). Low-trust sources require NVD confirmation.
     """
     cves = CVE_RE.findall(text)
-    year = datetime.now(timezone.utc).year
-
-    def _all_old():
-        if not cves:
-            return False
-        for c in cves:
-            try:
-                if int(c.split("-")[1]) >= year - 1:
-                    return False
-            except (IndexError, ValueError):
-                return False
-        return True
-
-    if source in FRESH_SOURCES:
-        if _all_old():
-            return False, None, "old_cve"
-        # extract CVE year as rough published date (NVD backfill will refine it later)
-        pub_str = None
-        if cves:
-            try:
-                pub_str = f"{cves[0].split('-')[1]}-01-01"
-            except (IndexError, ValueError):
-                pass
-        return True, pub_str, "high_trust_source"
-
-    # low-trust sources: require per-CVE NVD confirmation (year alone isn't trusted)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_FRESHNESS_DAYS)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=_FRESHNESS_DAYS)
+    year = now.year
     latest_pub_str = None
     has_nvd_confirmed_recent = False
+    has_recent_year = False
     for c in cves:
         pub_dt, pub_str = _nvd_published_date(c.upper())
         if pub_str:
@@ -1685,10 +1660,40 @@ def _is_fresh(source, text):
                 latest_pub_str = pub_str
             if pub_dt and pub_dt >= cutoff:
                 has_nvd_confirmed_recent = True
+        else:
+            try:
+                cve_year = int(c.split("-")[1])
+                if cve_year >= year - 1:
+                    has_recent_year = True
+            except (IndexError, ValueError):
+                pass
+    # hard cutoff: if ALL CVEs are > 1 year old → nday
+    if cves:
+        all_old = True
+        for c in cves:
+            try:
+                cve_year = int(c.split("-")[1])
+                if cve_year >= year - 1:
+                    all_old = False
+                    break
+            except (IndexError, ValueError):
+                all_old = False
+                break
+        if all_old:
+            return False, latest_pub_str, "old_cve"
+    # high-trust sources: NVD confirmed, or year fallback when NVD unavailable
+    if source in FRESH_SOURCES:
+        if has_nvd_confirmed_recent:
+            return True, latest_pub_str, "high_trust_source"
+        if has_recent_year:
+            return True, latest_pub_str, "high_trust_source"
+        if not cves:
+            return True, latest_pub_str, "high_trust_source"
+        return False, latest_pub_str, "nvd_stale"
+    # low-trust sources: no CVE = can't verify
     if not cves:
         return False, None, "no_cve_low_trust"
-    if _all_old():
-        return False, latest_pub_str, "old_cve"
+    # low-trust with CVE: require actual NVD confirmation, year fallback not trusted
     if has_nvd_confirmed_recent:
         return True, latest_pub_str, "nvd_60d"
     return False, latest_pub_str, "nvd_60d"
