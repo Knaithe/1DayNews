@@ -201,17 +201,10 @@ def test_bare_command_execution_is_rce():
 
 
 def test_arbitrary_file_write_is_rce():
-    # A (recall): arbitrary file write / create / truncate with exec escalation
+    # A (recall): arbitrary file write is an RCE primitive (cron/authorized_keys/webroot)
     _, reason, vt = _score("CVE-2026-20253 Splunk",
-                           "An unauthenticated user could create or truncate arbitrary files to achieve code execution via the sidecar endpoint.")
-    assert vt == "RCE", f"arbitrary file write with exec escalation should be RCE (reason={reason})"
-
-
-def test_arbitrary_file_write_without_exec_not_rce():
-    # file write without escalation context is not automatically RCE
-    _, reason, vt = _score("CVE-x FooApp",
-                           "An unauthenticated user could create or truncate arbitrary files on the filesystem.")
-    assert vt != "RCE", f"file write without exec context must not be RCE (reason={reason})"
+                           "An unauthenticated user could create or truncate arbitrary files via the sidecar endpoint.")
+    assert vt == "RCE", f"arbitrary file write/create/truncate should be RCE (reason={reason})"
 
 
 def test_xss_to_rce_chain_not_excluded():

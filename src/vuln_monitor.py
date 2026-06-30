@@ -214,8 +214,7 @@ RCE_PATTERNS = [
     r"任意文件上传", r"文件上传漏洞",
     r"(?:path|directory) traversal.*(?:write|overwrite|exec|upload|\bRCE\b)",
     r"webshell",
-    r"arbitrary file write.*(?:exec|\bRCE\b|code|service|root|shell)",
-    r"(?:create|overwrite|truncate) arbitrary files?.*(?:exec|\bRCE\b|code|service|root|shell)",
+    r"arbitrary file write", r"(?:create|overwrite|truncate) arbitrary files?",
     # in-the-wild / value tags
     r"exploited in the wild", r"active(ly)? exploited", r"in[- ]the[- ]wild exploit",
     r"zero[- ]?day\b", r"\b0[- ]?day\b",
