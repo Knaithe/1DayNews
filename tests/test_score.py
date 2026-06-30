@@ -219,6 +219,13 @@ def test_plain_xss_still_not_rce():
     assert vt != "RCE", f"plain XSS must not become RCE (reason={reason})"
 
 
+def test_sqli_in_rce_substring_product_not_rce():
+    # CVE-2026-54849: SQL Injection in Premmerce/WooCommerce — the 'rce' inside
+    # 'Commerce' must NOT satisfy 'SQL injection.*RCE' (the bare RCE alt had no \b)
+    _, reason, vt = _score("CVE-2026-54849 Unauthenticated SQL Injection in Premmerce Wishlist for WooCommerce")
+    assert vt != "RCE", f"plain SQLi mislabeled RCE via 'rce' substring (reason={reason})"
+
+
 def test_ssrf_with_rce_before_not_excluded():
     # MEDIUM: RCE appearing BEFORE 'SSRF' must still prevent SSRF exclusion
     _, reason, vt = _score("CVE-x webhook",

@@ -198,27 +198,27 @@ RCE_PATTERNS = [
     r"deserializ\w*",  # all forms: deserialize/deserialized/deserializes/deserializing/deserialization/deserializer
     r"object injection", r"\bunserialize\b", r"pop chain", r"gadget chain",
     _ab("SSTI"), r"server[- ]side template injection",
-    _ab("SSRF") + r".*(?:RCE|code exec|chain|gadget)",
-    _ab("XXE") + r".*(?:RCE|exec|chain)",
-    r"SQL injection.*(?:RCE|xp_cmdshell|OS cmd|command\b|exec\b)",  # exec\b/command\b: avoid matching 'execute'/'commands'
-    r"prototype pollution.*(?:RCE|exec|gadget|chain)",
+    _ab("SSRF") + r".*(?:\bRCE\b|code exec|chain|gadget)",
+    _ab("XXE") + r".*(?:\bRCE\b|exec|chain)",
+    r"SQL injection.*(?:\bRCE\b|xp_cmdshell|OS cmd|command\b|exec\b)",  # \bRCE\b: don't match 'rce' in 'Commerce'/'Premmerce'; exec\b/command\b: avoid 'execute'/'commands'
+    r"prototype pollution.*(?:\bRCE\b|exec|gadget|chain)",
     _ab("JNDI"), _ab("OGNL"),
     # memory corruption
     r"memory corruption", r"stack[- ]?(based )?(buffer )?overflow", r"heap[- ]?(based )?(buffer )?overflow",
     r"use[- ]after[- ]free\b", _ab("UAF"), r"double free",
     r"type confusion", r"out[- ]of[- ]bounds? (read|write)", _ab("OOB"),
-    r"integer overflow.*(?:exec|RCE|oob)",
-    r"race condition.*(?:exec|RCE|kernel)",
+    r"integer overflow.*(?:exec|\bRCE\b|oob)",
+    r"race condition.*(?:exec|\bRCE\b|kernel)",
     # file upload / traversal / file-write escalating to exec
     r"(?:unrestricted|arbitrary|unauthenticated|unauth) file upload",
     r"任意文件上传", r"文件上传漏洞",
-    r"(?:path|directory) traversal.*(?:write|overwrite|exec|upload|RCE)",
+    r"(?:path|directory) traversal.*(?:write|overwrite|exec|upload|\bRCE\b)",
     r"webshell",
     r"arbitrary file write", r"(?:create|overwrite|truncate) arbitrary files?",
     # in-the-wild / value tags
     r"exploited in the wild", r"active(ly)? exploited", r"in[- ]the[- ]wild exploit",
     r"zero[- ]?day\b", r"\b0[- ]?day\b",
-    r"exploit chain", r"full chain", r"pre[- ]auth.*(?:chain|code exec|RCE)",
+    r"exploit chain", r"full chain", r"pre[- ]auth.*(?:chain|code exec|\bRCE\b)",
     # famous exploit nicknames
     r"log4shell", r"spring4shell", r"proxyshell", r"proxylogon", r"proxynotshell",
     r"bluekeep", r"eternalblue", r"shellshock", r"heartbleed",
@@ -1665,7 +1665,14 @@ def _is_fresh(source, text):
     if source in FRESH_SOURCES:
         if _all_old():
             return False, None, "old_cve"
-        return True, None, "high_trust_source"
+        # extract CVE year as rough published date (NVD backfill will refine it later)
+        pub_str = None
+        if cves:
+            try:
+                pub_str = f"{cves[0].split('-')[1]}-01-01"
+            except (IndexError, ValueError):
+                pass
+        return True, pub_str, "high_trust_source"
 
     # low-trust sources: require per-CVE NVD confirmation (year alone isn't trusted)
     cutoff = datetime.now(timezone.utc) - timedelta(days=_FRESHNESS_DAYS)
@@ -2054,7 +2061,7 @@ def fetch_msrc():
 _FORTINET_ROW_RE = re.compile(
     r"<div class=\"row\" onclick=\"location\.href\s*=\s*'/psirt/(FG-IR-\d+-\d+)'\">"
     r".*?<b>FG-IR-\d+-\d+\s*(.*?)</b>"
-    r".*?<b class=\"cve\">(CVE-[\d-]+)</b>"
+    r".*?<b class=\"cve\">(CVE-\d{4}-\d{4,})</b>"
     r"(?:.*?<small>(.*?)</small>)?",
     re.S)
 
@@ -2093,6 +2100,8 @@ def fetch_fortinet():
             log.warning(f"Fortinet HTTP {r.status_code}")
             return out
         out = _parse_fortinet_psirt(r.text)
+        if not out:
+            log.warning("Fortinet parsed 0 advisories — portal HTML layout may have changed")
     except Exception as ex:
         log.warning(f"Fortinet err: {ex}")
     return out
