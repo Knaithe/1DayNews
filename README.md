@@ -6,8 +6,8 @@
 
 ## 核心特性
 
-- **15 个数据源**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus_Citrix/PoC-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）、Advisory（GHSA）
-- **聚焦 RCE + bypass**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声
+- **16 个数据源**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus_Citrix/PoC-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）、Advisory（GHSA）、CERT（CERT_CC）
+- **聚焦 RCE + bypass**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声；CJK 边界匹配（`_ab()`）确保 `认证绕过RCE漏洞` 不被 `\b` 漏掉
 - **增量去重**：SQLite WAL 模式，CVE 为主键，60 天 TTL，同一 CVE 跨源只推一次；CVE 年份 > 1 年硬过滤 nday，无例外
 - **多视图查询**：简表 / 详细 / 通知友好 / JSON，支持 CVE/厂商/关键词/时间过滤
 - **Web 仪表盘**：暖色卡片式界面，实时搜索过滤，只绑 localhost（SSH 隧道访问）
@@ -187,33 +187,39 @@ LLM_TOP_P=0.9
 ```
 漏洞记录进入
 │
-├─ 1. regex score() → reason + vuln_type
+├─ 1. regex score() → reason + vuln_type + category
+│  ├─ _STRONG_RCE_RE 命中（RCE/remote code execution 等）→ 跳过 exclude 检查
+│  │   （XSS→RCE / SSRF→RCE 链不会被 XSS/SSRF exclude 拦住）
 │  ├─ excluded → 不推，不审
 │  ├─ no hit → 不推，不审
 │  ├─ RCE+asset+CVE / RCE+asset / RCE+CVE / RCE → vuln_type=RCE
 │  ├─ bypass+asset+CVE / bypass+CVE / bypass+asset / bypass → vuln_type=bypass
-│  └─ asset+CVE → vuln_type=other
+│  └─ asset+CVE → vuln_type=other（候选，等 LLM 研判）
 │
-├─ 2. freshness（两条路径）
-│  │
-│  ├─ A. 有 CVE → _is_fresh()
-│  │  ├─ 所有 CVE 年份 > 1 年 → nday（无例外，高信任也不豁免）
-│  │  ├─ 高信任源（FRESH_SOURCES）→ 1day（CVE 年份兜底，不依赖 NVD）
-│  │  ├─ 低信任源 + NVD 确认 ≤60 天 → 1day
-│  │  └─ 低信任源 + NVD 无数据/超期 → nday
-│  │
-│  └─ B. 无 CVE
-│     ├─ 高信任源 + 源提供发布日期 ≤60 天 → 1day
-│     ├─ 高信任源 + 源日期过期 → nday
-│     ├─ 高信任源 + 无日期 + advisory ID 年份 > 1 年 → nday
-│     ├─ 高信任源 + 无日期 + 其他 → 1day
-│     └─ 低信任源 + hit → nday（显式标记，不留 NULL）
-│  注：freshness=nday 时，hit 同步置 False → pushed 必为 0
+├─ 1b. classify_category() → 9 类 dashboard 维度
+│  优先级：escape > RCE > excluded→other > SQLi > privilege escalation
+│         > bypass > data leak > XSS/SSRF > DoS > other
+│  特殊规则：
+│  ├─ 内存破坏（overflow/UAF/OOB）永远不归 DoS
+│  ├─ vuln_type=RCE 但标题说 privilege escalation → 降级为 privesc
+│  │   （标题同时有 RCE/command injection 则不降）
+│  └─ sandbox/container/VM escape → escape（独立于 RCE）
 │
-├─ 3. 初始推送（fetch 阶段）
+├─ 2. freshness → _is_fresh()（所有源均过 NVD 验证）
+│  ├─ 所有 CVE 年份 > 1 年 → nday（无例外，高信任也不豁免）
+│  ├─ 高信任源（FRESH_SOURCES）：
+│  │  ├─ NVD 确认 ≤60 天 → 1day
+│  │  ├─ NVD 确认 >60 天 → nday（nvd_stale）
+│  │  └─ NVD 无数据 → CVE 年份兜底（recent year → 1day）
+│  ├─ 低信任源 + NVD 确认 ≤60 天 → 1day
+│  ├─ 低信任源 + NVD 无数据/超期 → nday
+│  └─ 低信任源 + 无 CVE → nday（no_cve_low_trust）
+│
+├─ 3. 初始推送（fetch 阶段，仅 RCE/bypass 直推）
 │  ├─ GitHub/PoC-GitHub → pushed=0（候选，永不推送）
 │  ├─ CVSS PR≠N 或 PR 未知 → pushed=0（必须无需认证才推送）
-│  └─ hit + freshness=1day + 非 GitHub 源 + PR=N → pushed=1
+│  ├─ vuln_type 非 RCE/bypass → pushed=0（asset+CVE 等 LLM 研判）
+│  └─ RCE/bypass + freshness=1day + PR=N + UI≠R → pushed=1
 │
 ├─ 4. LLM enrich → verdict: confirmed / not_relevant / noise
 │  ├─ 高优先源（HIGH_PRIORITY_SOURCES）+ CVSS≥9 → auto-confirm（跳 LLM）
@@ -224,6 +230,7 @@ LLM_TOP_P=0.9
 │     ├─ freshness≠1day → 锁 0（LLM 不可推翻）
 │     ├─ GitHub/PoC-GitHub → 锁 0
 │     ├─ CVSS PR≠N 或未知 → 锁 0
+│     ├─ CVSS UI=R（需交互） → 锁 0
 │     └─ verdict 决定（confirmed=1，not_relevant/noise=0）
 │
 └─ 5. pushed=1 → 多通道推送（Telegram / 企业微信 / 钉钉 / 飞书，各通道独立跟踪）
@@ -236,16 +243,17 @@ LLM_TOP_P=0.9
 | `FRESH_SOURCES` | freshness 判定 + LLM 跳工具 | Fortinet/PaloAlto/Cisco/MSRC/CISA_KEV/ZDI/watchTowr/Horizon3/Rapid7/Chaitin/DailyCVE/GHSA |
 | `HIGH_PRIORITY_SOURCES` | auto-confirm (CVSS≥9) | Fortinet/PaloAlto/Cisco/CISA_KEV/ZDI/watchTowr/MSRC/Horizon3/Chaitin/ThreatBook |
 
-**核心规则：** freshness=1day + PR=N 才可推送（nday/NULL/PR≠N 锁 0，hit 同步清零）· GitHub/PoC-GitHub → 仅候选 · 低信任源必须 NVD ≤60 天确认 · LLM verdict 覆写 pushed 但受 freshness/source/PR 硬约束 · LLM 出错兜底走正则 · vuln_type 含 RCE/bypass/other 三类
+**核心规则：** RCE/bypass + freshness=1day + PR=N 直推 · asset+CVE 等 LLM 研判 · GitHub/PoC-GitHub 仅候选 · 所有源均过 NVD 验证 · LLM verdict 覆写 pushed 但受 freshness/source/PR/UI 硬约束 · LLM 出错兜底走正则
 
 **数据字段：**
 
 | 字段 | 含义 | 示例值 |
 |---|---|---|
 | `reason` | 详细匹配原因 | `RCE+asset+CVE` / `RCE+CVE` / `bypass+asset+CVE` / `bypass+CVE` / `asset+CVE` |
-| `vuln_type` | 漏洞分类 | `RCE` / `bypass` / `other` |
+| `vuln_type` | 漏洞分类（score 维度） | `RCE` / `bypass` / `other` |
+| `category` | 细粒度分类（dashboard 维度） | `escape` / `RCE` / `SQLi` / `privilege escalation` / `bypass` / `data leak` / `XSS/SSRF` / `DoS` / `other` |
 | `freshness` | 新鲜度 | `1day` / `nday` |
-| `freshness_reason` | 判定依据 | `high_trust_source` / `nvd_60d` / `old_cve` / `source_pub_date` / `old_advisory_id` / `no_cve_low_trust` |
+| `freshness_reason` | 判定依据 | `high_trust_source` / `nvd_60d` / `nvd_stale` / `old_cve` / `no_cve_low_trust` |
 | `llm_verdict` | LLM 判定 | `confirmed` / `not_relevant` / `noise` |
 | `pushed` | 最终推送 | 0 / 1 |
 

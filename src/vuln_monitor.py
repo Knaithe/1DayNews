@@ -2522,7 +2522,7 @@ def _run(no_push=False):
                 nvd_vector = it.get("_cvss_vector")
             pr = _extract_pr(nvd_vector)
             ui = _extract_ui(nvd_vector)
-            should_push = hit and freshness == "1day" and it["source"] not in _GITHUB_SOURCES and pr == "N" and ui in (None, "N")
+            should_push = hit and vuln_type in ("RCE", "bypass") and freshness == "1day" and it["source"] not in _GITHUB_SOURCES and pr == "N" and ui in (None, "N")
             conn.execute(
                 "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,category,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss,cvss_vector,cvss_pr,cvss_ui) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -2824,7 +2824,7 @@ def _cmd_rescore_inner():
                 fresh_reason = "no_cve_low_trust"
                 hit = False
 
-            new_pushed = 1 if (hit and freshness == "1day" and source not in _GITHUB_SOURCES and cvss_pr == "N" and cvss_ui in (None, "N")) else 0
+            new_pushed = 1 if (hit and vuln_type in ("RCE", "bypass") and freshness == "1day" and source not in _GITHUB_SOURCES and cvss_pr == "N" and cvss_ui in (None, "N")) else 0
             if reason != old_reason or new_pushed != old_pushed or cve_pub:
                 conn.execute("UPDATE vulns SET reason=?, vuln_type=?, category=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
                             (reason, vuln_type, category, freshness, fresh_reason, new_pushed, cve_pub, key))
