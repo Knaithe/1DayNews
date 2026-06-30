@@ -18,6 +18,8 @@
 **/llm_prompt.txt
 **/vuln_monitor.log
 **/vuln_monitor.log.*
+**/access.log
+**/access.log.*
 
 # ===== python =====
 __pycache__/

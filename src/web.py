@@ -14,14 +14,16 @@ import secrets
 import sqlite3
 import os
 import time
+import logging
 import urllib.parse
 from datetime import datetime, timedelta, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # NOTE: keep in sync with JS const MAX_LIMIT in DASHBOARD_HTML (substituted at module load)
 LIMIT_MAX = 500
 
-from flask import Flask, jsonify, request, abort
+from flask import Flask, jsonify, request, abort, g
 from waitress import serve
 
 # ── Magic token auth ──
@@ -37,6 +39,26 @@ else:
     DATA_DIR = SCRIPT_DIR
 DB_FILE = DATA_DIR / "vuln_cache.db"
 TOKEN_FILE = DATA_DIR / ".web_token"
+ACCESS_LOG = DATA_DIR / "access.log"
+
+# Stealthy access audit — one line per request into access.log, never shown in
+# the UI. The file handler is attached lazily so importing the module (e.g. in
+# tests) never creates the file; only a real served request does.
+_access_log = logging.getLogger("vuln_access")
+_access_log.setLevel(logging.INFO)
+_access_log.propagate = False
+
+
+def _ensure_access_handler():
+    if _access_log.handlers:
+        return
+    try:
+        _h = RotatingFileHandler(ACCESS_LOG, maxBytes=5 * 1024 * 1024,
+                                 backupCount=5, encoding="utf-8")
+        _h.setFormatter(logging.Formatter("%(message)s"))
+        _access_log.addHandler(_h)
+    except Exception:
+        pass  # best-effort: never break serving over logging
 
 
 def _save_token(token):
@@ -70,10 +92,12 @@ app = Flask(__name__)
 @app.before_request
 def check_token():
     if _MAGIC_TOKEN is None:
-        return  # localhost mode, no auth
+        g.auth = "loopback"  # localhost mode, no auth
+        return
     # Allow token via: /TOKEN/path, ?token=TOKEN, cookie, or Authorization: Bearer
     path_parts = request.path.strip("/").split("/", 1)
     if _token_match(path_parts[0]):
+        g.auth = "ok"
         # Strip token prefix, redirect to real path + set cookie
         tail = path_parts[1] if len(path_parts) > 1 else ""
         real_path = "/" + tail.lstrip("/")  # prevent //evil.com open redirect
@@ -82,12 +106,13 @@ def check_token():
         resp.set_cookie("_vmt", _MAGIC_TOKEN, httponly=True, samesite="Strict", max_age=86400*30)
         return resp
     if _token_match(request.args.get("token", "")):
-        return
+        g.auth = "ok"; return
     if _token_match(request.cookies.get("_vmt", "")):
-        return
+        g.auth = "ok"; return
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer ") and _token_match(auth[7:]):
-        return
+        g.auth = "ok"; return
+    g.auth = "bad"  # token missing or wrong
     abort(403)
 
 @app.after_request
@@ -109,6 +134,30 @@ def no_cache(response):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    return response
+
+
+def _access_line(method, path, status, ip, auth, ua):
+    """Format one audit line (the caller prepends the timestamp)."""
+    ua = (ua or "-")[:160]
+    return (f"{method} {path} {status} ip={ip or '-'} "
+            f'auth={auth} ua="{ua}"')
+
+
+@app.after_request
+def _log_access(response):
+    """Append a stealthy per-request audit line to access.log (never in the UI)."""
+    _ensure_access_handler()
+    try:
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _access_log.info(
+            ts + " " + _access_line(
+                request.method, request.path, response.status_code, ip,
+                getattr(g, "auth", "none"), request.headers.get("User-Agent"))
+        )
+    except Exception:
+        pass
     return response
 
 import contextlib
