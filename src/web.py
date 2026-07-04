@@ -709,15 +709,15 @@ a:hover { text-decoration: underline; }
 
 <div class="filter-row" id="typeRow" role="group" aria-label="Filter by category">
   <button type="button" class="cat-pill" data-cat="">All</button>
-  <button type="button" class="cat-pill active" data-cat="escape">escape</button>
   <button type="button" class="cat-pill active" data-cat="RCE">RCE</button>
+  <button type="button" class="cat-pill active" data-cat="bypass">Bypass</button>
   <button type="button" class="cat-pill" data-cat="SQLi">SQLi</button>
-  <button type="button" class="cat-pill" data-cat="privilege escalation">privilege escalation</button>
-  <button type="button" class="cat-pill active" data-cat="bypass">bypass</button>
+  <button type="button" class="cat-pill active" data-cat="escape">Escape</button>
+  <button type="button" class="cat-pill" data-cat="privilege escalation">Privilege escalation</button>
   <button type="button" class="cat-pill" data-cat="XSS/SSRF">XSS/SSRF</button>
-  <button type="button" class="cat-pill" data-cat="data leak">data leak</button>
+  <button type="button" class="cat-pill" data-cat="data leak">Data leak</button>
   <button type="button" class="cat-pill" data-cat="DoS">DoS</button>
-  <button type="button" class="cat-pill" data-cat="other">other</button>
+  <button type="button" class="cat-pill" data-cat="other">Other</button>
 </div>
 
 <div class="filter-row" id="sevRow" role="group" aria-label="Filter by severity">
@@ -899,11 +899,11 @@ async function loadStats() {
     document.getElementById('srcCount').textContent = srcCount;
 
     // floating stats card: category + reproduced counts (global totals)
-    const CAT_ORDER = ['escape','RCE','SQLi','bypass','privilege escalation','data leak','XSS/SSRF','DoS','other'];
+    const CAT_ORDER = ['RCE','bypass','SQLi','escape','privilege escalation','XSS/SSRF','data leak','DoS','other'];
     const CAT_COLOR = {escape:'#9f1239',RCE:'#991b1b',SQLi:'#5b21b6',bypass:'#1e40af','privilege escalation':'#9a3412','data leak':'#92400e','XSS/SSRF':'#166534',DoS:'#374151',other:'#475569'};
     const cats = d.categories || {};
     const catRows = CAT_ORDER.filter(c => cats[c])
-      .map(c => `<div class="side-row"><span class="lbl"><span class="side-dot" style="background:${CAT_COLOR[c]||'#999'}"></span>${esc(c)}</span><span class="num">${cats[c]}</span></div>`).join('');
+      .map(c => `<div class="side-row"><span class="lbl"><span class="side-dot" style="background:${CAT_COLOR[c]||'#999'}"></span>${esc(cap1(c))}</span><span class="num">${cats[c]}</span></div>`).join('');
     const rep = d.reproduced || {};
     const body = document.getElementById('sideStatsBody');
     if (body) body.innerHTML = `<h4>Categories</h4>${catRows}` +
@@ -917,6 +917,11 @@ async function loadStats() {
 function esc(s) {
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
                 .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function cap1(s) {
+  // capitalize first letter only: "privilege escalation" -> "Privilege escalation"
+  s = s || '';
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
 }
 function safeUrl(u) {
   if (!u) return '#';
@@ -1009,7 +1014,7 @@ async function loadVulns(append=false) {
       return `<div class="vcard" style="animation:fadeUp .4s ${i*.03}s both">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
-          ${v.category&&CATEGORY_STYLE[v.category]?`<span class="reason-badge" style="background:${cs.bg};color:${cs.fg}">${esc(v.category)}</span>`:''}
+          ${v.category&&CATEGORY_STYLE[v.category]?`<span class="reason-badge" style="background:${cs.bg};color:${cs.fg}">${esc(cap1(v.category))}</span>`:''}
           ${sevBadge(v)}
           ${v.pr==='N'?'<span class="pr-badge">Unauth</span>':''}
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
