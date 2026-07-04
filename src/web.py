@@ -372,6 +372,31 @@ def api_reproduced():
             time.sleep(1)
 
 
+@app.route("/api/note", methods=["POST"])
+def api_note():
+    """Set or clear a free-text note (<=100 chars) on a vulnerability by key."""
+    data = request.get_json(silent=True) or {}
+    key = (data.get("key") or "").strip()
+    if not key:
+        return jsonify({"error": "key required"}), 400
+    note = (data.get("note") or "").strip()
+    if len(note) > 100:
+        return jsonify({"error": "note too long (max 100)"}), 400
+    stored = note if note else None
+    for attempt in range(3):
+        try:
+            with get_db_rw() as conn:
+                cols = _vulns_columns(conn)
+                if "note" not in cols:
+                    conn.execute("ALTER TABLE vulns ADD COLUMN note TEXT")
+                conn.execute("UPDATE vulns SET note=? WHERE key=?", (stored, key))
+            return jsonify({"ok": True, "key": key, "note": stored})
+        except sqlite3.OperationalError:
+            if attempt == 2:
+                return jsonify({"error": "database busy, try again"}), 503
+            time.sleep(1)
+
+
 # ── Vulnpilot API (for B-side dispatcher) ──
 
 @app.route("/api/pending")

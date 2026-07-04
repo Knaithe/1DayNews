@@ -646,6 +646,7 @@ def init_db(conn):
         ("cvss_ui",       "TEXT"),
         ("reproduced",   "INTEGER DEFAULT 0"),
         ("category",     "TEXT"),
+        ("note",         "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
