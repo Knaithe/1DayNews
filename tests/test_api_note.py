@@ -89,3 +89,19 @@ def test_auto_migrates_note_column(client, tmp_path):
     cols_after = {r[1] for r in conn.execute("PRAGMA table_info(vulns)")}
     conn.close()
     assert "note" in cols_after
+
+
+def test_vulns_response_includes_note(client):
+    client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "via vulns"})
+    data = client.get("/api/vulns").get_json()
+    row = next(d for d in data if d["key"] == "cve:CVE-2026-1001")
+    assert row["note"] == "via vulns"
+
+
+def test_pending_excludes_note(client):
+    # /api/pending feeds the B-side dispatcher — personal notes must never leak.
+    client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "secret"})
+    data = client.get("/api/pending").get_json()
+    assert data["count"] >= 1
+    for v in data["vulns"]:
+        assert "note" not in v
