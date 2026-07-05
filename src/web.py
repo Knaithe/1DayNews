@@ -801,11 +801,11 @@ a:hover { text-decoration: underline; }
   <button type="button" class="cat-pill" data-cat="">All</button>
   <button type="button" class="cat-pill active" data-cat="RCE">RCE</button>
   <button type="button" class="cat-pill active" data-cat="bypass">Bypass</button>
-  <button type="button" class="cat-pill" data-cat="SQLi">SQLi</button>
-  <button type="button" class="cat-pill active" data-cat="escape">Escape</button>
+  <button type="button" class="cat-pill active" data-cat="SQLi">SQLi</button>
+  <button type="button" class="cat-pill active" data-cat="data leak">Data leak</button>
+  <button type="button" class="cat-pill" data-cat="escape">Escape</button>
   <button type="button" class="cat-pill" data-cat="privilege escalation">Privilege escalation</button>
   <button type="button" class="cat-pill" data-cat="XSS/SSRF">XSS/SSRF</button>
-  <button type="button" class="cat-pill" data-cat="data leak">Data leak</button>
   <button type="button" class="cat-pill" data-cat="DoS">DoS</button>
   <button type="button" class="cat-pill" data-cat="other">Other</button>
 </div>
@@ -895,7 +895,7 @@ const CATEGORY_STYLE = {
 };
 
 let debounceTimer, activeDays = '7', activePR = 'N', activeUI = 'N', activeRepro = '';
-const activeCats = new Set(['escape','RCE','bypass']);
+const activeCats = new Set(['RCE','bypass','SQLi','data leak']);
 const activeSevs = new Set(['critical','high']);
 const activeSrcs = new Set();
 const activeExcludes = new Set(['chrome','firefox','linux kernel','wordpress','android','adobe']);
@@ -1013,7 +1013,7 @@ async function loadStats() {
     document.getElementById('srcCount').textContent = srcCount;
 
     // floating stats card: category + reproduced counts (global totals)
-    const CAT_ORDER = ['RCE','bypass','SQLi','escape','privilege escalation','XSS/SSRF','data leak','DoS','other'];
+    const CAT_ORDER = ['RCE','bypass','SQLi','data leak','escape','privilege escalation','XSS/SSRF','DoS','other'];
     const CAT_COLOR = {escape:'#9f1239',RCE:'#991b1b',SQLi:'#5b21b6',bypass:'#1e40af','privilege escalation':'#9a3412','data leak':'#92400e','XSS/SSRF':'#166534',DoS:'#374151',other:'#475569'};
     const cats = d.categories || {};
     const catRows = CAT_ORDER.filter(c => cats[c])
