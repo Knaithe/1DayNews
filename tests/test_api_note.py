@@ -139,3 +139,49 @@ def test_note_non_string_rejected_400(client):
     resp = client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": 123})
     assert resp.status_code == 400
     assert "string" in resp.get_json()["error"]
+
+
+def test_reproduced_uses_shared_helper(client):
+    # /api/reproduced shares _set_vuln_field — write, 404 unknown key, input validation
+    assert client.post("/api/reproduced", json={"key": "cve:CVE-2026-1001", "reproduced": 1}).status_code == 200
+    assert client.post("/api/reproduced", json={"key": "cve:DOES-NOT-EXIST", "reproduced": 1}).status_code == 404
+    assert client.post("/api/reproduced", json={"key": "cve:CVE-2026-1001", "reproduced": "abc"}).status_code == 400
+    assert client.post("/api/reproduced", data="[1,2]", content_type="application/json").status_code == 400
+
+
+class _RaiseOnEnter:
+    """Fake get_db_rw() return that raises OperationalError on __enter__."""
+    def __init__(self, msg): self.msg = msg
+    def __enter__(self): raise sqlite3.OperationalError(self.msg)
+    def __exit__(self, *a): return False
+
+
+def test_note_persistent_lock_returns_503(client, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)   # don't really wait between retries
+    monkeypatch.setattr(web_mod, "get_db_rw", lambda: _RaiseOnEnter("database is locked"))
+    assert client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "x"}).status_code == 503
+
+
+def test_note_nonbusy_operational_error_not_swallowed(client, monkeypatch):
+    # a non-lock OperationalError must propagate (→500 in prod), not be caught and
+    # mislabeled "database busy" 503. Under TESTING it propagates as an exception.
+    monkeypatch.setattr(web_mod, "get_db_rw", lambda: _RaiseOnEnter("no such column: bogus"))
+    with pytest.raises(sqlite3.OperationalError):
+        client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "x"})
+
+
+def test_note_duplicate_column_race_retries_to_success(client, monkeypatch):
+    # "duplicate column name" (concurrent first-write ALTER race) is retried, not 500'd
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    real = web_mod.get_db_rw
+    calls = {"n": 0}
+    class _DupOnce:
+        def __init__(self): self.real = real()
+        def __enter__(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise sqlite3.OperationalError("duplicate column name: note")
+            return self.real.__enter__()
+        def __exit__(self, *a): return self.real.__exit__(*a)
+    monkeypatch.setattr(web_mod, "get_db_rw", _DupOnce)
+    assert client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "ok"}).status_code == 200

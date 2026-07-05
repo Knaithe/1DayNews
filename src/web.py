@@ -351,16 +351,24 @@ def api_sources():
     return jsonify([r["source"] for r in rows])
 
 
-def _set_vuln_field(key, col, value, typedef):
-    """Shared writer for a per-row column on `vulns`.
+# allowlist for _set_vuln_field: col -> SQL typedef. Defense-in-depth so the
+# f-string identifier interpolation can never ingest caller-supplied input.
+_ALLOWED_VULN_COLS = {"note": "TEXT", "reproduced": "INTEGER DEFAULT 0"}
 
-    `col`/`typedef` are server-controlled constants (never user input), so they
-    are interpolated as SQL identifiers; `value` is parameterized.
-    Auto-migrates the column if missing, retries only on genuine lock/contention
-    (re-raising other OperationalErrors so a schema/IO bug surfaces as a 500
-    traceback instead of a misleading "database busy" 503), and returns 404 when
-    no row matches the key. Returns (status_code, body_dict).
+
+def _set_vuln_field(key, col, value):
+    """Shared writer for a per-row column on `vulns` (`col` must be allowlisted).
+
+    Auto-migrates the column if missing; retries on lock/contention OR a benign
+    concurrent-migration "duplicate column name" race (re-raising other
+    OperationalErrors so a schema/IO bug surfaces as a 500 traceback instead of
+    a misleading "database busy" 503); returns 404 when no row matches the key.
+    `value`/`key` are parameterized; `col` is validated against _ALLOWED_VULN_COLS.
+    Returns (status_code, body_dict).
     """
+    if col not in _ALLOWED_VULN_COLS:
+        raise ValueError(f"_set_vuln_field: column {col!r} not in allowlist")
+    typedef = _ALLOWED_VULN_COLS[col]
     for attempt in range(3):
         try:
             with get_db_rw() as conn:
@@ -371,7 +379,8 @@ def _set_vuln_field(key, col, value, typedef):
                     return 404, {"error": "no such vulnerability"}
             return 200, {"ok": True, "key": key, col: value}
         except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower() or "busy" in str(e).lower():
+            msg = str(e).lower()
+            if "locked" in msg or "busy" in msg or "duplicate column name" in msg:
                 if attempt == 2:
                     return 503, {"error": "database busy, try again"}
                 time.sleep(1)
@@ -382,21 +391,28 @@ def _set_vuln_field(key, col, value, typedef):
 @app.route("/api/reproduced", methods=["POST"])
 def api_reproduced():
     """Toggle reproduced flag for a vulnerability by internal key."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object body required"}), 400
     key = (data.get("key") or "").strip()
     if not key:
         return jsonify({"error": "key required"}), 400
-    val = int(data.get("reproduced", 0))
+    try:
+        val = int(data.get("reproduced", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "reproduced must be an integer"}), 400
     if val not in (-1, 0, 1, 2):
-        return jsonify({"error": "reproduced must be -1, 0, or 1"}), 400
-    code, body = _set_vuln_field(key, "reproduced", val, "INTEGER DEFAULT 0")
+        return jsonify({"error": "reproduced must be -1, 0, 1, or 2"}), 400
+    code, body = _set_vuln_field(key, "reproduced", val)
     return jsonify(body), code
 
 
 @app.route("/api/note", methods=["POST"])
 def api_note():
-    """Set or clear a free-text note (<=100 chars) on a vulnerability by key."""
-    data = request.get_json(silent=True) or {}
+    """Set or clear a free-text note (<= NOTE_MAX chars) on a vulnerability by key."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object body required"}), 400
     key = (data.get("key") or "").strip()
     if not key:
         return jsonify({"error": "key required"}), 400
@@ -410,7 +426,7 @@ def api_note():
     if len(note) > NOTE_MAX:
         return jsonify({"error": f"note too long (max {NOTE_MAX})"}), 400
     stored = note if note else None
-    code, body = _set_vuln_field(key, "note", stored, "TEXT")
+    code, body = _set_vuln_field(key, "note", stored)
     return jsonify(body), code
 
 
@@ -847,7 +863,7 @@ a:hover { text-decoration: underline; }
     <div class="nm-label">备注</div>
     <textarea id="nmTextarea" readonly placeholder="使用情况说明…（≤__NOTE_MAX__ 字）"></textarea>
     <div class="nm-edit-foot">
-      <span id="nmCount" class="nm-count">0/100</span>
+      <span id="nmCount" class="nm-count">0/__NOTE_MAX__</span>
       <span>
         <button type="button" class="nm-btn nm-primary" id="nmEditBtn" onclick="editNote()">编辑</button>
         <button type="button" class="nm-btn" id="nmSaveBtn" onclick="saveNote()" disabled>保存</button>
@@ -1187,7 +1203,9 @@ function editNote() { setEditMode(true); }
 async function saveNote() {
   if (!nmKey) return;
   const saveKey = nmKey;                  // snapshot: don't touch a different card if reopened mid-save
+  const sameCard = () => nmKey === saveKey;   // still showing the card we started saving?
   nmSaveBtn.disabled = true;              // debounce: block a second concurrent POST
+  nmTextarea.readOnly = true;             // lock input during save so in-flight typing isn't clobbered
   nmErr.textContent = '';
   const note = nmTextarea.value.slice(0, NOTE_MAX);
   try {
@@ -1197,23 +1215,29 @@ async function saveNote() {
     });
     const result = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      nmErr.textContent = resp.status === 400 ? ('超过 ' + NOTE_MAX + ' 字上限')
-                       : resp.status === 404 ? '该漏洞已不存在（可能已被清理）'
-                       : ('保存失败 (' + resp.status + ')');
-      if (nmKey === saveKey) nmSaveBtn.disabled = false;   // let the user retry/fix
+      if (sameCard()) {                   // don't leak this error into a different card's modal
+        nmErr.textContent = resp.status === 400 ? ('超过 ' + NOTE_MAX + ' 字上限')
+                         : resp.status === 404 ? '该漏洞已不存在（可能已被清理）'
+                         : ('保存失败 (' + resp.status + ')');
+        nmSaveBtn.disabled = false;       // let the user retry/fix
+        nmTextarea.readOnly = false;
+      }
       return;
     }
-    const stored = result.note != null ? result.note : '';  // server-stored (stripped) value
-    if (nmKey === saveKey) {                                // still the same card?
+    const stored = result.note ?? '';     // server-stored (stripped) value
+    const v = lastVulns.find(x => x.key === saveKey);
+    if (v) v.note = stored;               // always update the saved card's cache (by saveKey)
+    if (sameCard()) {                     // modal still showing this card?
       nmCurrentNote = stored;
-      const v = lastVulns.find(x => x.key === saveKey);
-      if (v) v.note = stored;
-      nmTextarea.value = stored;                            // reflect the server's stripped value
+      nmTextarea.value = stored;          // reflect the server's stripped value
       setEditMode(false);
     }
   } catch (e) {
-    nmErr.textContent = '网络错误';
-    if (nmKey === saveKey) nmSaveBtn.disabled = false;
+    if (sameCard()) {
+      nmErr.textContent = '网络错误';
+      nmSaveBtn.disabled = false;
+      nmTextarea.readOnly = false;
+    }
   }
 }
 function closeNoteModal() {
