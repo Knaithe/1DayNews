@@ -22,6 +22,7 @@ from pathlib import Path
 
 # NOTE: keep in sync with JS const MAX_LIMIT in DASHBOARD_HTML (substituted at module load)
 LIMIT_MAX = 500
+NOTE_MAX = 200   # per-card note char cap (api_note); injected into dashboard JS as __NOTE_MAX__
 
 from flask import Flask, jsonify, request, abort, g
 from waitress import serve
@@ -406,8 +407,8 @@ def api_note():
         note = raw.strip()
     else:
         return jsonify({"error": "note must be a string"}), 400
-    if len(note) > 100:
-        return jsonify({"error": "note too long (max 100)"}), 400
+    if len(note) > NOTE_MAX:
+        return jsonify({"error": f"note too long (max {NOTE_MAX})"}), 400
     stored = note if note else None
     code, body = _set_vuln_field(key, "note", stored, "TEXT")
     return jsonify(body), code
@@ -634,7 +635,7 @@ a:hover { text-decoration: underline; }
 }
 .note-modal.hidden { display: none; }
 .nm-card {
-  background: var(--cream); border: 2px solid var(--ink); border-radius: var(--radius);
+  background: var(--card); border: 2px solid var(--ink); border-radius: var(--radius);
   box-shadow: var(--shadow-hard); padding: 20px 22px;
   width: 100%; max-width: 520px; max-height: 85vh; overflow: auto;
 }
@@ -649,7 +650,7 @@ a:hover { text-decoration: underline; }
 .nm-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
 #nmTextarea { width: 100%; box-sizing: border-box; min-height: 90px; border: 1.5px solid var(--ink); border-radius: 10px; padding: 8px; font-family: inherit; font-size: 14px; line-height: 1.5; resize: vertical; background: var(--white); color: var(--body); }
 #nmTextarea[readonly] { background: rgba(17,16,19,0.04); }
-#nmTextarea:focus { outline: none; border-color: var(--violet); box-shadow: 0 0 0 2px rgba(124,92,252,.25); }
+#nmTextarea:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px rgba(17,16,19,0.10); }
 .nm-edit-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
 .nm-count { font-size: 11px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
 .nm-btn { border: 1.5px solid var(--ink); border-radius: var(--pill); padding: 5px 16px; cursor: pointer; background: var(--cream); font-family: inherit; font-size: 13px; color: var(--ink); }
@@ -844,7 +845,7 @@ a:hover { text-decoration: underline; }
     <a id="nmLink" class="nm-link" target="_blank" rel="noopener noreferrer"></a>
     <hr class="nm-sep">
     <div class="nm-label">备注</div>
-    <textarea id="nmTextarea" readonly maxlength="100" placeholder="使用情况说明…（≤100 字）"></textarea>
+    <textarea id="nmTextarea" readonly placeholder="使用情况说明…（≤__NOTE_MAX__ 字）"></textarea>
     <div class="nm-edit-foot">
       <span id="nmCount" class="nm-count">0/100</span>
       <span>
@@ -1147,9 +1148,9 @@ async function loadVulns(append=false) {
 })();
 
 // ---- per-card note modal (double-click a card to open) ----
-// NOTE_MAX must match the server-side limit (api_note: len(note) > 100) and the
-// textarea's maxlength attribute — single source for the JS counter/slice.
-const NOTE_MAX = 100;
+// NOTE_MAX is injected from the server (api_note's NOTE_MAX) via __NOTE_MAX__ —
+// single source for the JS counter/slice and the textarea's maxLength.
+const NOTE_MAX = __NOTE_MAX__;
 const noteModal = document.getElementById('noteModal');
 const nmTextarea = document.getElementById('nmTextarea');
 nmTextarea.maxLength = NOTE_MAX;
@@ -1196,7 +1197,7 @@ async function saveNote() {
     });
     const result = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      nmErr.textContent = resp.status === 400 ? '超过 100 字上限'
+      nmErr.textContent = resp.status === 400 ? ('超过 ' + NOTE_MAX + ' 字上限')
                        : resp.status === 404 ? '该漏洞已不存在（可能已被清理）'
                        : ('保存失败 (' + resp.status + ')');
       if (nmKey === saveKey) nmSaveBtn.disabled = false;   // let the user retry/fix
@@ -1244,6 +1245,7 @@ setInterval(loadStats, 60000);  // refresh stats card + stats bar as new vulns a
 
 # substitute server-side constants into the template (single source of truth)
 DASHBOARD_HTML = DASHBOARD_HTML.replace("__LIMIT_MAX__", str(LIMIT_MAX))
+DASHBOARD_HTML = DASHBOARD_HTML.replace("__NOTE_MAX__", str(NOTE_MAX))
 
 
 if __name__ == "__main__":

@@ -51,9 +51,9 @@ def test_save_note_roundtrip_via_db(client, tmp_path):
 
 
 def test_too_long_note_rejected(client):
-    resp = client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "x" * 101})
+    resp = client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "x" * 201})
     assert resp.status_code == 400
-    assert "max 100" in resp.get_json()["error"]
+    assert "max 200" in resp.get_json()["error"]
 
 
 def test_empty_note_clears_to_null(client, tmp_path):
