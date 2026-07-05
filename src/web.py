@@ -350,6 +350,34 @@ def api_sources():
     return jsonify([r["source"] for r in rows])
 
 
+def _set_vuln_field(key, col, value, typedef):
+    """Shared writer for a per-row column on `vulns`.
+
+    `col`/`typedef` are server-controlled constants (never user input), so they
+    are interpolated as SQL identifiers; `value` is parameterized.
+    Auto-migrates the column if missing, retries only on genuine lock/contention
+    (re-raising other OperationalErrors so a schema/IO bug surfaces as a 500
+    traceback instead of a misleading "database busy" 503), and returns 404 when
+    no row matches the key. Returns (status_code, body_dict).
+    """
+    for attempt in range(3):
+        try:
+            with get_db_rw() as conn:
+                if col not in _vulns_columns(conn):
+                    conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
+                cur = conn.execute(f"UPDATE vulns SET {col}=? WHERE key=?", (value, key))
+                if cur.rowcount == 0:
+                    return 404, {"error": "no such vulnerability"}
+            return 200, {"ok": True, "key": key, col: value}
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() or "busy" in str(e).lower():
+                if attempt == 2:
+                    return 503, {"error": "database busy, try again"}
+                time.sleep(1)
+            else:
+                raise
+
+
 @app.route("/api/reproduced", methods=["POST"])
 def api_reproduced():
     """Toggle reproduced flag for a vulnerability by internal key."""
@@ -360,18 +388,8 @@ def api_reproduced():
     val = int(data.get("reproduced", 0))
     if val not in (-1, 0, 1, 2):
         return jsonify({"error": "reproduced must be -1, 0, or 1"}), 400
-    for attempt in range(3):
-        try:
-            with get_db_rw() as conn:
-                cols = _vulns_columns(conn)
-                if "reproduced" not in cols:
-                    conn.execute("ALTER TABLE vulns ADD COLUMN reproduced INTEGER DEFAULT 0")
-                conn.execute("UPDATE vulns SET reproduced=? WHERE key=?", (val, key))
-            return jsonify({"ok": True, "key": key, "reproduced": val})
-        except sqlite3.OperationalError:
-            if attempt == 2:
-                return jsonify({"error": "database busy, try again"}), 503
-            time.sleep(1)
+    code, body = _set_vuln_field(key, "reproduced", val, "INTEGER DEFAULT 0")
+    return jsonify(body), code
 
 
 @app.route("/api/note", methods=["POST"])
@@ -381,22 +399,18 @@ def api_note():
     key = (data.get("key") or "").strip()
     if not key:
         return jsonify({"error": "key required"}), 400
-    note = (data.get("note") or "").strip()
+    raw = data.get("note")
+    if raw is None:
+        note = ""
+    elif isinstance(raw, str):
+        note = raw.strip()
+    else:
+        return jsonify({"error": "note must be a string"}), 400
     if len(note) > 100:
         return jsonify({"error": "note too long (max 100)"}), 400
     stored = note if note else None
-    for attempt in range(3):
-        try:
-            with get_db_rw() as conn:
-                cols = _vulns_columns(conn)
-                if "note" not in cols:
-                    conn.execute("ALTER TABLE vulns ADD COLUMN note TEXT")
-                conn.execute("UPDATE vulns SET note=? WHERE key=?", (stored, key))
-            return jsonify({"ok": True, "key": key, "note": stored})
-        except sqlite3.OperationalError:
-            if attempt == 2:
-                return jsonify({"error": "database busy, try again"}), 503
-            time.sleep(1)
+    code, body = _set_vuln_field(key, "note", stored, "TEXT")
+    return jsonify(body), code
 
 
 # ── Vulnpilot API (for B-side dispatcher) ──
@@ -579,6 +593,7 @@ a:hover { text-decoration: underline; }
   padding: 22px 24px 20px; display: flex; flex-direction: column; gap: 10px;
   transition: transform .25s var(--spring), box-shadow .25s var(--spring);
   position: relative;
+  overflow-wrap: anywhere; min-width: 0;   /* long tokens wrap in any card text; flex item can shrink */
 }
 .vcard:hover { transform: translateY(-4px); box-shadow: var(--shadow-hard); }
 .vcard-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -649,7 +664,7 @@ a:hover { text-decoration: underline; }
   color: var(--ink); background: var(--sand);
   padding: 3px 10px; border-radius: 8px; letter-spacing: .2px;
 }
-.vcard-title { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.4; letter-spacing: -.005em; overflow-wrap: anywhere; }
+.vcard-title { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.4; letter-spacing: -.005em; }
 .vcard-summary { font-size: 13px; color: var(--muted); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .vcard-llm {
   display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%;
@@ -1010,7 +1025,7 @@ function safeUrl(u) {
   try {
     const p = new URL(u, 'http://x/');
     if (p.protocol !== 'http:' && p.protocol !== 'https:') return '#';
-    return u.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+    return p.href;   // resolved absolute URL — closes the protocol-relative (//host) bypass
   } catch(e) { return '#'; }
 }
 function _cvssToTier(score) {
@@ -1107,7 +1122,7 @@ async function loadVulns(append=false) {
         <div class="vcard-title">${esc(v.title)}</div>
         ${v.summary?`<div class="vcard-summary">${esc(v.summary)}</div>`:''}
         ${v.llm_verdict?`<div class="vcard-llm" title="${esc(v.llm_notes||'')}"><span class="llm-prefix">AI</span> ${esc(v.llm_verdict)}</div>`:''}
-        ${v.url?`<div class="vcard-link"><a href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
+        ${v.url?`<div class="vcard-link"><a href="${esc(safeUrl(v.url))}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
         <button type="button" class="repro-btn ${v.reproduced===1?'success':v.reproduced===2?'wip':v.reproduced===-1?'failed':''}" data-repro="${v.reproduced||0}" onclick="toggleRepro('${esc(v.key)}',this)">${v.reproduced===1?'✔ Reproduced':v.reproduced===2?'↻ Testing':v.reproduced===-1?'✘ Failed':'? Unverified'}</button>
       </div>`;
     }).join('');
@@ -1132,13 +1147,19 @@ async function loadVulns(append=false) {
 })();
 
 // ---- per-card note modal (double-click a card to open) ----
+// NOTE_MAX must match the server-side limit (api_note: len(note) > 100) and the
+// textarea's maxlength attribute — single source for the JS counter/slice.
+const NOTE_MAX = 100;
 const noteModal = document.getElementById('noteModal');
 const nmTextarea = document.getElementById('nmTextarea');
+nmTextarea.maxLength = NOTE_MAX;
 const nmCount = document.getElementById('nmCount');
 const nmErr = document.getElementById('nmErr');
 const nmEditBtn = document.getElementById('nmEditBtn');
 const nmSaveBtn = document.getElementById('nmSaveBtn');
 let nmKey = '', nmCurrentNote = '';
+
+function updateNmCount() { nmCount.textContent = nmTextarea.value.length + '/' + NOTE_MAX; }
 
 function openNoteModal(v) {
   nmKey = v.key; nmCurrentNote = v.note || '';
@@ -1158,36 +1179,47 @@ function setEditMode(on) {
   nmTextarea.readOnly = !on;
   nmEditBtn.disabled = on;        // 编辑 only enabled in read mode
   nmSaveBtn.disabled = !on;       // 保存 only enabled in edit mode
-  nmCount.textContent = nmTextarea.value.length + '/100';
+  updateNmCount();
   if (on) nmTextarea.focus();
 }
 function editNote() { setEditMode(true); }
 async function saveNote() {
   if (!nmKey) return;
-  const note = nmTextarea.value.slice(0, 100);
+  const saveKey = nmKey;                  // snapshot: don't touch a different card if reopened mid-save
+  nmSaveBtn.disabled = true;              // debounce: block a second concurrent POST
   nmErr.textContent = '';
+  const note = nmTextarea.value.slice(0, NOTE_MAX);
   try {
     const resp = await fetch('/api/note', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({key: nmKey, note})
+      body: JSON.stringify({key: saveKey, note})
     });
+    const result = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      nmErr.textContent = resp.status === 400 ? '超过 100 字上限' : ('保存失败 (' + resp.status + ')');
+      nmErr.textContent = resp.status === 400 ? '超过 100 字上限'
+                       : resp.status === 404 ? '该漏洞已不存在（可能已被清理）'
+                       : ('保存失败 (' + resp.status + ')');
+      if (nmKey === saveKey) nmSaveBtn.disabled = false;   // let the user retry/fix
       return;
     }
-    nmCurrentNote = note;
-    const v = lastVulns.find(x => x.key === nmKey);
-    if (v) v.note = note;
-    setEditMode(false);
+    const stored = result.note != null ? result.note : '';  // server-stored (stripped) value
+    if (nmKey === saveKey) {                                // still the same card?
+      nmCurrentNote = stored;
+      const v = lastVulns.find(x => x.key === saveKey);
+      if (v) v.note = stored;
+      nmTextarea.value = stored;                            // reflect the server's stripped value
+      setEditMode(false);
+    }
   } catch (e) {
     nmErr.textContent = '网络错误';
+    if (nmKey === saveKey) nmSaveBtn.disabled = false;
   }
 }
 function closeNoteModal() {
   noteModal.classList.add('hidden');
   nmKey = ''; nmCurrentNote = '';
 }
-nmTextarea.addEventListener('input', () => { nmCount.textContent = nmTextarea.value.length + '/100'; });
+nmTextarea.addEventListener('input', updateNmCount);
 document.getElementById('cardList').addEventListener('dblclick', (e) => {
   if (e.target.closest('a') || e.target.closest('button')) return;  // let links/buttons work
   const card = e.target.closest('.vcard');

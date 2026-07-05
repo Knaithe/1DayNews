@@ -113,3 +113,29 @@ def test_dashboard_html_has_note_controls(client):
     assert "openNoteModal" in html
     assert "dblclick" in html          # double-click a card opens the modal
     assert "/api/note" in html         # saveNote() posts here
+
+
+def test_save_then_readback_via_api(client):
+    # E2E HTTP round-trip: POST /api/note then GET /api/vulns reflects it
+    resp = client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "E2E round trip"})
+    assert resp.status_code == 200
+    row = next(d for d in client.get("/api/vulns").get_json() if d["key"] == "cve:CVE-2026-1001")
+    assert row["note"] == "E2E round trip"
+
+
+def test_save_strips_and_returns_server_value(client):
+    # server stores the stripped value and returns it (keeps the client aligned)
+    resp = client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "  hi  "})
+    assert resp.status_code == 200
+    assert resp.get_json()["note"] == "hi"
+
+
+def test_save_unknown_key_returns_404(client):
+    resp = client.post("/api/note", json={"key": "cve:DOES-NOT-EXIST", "note": "x"})
+    assert resp.status_code == 404
+
+
+def test_note_non_string_rejected_400(client):
+    resp = client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": 123})
+    assert resp.status_code == 400
+    assert "string" in resp.get_json()["error"]
