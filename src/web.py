@@ -612,13 +612,44 @@ a:hover { text-decoration: underline; }
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
+.note-modal {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(17,16,19,0.45);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.note-modal.hidden { display: none; }
+.nm-card {
+  background: var(--cream); border: 2px solid var(--ink); border-radius: var(--radius);
+  box-shadow: var(--shadow-hard); padding: 20px 22px;
+  width: 100%; max-width: 520px; max-height: 85vh; overflow: auto;
+}
+.nm-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.nm-cve { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; background: var(--sand); color: var(--ink); padding: 2px 8px; border-radius: var(--pill); }
+.nm-src { font-size: 12px; color: var(--muted); }
+.nm-x { margin-left: auto; border: none; background: transparent; cursor: pointer; font-size: 16px; color: var(--ink); opacity: 0.5; padding: 0 4px; }
+.nm-x:hover { opacity: 1; }
+.nm-title { font-size: 16px; font-weight: 700; color: var(--ink); line-height: 1.4; margin-bottom: 6px; overflow-wrap: anywhere; }
+.nm-link { font-size: 12px; color: var(--violet); display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.nm-sep { border: none; border-top: 1px solid rgba(17,16,19,0.15); margin: 14px 0; }
+.nm-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
+#nmTextarea { width: 100%; box-sizing: border-box; min-height: 90px; border: 1.5px solid var(--ink); border-radius: 10px; padding: 8px; font-family: inherit; font-size: 14px; line-height: 1.5; resize: vertical; background: var(--white); color: var(--body); }
+#nmTextarea[readonly] { background: rgba(17,16,19,0.04); }
+#nmTextarea:focus { outline: none; border-color: var(--violet); box-shadow: 0 0 0 2px rgba(124,92,252,.25); }
+.nm-edit-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+.nm-count { font-size: 11px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+.nm-btn { border: 1.5px solid var(--ink); border-radius: var(--pill); padding: 5px 16px; cursor: pointer; background: var(--cream); font-family: inherit; font-size: 13px; color: var(--ink); }
+.nm-btn:hover:not(:disabled) { background: var(--yellow); }
+.nm-btn:disabled { opacity: 0.35; cursor: default; }
+.nm-btn.nm-primary { background: var(--ink); color: var(--cream); border-color: var(--ink); }
+.nm-btn.nm-primary:hover:not(:disabled) { opacity: 0.85; background: var(--ink); }
+.nm-err { color: var(--red); font-size: 12px; margin-top: 8px; min-height: 14px; text-align: right; }
 .vcard-id {
   display: inline-block; align-self: flex-start;
   font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
   color: var(--ink); background: var(--sand);
   padding: 3px 10px; border-radius: 8px; letter-spacing: .2px;
 }
-.vcard-title { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.4; letter-spacing: -.005em; }
+.vcard-title { font-size: 15px; font-weight: 700; color: var(--ink); line-height: 1.4; letter-spacing: -.005em; overflow-wrap: anywhere; }
 .vcard-summary { font-size: 13px; color: var(--muted); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .vcard-llm {
   display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%;
@@ -787,6 +818,29 @@ a:hover { text-decoration: underline; }
 </main>
 <div class="footer">vuln-monitor &middot; read-only</div>
 
+<div id="noteModal" class="note-modal hidden" role="dialog" aria-modal="true" aria-labelledby="nmTitle">
+  <div class="nm-card">
+    <div class="nm-head">
+      <span id="nmCve" class="nm-cve"></span>
+      <span id="nmSource" class="nm-src"></span>
+      <button type="button" class="nm-x" onclick="closeNoteModal()" aria-label="关闭">✕</button>
+    </div>
+    <div id="nmTitle" class="nm-title"></div>
+    <a id="nmLink" class="nm-link" target="_blank" rel="noopener noreferrer"></a>
+    <hr class="nm-sep">
+    <div class="nm-label">备注</div>
+    <textarea id="nmTextarea" readonly maxlength="100" placeholder="使用情况说明…（≤100 字）"></textarea>
+    <div class="nm-edit-foot">
+      <span id="nmCount" class="nm-count">0/100</span>
+      <span>
+        <button type="button" class="nm-btn nm-primary" id="nmEditBtn" onclick="editNote()">编辑</button>
+        <button type="button" class="nm-btn" id="nmSaveBtn" onclick="saveNote()" disabled>保存</button>
+      </span>
+    </div>
+    <div id="nmErr" class="nm-err"></div>
+  </div>
+</div>
+
 <script>
 const SRC_STYLE = {
   CISA_KEV:  {bg:"#FFE0E0",fg:"#b91c1c"}, Fortinet: {bg:"#FFF3E0",fg:"#c2410c"},
@@ -814,6 +868,7 @@ const activeSevs = new Set(['critical','high']);
 const activeSrcs = new Set();
 const activeExcludes = new Set(['chrome','firefox','linux kernel','wordpress','android','adobe']);
 let currentLimit = 100;
+let lastVulns = [];
 const MAX_LIMIT = __LIMIT_MAX__;
 document.getElementById('loadMoreBtn').addEventListener('click', () => {
   currentLimit = Math.min(currentLimit + 100, MAX_LIMIT);
@@ -1027,6 +1082,7 @@ async function loadVulns(append=false) {
   if (append) { moreBtn.disabled = true; moreBtn.textContent = 'Loading…'; }
   try {
     const vulns = await (await fetch('/api/vulns?' + params)).json();
+    lastVulns = vulns;
     if (!vulns.length) {
       container.innerHTML = '<div class="empty"><p style="font-size:32px">&#128270;</p><p>No vulnerabilities found</p></div>';
       moreRow.classList.add('hidden');
@@ -1038,7 +1094,7 @@ async function loadVulns(append=false) {
     container.innerHTML = vulns.map((v,i) => {
       const ss = SRC_STYLE[v.source] || {bg:'#F3F4F6',fg:'#374151'};
       const cs = CATEGORY_STYLE[v.category] || {bg:'#F3F4F6',fg:'#6B7280'};
-      return `<div class="vcard" style="animation:fadeUp .4s ${i*.03}s both">
+      return `<div class="vcard" data-key="${esc(v.key)}" style="animation:fadeUp .4s ${i*.03}s both">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
           ${v.category&&CATEGORY_STYLE[v.category]?`<span class="reason-badge" style="background:${cs.bg};color:${cs.fg}">${esc(cap1(v.category))}</span>`:''}
@@ -1074,6 +1130,75 @@ async function loadVulns(append=false) {
     localStorage.setItem('sideStatsCollapsed', collapsed ? '1' : '0');
   });
 })();
+
+// ---- per-card note modal (double-click a card to open) ----
+const noteModal = document.getElementById('noteModal');
+const nmTextarea = document.getElementById('nmTextarea');
+const nmCount = document.getElementById('nmCount');
+const nmErr = document.getElementById('nmErr');
+const nmEditBtn = document.getElementById('nmEditBtn');
+const nmSaveBtn = document.getElementById('nmSaveBtn');
+let nmKey = '', nmCurrentNote = '';
+
+function openNoteModal(v) {
+  nmKey = v.key; nmCurrentNote = v.note || '';
+  document.getElementById('nmCve').textContent = v.id || v.key;
+  document.getElementById('nmSource').textContent = v.source || '';
+  document.getElementById('nmTitle').textContent = v.title || '';
+  const linkEl = document.getElementById('nmLink');
+  const safe = safeUrl(v.url);
+  if (safe !== '#') { linkEl.textContent = v.url; linkEl.href = safe; linkEl.style.display = ''; }
+  else { linkEl.style.display = 'none'; }
+  nmErr.textContent = '';
+  nmTextarea.value = nmCurrentNote;
+  setEditMode(false);
+  noteModal.classList.remove('hidden');
+}
+function setEditMode(on) {
+  nmTextarea.readOnly = !on;
+  nmEditBtn.disabled = on;        // 编辑 only enabled in read mode
+  nmSaveBtn.disabled = !on;       // 保存 only enabled in edit mode
+  nmCount.textContent = nmTextarea.value.length + '/100';
+  if (on) nmTextarea.focus();
+}
+function editNote() { setEditMode(true); }
+async function saveNote() {
+  if (!nmKey) return;
+  const note = nmTextarea.value.slice(0, 100);
+  nmErr.textContent = '';
+  try {
+    const resp = await fetch('/api/note', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: nmKey, note})
+    });
+    if (!resp.ok) {
+      nmErr.textContent = resp.status === 400 ? '超过 100 字上限' : ('保存失败 (' + resp.status + ')');
+      return;
+    }
+    nmCurrentNote = note;
+    const v = lastVulns.find(x => x.key === nmKey);
+    if (v) v.note = note;
+    setEditMode(false);
+  } catch (e) {
+    nmErr.textContent = '网络错误';
+  }
+}
+function closeNoteModal() {
+  noteModal.classList.add('hidden');
+  nmKey = ''; nmCurrentNote = '';
+}
+nmTextarea.addEventListener('input', () => { nmCount.textContent = nmTextarea.value.length + '/100'; });
+document.getElementById('cardList').addEventListener('dblclick', (e) => {
+  if (e.target.closest('a') || e.target.closest('button')) return;  // let links/buttons work
+  const card = e.target.closest('.vcard');
+  if (!card || !card.dataset.key) return;
+  const v = lastVulns.find(x => x.key === card.dataset.key);
+  if (v) openNoteModal(v);
+});
+noteModal.addEventListener('click', (e) => { if (e.target === noteModal) closeNoteModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !noteModal.classList.contains('hidden')) closeNoteModal();
+});
 
 loadSources(); loadStats(); loadVulns();
 setInterval(loadStats, 60000);  // refresh stats card + stats bar as new vulns arrive

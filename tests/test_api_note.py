@@ -105,3 +105,11 @@ def test_pending_excludes_note(client):
     assert data["count"] >= 1
     for v in data["vulns"]:
         assert "note" not in v
+
+
+def test_dashboard_html_has_note_controls(client):
+    html = client.get("/").get_data(as_text=True)
+    assert 'id="noteModal"' in html
+    assert "openNoteModal" in html
+    assert "dblclick" in html          # double-click a card opens the modal
+    assert "/api/note" in html         # saveNote() posts here
