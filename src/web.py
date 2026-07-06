@@ -10,6 +10,7 @@ Usage:
 """
 import argparse
 import hmac
+import json
 import secrets
 import sqlite3
 import os
@@ -340,8 +341,11 @@ def api_stats():
     fetch_state = None
     try:
         if FETCH_STATE_FILE.exists():
-            import json
-            fetch_state = json.loads(FETCH_STATE_FILE.read_text(encoding="utf-8"))
+            raw = json.loads(FETCH_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                c = raw.get("collected")
+                raw["collected"] = int(c) if isinstance(c, (int, float)) and not isinstance(c, bool) else None
+                fetch_state = raw
     except Exception:
         pass
     return jsonify({
@@ -1015,13 +1019,14 @@ async function loadStats() {
     const d = await (await fetch('/api/stats')).json();
     const srcCount = Object.keys(d.sources).length;
     const f = d.fetch || {};
-    const ftime = f.ts ? new Date(f.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—';
-    const fcount = (f.collected != null) ? f.collected : '—';
+    const fd = f.ts ? new Date(f.ts) : null;
+    const ftime = (fd && Number.isFinite(fd.getTime())) ? fd.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—';
+    const fcount = (typeof f.collected === 'number') ? f.collected : '—';
     document.getElementById('statsBar').innerHTML = `
       <span class="stat-item"><span class="stat-num">${d.total}</span><span class="stat-label">Total Vulns</span></span>
       <span class="stat-item"><span class="stat-num">${d.pushed}</span><span class="stat-label">Pushed</span></span>
       <span class="stat-item"><span class="stat-num">${srcCount}</span><span class="stat-label">Active Sources</span></span>
-      <span class="stat-item"><span class="stat-num">${ftime}</span><span class="stat-label">Last fetch · ${fcount} items</span></span>
+      <span class="stat-item"><span class="stat-num">${esc(ftime)}</span><span class="stat-label">Last fetch · ${esc(String(fcount))} items</span></span>
     `;
     document.getElementById('srcCount').textContent = srcCount;
 

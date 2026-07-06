@@ -19,7 +19,7 @@ def client(tmp_path):
         llm_verified INTEGER DEFAULT 0, llm_verdict TEXT, llm_notes TEXT,
         tg_sent INTEGER DEFAULT 0, wecom_sent INTEGER DEFAULT 0,
         dingtalk_sent INTEGER DEFAULT 0, feishu_sent INTEGER DEFAULT 0,
-        cvss_vector TEXT, cvss_pr TEXT
+        cvss_vector TEXT, cvss_pr TEXT, reproduced INTEGER DEFAULT 0
     )""")
     now = datetime.now(timezone.utc).timestamp()
     conn.execute(
@@ -31,6 +31,7 @@ def client(tmp_path):
 
     web_mod.DB_FILE = db_path
     web_mod.TOKEN_FILE = tmp_path / ".web_token"
+    web_mod.FETCH_STATE_FILE = tmp_path / "fetch_state.json"
     web_mod._MAGIC_TOKEN = None
     web_mod.app.config["TESTING"] = True
     yield web_mod.app.test_client()
@@ -185,3 +186,20 @@ def test_note_duplicate_column_race_retries_to_success(client, monkeypatch):
         def __exit__(self, *a): return self.real.__exit__(*a)
     monkeypatch.setattr(web_mod, "get_db_rw", _DupOnce)
     assert client.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "ok"}).status_code == 200
+
+
+def test_stats_fetch_field_from_state_file(client, tmp_path):
+    # daemon writes fetch_state.json → /api/stats surfaces it (collected coerced to int)
+    (tmp_path / "fetch_state.json").write_text(
+        '{"ts":"2026-07-06T02:17:38+00:00","collected":6046,"new":1,"pushed":0}', encoding="utf-8")
+    f = client.get("/api/stats").get_json()["fetch"]
+    assert f["collected"] == 6046
+    assert f["ts"].startswith("2026-07-06")
+
+
+def test_stats_fetch_rejects_malformed_state(client, tmp_path):
+    # non-dict file → fetch:null (graceful); string collected → coerced to None (XSS hardening)
+    (tmp_path / "fetch_state.json").write_text('"not-a-dict"', encoding="utf-8")
+    assert client.get("/api/stats").get_json()["fetch"] is None
+    (tmp_path / "fetch_state.json").write_text('{"ts":"x","collected":"<img src=x>"}', encoding="utf-8")
+    assert client.get("/api/stats").get_json()["fetch"]["collected"] is None

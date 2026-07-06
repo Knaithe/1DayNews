@@ -2442,6 +2442,7 @@ def _write_fetch_state(collected, pushed, filtered, already_seen, backfilled, db
         tmp = FETCH_STATE.with_suffix(".tmp")
         tmp.write_text(json.dumps(state), encoding="utf-8")
         os.replace(tmp, FETCH_STATE)
+        os.chmod(FETCH_STATE, 0o644)   # readable by the web service even if umask is 077
     except Exception:
         log.warning("failed to write fetch_state.json", exc_info=True)
 
