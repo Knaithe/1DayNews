@@ -233,3 +233,22 @@ def test_pending_excludes_tags(client):
     client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": ["内网目标"]})
     for v in client.get("/api/pending").get_json()["vulns"]:
         assert "tags" not in v
+
+
+def test_vulns_tags_tolerates_corrupt_value(client, tmp_path):
+    # a non-JSON / non-list tags cell must not 500 the whole /api/vulns
+    conn = sqlite3.connect(str(tmp_path / "vuln_cache.db"))
+    conn.execute("ALTER TABLE vulns ADD COLUMN tags TEXT")
+    conn.execute("UPDATE vulns SET tags='not-json' WHERE key=?", ("cve:CVE-2026-1001",))
+    conn.commit(); conn.close()
+    data = client.get("/api/vulns").get_json()           # must not 500
+    row = next(d for d in data if d["key"] == "cve:CVE-2026-1001")
+    assert row["tags"] == []                              # corrupt → []
+
+
+def test_dashboard_html_has_tag_controls(client):
+    html = client.get("/").get_data(as_text=True)
+    assert "tag-badge" in html
+    assert 'id="nmTags"' in html
+    assert "TAG_PALETTE" in html
+    assert "内网目标" in html        # palette includes the example tag

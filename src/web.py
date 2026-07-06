@@ -208,6 +208,21 @@ def _int_arg(name, default, lo, hi):
 
 
 # ── API ──
+def _parse_tags(s):
+    """Parse the stored tags JSON; return [] on any malformation (non-JSON / non-list).
+
+    Guards /api/vulns so one corrupt `tags` cell degrades that one card to
+    'no tags' instead of 500-ing the whole endpoint.
+    """
+    if not s:
+        return []
+    try:
+        v = json.loads(s)
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
 @app.route("/api/vulns")
 def api_vulns():
     with get_db() as conn:
@@ -316,7 +331,7 @@ def api_vulns():
         "vuln_type": r["vuln_type"] if has_vt else None,
         "category": r["category"] if has_cat else None,
         "note": r["note"] if has_note else None,
-        "tags": (json.loads(r["tags"]) if (has_tags and r["tags"]) else []),
+        "tags": (_parse_tags(r["tags"]) if has_tags else []),
         "freshness": r["freshness"] if has_fr else None,
         "pr": r["cvss_pr"] if has_pr else None,
         "ui": r["cvss_ui"] if has_ui else None,
@@ -1189,7 +1204,7 @@ async function loadVulns(append=false) {
           ${v.category&&CATEGORY_STYLE[v.category]?`<span class="reason-badge" style="background:${cs.bg};color:${cs.fg}">${esc(cap1(v.category))}</span>`:''}
           ${sevBadge(v)}
           ${v.pr==='N'?'<span class="pr-badge">Unauth</span>':''}
-          <span class="tag-badges" data-tags-key="${esc(v.key)}">${(v.tags&&v.tags.length)?v.tags.map(t=>'<span class="tag-badge">'+esc(t)+'</span>').join(''):''}</span>
+          ${(Array.isArray(v.tags)&&v.tags.length)?('<span class="tag-badges" data-tags-key="'+esc(v.key)+'">'+v.tags.map(t=>'<span class="tag-badge">'+esc(t)+'</span>').join('')+'</span>'):''}
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
           <span class="vcard-date">${esc(v.date||'-')}</span>
         </div>
@@ -1248,30 +1263,35 @@ function toggleTag(btn) {
   if (!nmKey) return;
   const v = lastVulns.find(x => x.key === nmKey);
   if (!v) return;
-  const cur = new Set(v.tags || []);
   const t = btn.dataset.tag;
+  const cur = new Set(Array.isArray(v.tags) ? v.tags : []);
   if (cur.has(t)) cur.delete(t); else cur.add(t);
-  postTags(nmKey, [...cur]);
+  const next = [...cur];
+  v.tags = next;                 // optimistic: immediate local update (fixes rapid-toggle race)
+  renderTags(next);
+  refreshCardTags(nmKey);
+  postTags(nmKey, next);
 }
 async function postTags(key, tags) {
   try {
-    const resp = await fetch('/api/tags', {
+    await fetch('/api/tags', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({key, tags})
     });
-    const result = await resp.json().catch(() => ({}));
-    if (!resp.ok) return;
-    const stored = result.tags || [];
-    const v = lastVulns.find(x => x.key === key);
-    if (v) v.tags = stored;
-    if (nmKey === key) renderTags(stored);
-    refreshCardTags(key);
+    // optimistic update already applied; server accepted `tags`.
+    // On failure the next loadVulns reconciles.
   } catch (e) {}
 }
 function refreshCardTags(key) {
   const v = lastVulns.find(x => x.key === key);
-  const html = (v && v.tags && v.tags.length) ? v.tags.map(t => '<span class="tag-badge">'+esc(t)+'</span>').join('') : '';
-  document.querySelectorAll('.tag-badges').forEach(el => { if (el.dataset.tagsKey === key) el.innerHTML = html; });
+  const tags = (v && Array.isArray(v.tags)) ? v.tags : [];
+  const html = tags.length ? ('<span class="tag-badges" data-tags-key="'+esc(key)+'">'+tags.map(t => '<span class="tag-badge">'+esc(t)+'</span>').join('')+'</span>') : '';
+  document.querySelectorAll('.vcard').forEach(card => {
+    if (card.dataset.key !== key) return;
+    const existing = card.querySelector('.tag-badges');
+    if (existing) { if (html) existing.outerHTML = html; else existing.remove(); }
+    else if (html) { const top = card.querySelector('.vcard-top'); if (top) top.insertAdjacentHTML('beforeend', html); }
+  });
 }
 
 function openNoteModal(v) {
