@@ -10,7 +10,7 @@
 - **聚焦 RCE + bypass**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声；CJK 边界匹配（`_ab()`）确保 `认证绕过RCE漏洞` 不被 `\b` 漏掉
 - **增量去重**：SQLite WAL 模式，CVE 为主键，60 天 TTL，同一 CVE 跨源只推一次；CVE 年份 > 1 年硬过滤 nday，无例外
 - **多视图查询**：简表 / 详细 / 通知友好 / JSON，支持 CVE/厂商/关键词/时间过滤
-- **Web 仪表盘**：暖色卡片式界面，实时搜索过滤，只绑 localhost（SSH 隧道访问）
+- **Web 仪表盘**：暖色卡片式界面，实时搜索过滤，双击卡片记备注，统计栏显示最近抓取时间/条数，只绑 localhost（SSH 隧道访问）
 - **自动补全**：缺字段的高价值记录自动从 CVE/公告编号/标题推断链接和来源
 - **AI 驱动**：Claude Code skill（`/vuln`），自然语言查询漏洞情报
 - **LLM 研判**：DeepSeek/GPT function calling 核验漏洞真实性，verdict = confirmed/not_relevant/noise，NVD CVSS 自动补全
@@ -52,7 +52,7 @@ python src/web.py                    # http://127.0.0.1:8001
 ssh -L 8001:127.0.0.1:8001 user@srv  # 远程 SSH 隧道访问
 ```
 
-Pluto Security 风格暖色卡片布局，实时搜索，药丸式源/原因/时间筛选，严重性颜色编码。默认只显示精选（pushed），可切换全量。安全加固（CSP/X-Frame-Options/nosniff），只读 SQLite + waitress，只绑 127.0.0.1。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
+Pluto Security 风格暖色卡片布局，实时搜索，药丸式源/原因/时间筛选，严重性颜色编码。默认只显示精选（pushed），可切换全量。**双击卡片**弹出备注编辑器（≤200 字，记使用情况/复现状态），统计栏显示**最近一次抓取时间 + 条数**。安全加固（CSP/X-Frame-Options/nosniff），waitress + SQLite（读为主；备注、复现标记走受控写接口），只绑 127.0.0.1。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
 
 ## 推送通道
 
@@ -306,13 +306,18 @@ cd /opt/vuln-monitor && claude
 
 ## API
 
-vuln-monitor 对外暴露只读接口，供 vulnpilot dispatcher（B 机）拉取待分析漏洞：
+dashboard 与外部消费者共用的接口（均走 web dashboard token 鉴权；loopback 免鉴权）：
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/api/pending` | GET | 返回最近 7 天已推送的漏洞（固定上限 1000，无外部参数） |
+| `/api/vulns` | GET | 主查询：漏洞列表，支持 q/source/category/severity/pr/ui/reproduced/pushed/days/limit 过滤 |
+| `/api/stats` | GET | 聚合统计：total/pushed + 按源·类别·复现分组 + `fetch`（最近抓取时间/条数） |
+| `/api/sources` | GET | 去重的源名列表（近 7d） |
+| `/api/reproduced` | POST | 设置某条记录的复现标记 `{key, reproduced∈{-1,0,1,2}}` |
+| `/api/note` | POST | 设置/清空某条记录的备注 `{key, note}`（≤200 字，非字符串→400） |
+| `/api/pending` | GET | **B 机拉取**：最近 7 天 `pushed=1`，固定字段、上限 1000（不含 note），无外部参数 |
 
-鉴权：`Authorization: Bearer <token>` / `?token=` / Cookie，共用 web dashboard token。B 侧自行维护 CVE 去重。详见 [`docs/api-vulnpilot.md`](docs/api-vulnpilot.md)。
+写接口（`/api/reproduced`、`/api/note`）走共享 `_set_vuln_field` 助手：参数化 SQL、缺列自动迁移、锁重试、未知 key→404。`/api/pending` 鉴权：`Authorization: Bearer <token>` / `?token=` / Cookie。B 侧自行维护 CVE 去重。详见 [`docs/api-vulnpilot.md`](docs/api-vulnpilot.md)。
 
 ## 许可
 
