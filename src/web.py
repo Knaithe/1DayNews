@@ -292,7 +292,7 @@ def api_vulns():
         base_cols = ["key", "cve_id", "source", "title", "link", "summary", "reason", "pushed",
                      "created_at", "cve_published", "severity", "cvss", "llm_verdict",
                      "llm_notes", "tg_sent"]
-        optional_cols = ["vuln_type", "category", "freshness", "cvss_pr", "cvss_ui", "reproduced", "note"]
+        optional_cols = ["vuln_type", "category", "freshness", "cvss_pr", "cvss_ui", "reproduced", "note", "tags"]
         cols = base_cols + [c for c in optional_cols if c in cols_avail]
         sql = f"SELECT {','.join(cols)} FROM vulns"
         if where:
@@ -309,12 +309,14 @@ def api_vulns():
     has_repro = "reproduced" in cols_avail
     has_cat = "category" in cols_avail
     has_note = "note" in cols_avail
+    has_tags = "tags" in cols_avail
     return jsonify([{
         "key": r["key"], "id": r["cve_id"], "source": r["source"], "title": r["title"],
         "url": r["link"], "summary": r["summary"], "reason": r["reason"],
         "vuln_type": r["vuln_type"] if has_vt else None,
         "category": r["category"] if has_cat else None,
         "note": r["note"] if has_note else None,
+        "tags": (json.loads(r["tags"]) if (has_tags and r["tags"]) else []),
         "freshness": r["freshness"] if has_fr else None,
         "pr": r["cvss_pr"] if has_pr else None,
         "ui": r["cvss_ui"] if has_ui else None,
@@ -366,7 +368,7 @@ def api_sources():
 
 # allowlist for _set_vuln_field: col -> SQL typedef. Defense-in-depth so the
 # f-string identifier interpolation can never ingest caller-supplied input.
-_ALLOWED_VULN_COLS = {"note": "TEXT", "reproduced": "INTEGER DEFAULT 0"}
+_ALLOWED_VULN_COLS = {"note": "TEXT", "reproduced": "INTEGER DEFAULT 0", "tags": "TEXT"}
 
 
 def _set_vuln_field(key, col, value):
@@ -440,6 +442,33 @@ def api_note():
         return jsonify({"error": f"note too long (max {NOTE_MAX})"}), 400
     stored = note if note else None
     code, body = _set_vuln_field(key, "note", stored)
+    return jsonify(body), code
+
+
+@app.route("/api/tags", methods=["POST"])
+def api_tags():
+    """Set the tag list on a vulnerability (e.g. 内网目标/重点关注/已处理/误报)."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object body required"}), 400
+    key = (data.get("key") or "").strip()
+    if not key:
+        return jsonify({"error": "key required"}), 400
+    raw = data.get("tags")
+    if raw is None:
+        tags = []
+    elif isinstance(raw, list) and all(isinstance(t, str) for t in raw):
+        tags = [t.strip() for t in raw if t.strip()]
+    else:
+        return jsonify({"error": "tags must be a list of strings"}), 400
+    if len(tags) > 8:
+        return jsonify({"error": "too many tags (max 8)"}), 400
+    if any(len(t) > 16 for t in tags):
+        return jsonify({"error": "tag too long (max 16 chars)"}), 400
+    stored = json.dumps(tags, ensure_ascii=False) if tags else None
+    code, body = _set_vuln_field(key, "tags", stored)
+    if code == 200:
+        body["tags"] = tags   # return the parsed list, not the JSON string
     return jsonify(body), code
 
 
@@ -655,6 +684,12 @@ a:hover { text-decoration: underline; }
 .exclude-pill { font-size: 11px; }
 .exclude-pill.active { opacity: .5; background: #9ca3af; color: var(--white); text-decoration: line-through; }
 .exclude-pill.active:hover { opacity: .8; }   /* grayed = filtered out; hover hints it's still clickable */
+.tag-badges { display: inline-flex; gap: 4px; }
+.tag-badge { background: var(--violet); color: var(--white); font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px; }
+.nm-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-chip { border: 1.5px solid var(--ink); border-radius: var(--pill); padding: 4px 12px; font-size: 12px; cursor: pointer; background: var(--card); color: var(--ink); font-family: inherit; }
+.tag-chip.on { background: var(--violet); color: var(--white); border-color: var(--violet); }
+.tag-chip:hover { opacity: .85; }
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
@@ -883,6 +918,9 @@ a:hover { text-decoration: underline; }
         <button type="button" class="nm-btn" id="nmSaveBtn" onclick="saveNote()" disabled>保存</button>
       </span>
     </div>
+    <div class="nm-sep"></div>
+    <div class="nm-label">标签（点选即时生效，卡片显示）</div>
+    <div id="nmTags" class="nm-tags"></div>
     <div id="nmErr" class="nm-err"></div>
   </div>
 </div>
@@ -1151,6 +1189,7 @@ async function loadVulns(append=false) {
           ${v.category&&CATEGORY_STYLE[v.category]?`<span class="reason-badge" style="background:${cs.bg};color:${cs.fg}">${esc(cap1(v.category))}</span>`:''}
           ${sevBadge(v)}
           ${v.pr==='N'?'<span class="pr-badge">Unauth</span>':''}
+          <span class="tag-badges" data-tags-key="${esc(v.key)}">${(v.tags&&v.tags.length)?v.tags.map(t=>'<span class="tag-badge">'+esc(t)+'</span>').join(''):''}</span>
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
           <span class="vcard-date">${esc(v.date||'-')}</span>
         </div>
@@ -1194,8 +1233,46 @@ const nmErr = document.getElementById('nmErr');
 const nmEditBtn = document.getElementById('nmEditBtn');
 const nmSaveBtn = document.getElementById('nmSaveBtn');
 let nmKey = '', nmCurrentNote = '';
+const TAG_PALETTE = ['内网目标','重点关注','已处理','误报'];
+const nmTags = document.getElementById('nmTags');
 
 function updateNmCount() { nmCount.textContent = nmTextarea.value.length + '/' + NOTE_MAX; }
+
+function renderTags(tags) {
+  const cur = new Set(tags || []);
+  nmTags.innerHTML = TAG_PALETTE.map(t =>
+    `<button type="button" class="tag-chip${cur.has(t)?' on':''}" data-tag="${esc(t)}" onclick="toggleTag(this)">${esc(t)}</button>`
+  ).join('');
+}
+function toggleTag(btn) {
+  if (!nmKey) return;
+  const v = lastVulns.find(x => x.key === nmKey);
+  if (!v) return;
+  const cur = new Set(v.tags || []);
+  const t = btn.dataset.tag;
+  if (cur.has(t)) cur.delete(t); else cur.add(t);
+  postTags(nmKey, [...cur]);
+}
+async function postTags(key, tags) {
+  try {
+    const resp = await fetch('/api/tags', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key, tags})
+    });
+    const result = await resp.json().catch(() => ({}));
+    if (!resp.ok) return;
+    const stored = result.tags || [];
+    const v = lastVulns.find(x => x.key === key);
+    if (v) v.tags = stored;
+    if (nmKey === key) renderTags(stored);
+    refreshCardTags(key);
+  } catch (e) {}
+}
+function refreshCardTags(key) {
+  const v = lastVulns.find(x => x.key === key);
+  const html = (v && v.tags && v.tags.length) ? v.tags.map(t => '<span class="tag-badge">'+esc(t)+'</span>').join('') : '';
+  document.querySelectorAll('.tag-badges').forEach(el => { if (el.dataset.tagsKey === key) el.innerHTML = html; });
+}
 
 function openNoteModal(v) {
   nmKey = v.key; nmCurrentNote = v.note || '';
@@ -1209,6 +1286,7 @@ function openNoteModal(v) {
   nmErr.textContent = '';
   nmTextarea.value = nmCurrentNote;
   setEditMode(false);
+  renderTags(v.tags || []);
   noteModal.classList.remove('hidden');
 }
 function setEditMode(on) {

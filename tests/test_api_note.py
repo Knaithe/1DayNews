@@ -203,3 +203,33 @@ def test_stats_fetch_rejects_malformed_state(client, tmp_path):
     assert client.get("/api/stats").get_json()["fetch"] is None
     (tmp_path / "fetch_state.json").write_text('{"ts":"x","collected":"<img src=x>"}', encoding="utf-8")
     assert client.get("/api/stats").get_json()["fetch"]["collected"] is None
+
+
+def test_tags_roundtrip_via_api(client):
+    resp = client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": ["内网目标", "重点关注"]})
+    assert resp.status_code == 200
+    assert resp.get_json()["tags"] == ["内网目标", "重点关注"]
+    row = next(d for d in client.get("/api/vulns").get_json() if d["key"] == "cve:CVE-2026-1001")
+    assert row["tags"] == ["内网目标", "重点关注"]
+
+
+def test_tags_validation(client):
+    assert client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": "内网目标"}).status_code == 400      # not a list
+    assert client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": [123]}).status_code == 400           # non-string element
+    assert client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": ["x"] * 9}).status_code == 400       # >8 tags
+    assert client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": ["x" * 17]}).status_code == 400      # tag >16 chars
+
+
+def test_tags_clear_to_empty(client):
+    client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": ["内网目标"]})
+    resp = client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": []})
+    assert resp.status_code == 200
+    assert resp.get_json()["tags"] == []
+    row = next(d for d in client.get("/api/vulns").get_json() if d["key"] == "cve:CVE-2026-1001")
+    assert row["tags"] == []
+
+
+def test_pending_excludes_tags(client):
+    client.post("/api/tags", json={"key": "cve:CVE-2026-1001", "tags": ["内网目标"]})
+    for v in client.get("/api/pending").get_json()["vulns"]:
+        assert "tags" not in v

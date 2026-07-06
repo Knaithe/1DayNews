@@ -648,6 +648,7 @@ def init_db(conn):
         ("reproduced",   "INTEGER DEFAULT 0"),
         ("category",     "TEXT"),
         ("note",         "TEXT"),
+        ("tags",         "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE vulns ADD COLUMN {col} {typedef}")
