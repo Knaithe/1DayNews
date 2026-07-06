@@ -117,6 +117,7 @@ DB_FILE        = DATA_DIR / "vuln_cache.db"
 _JSON_LEGACY   = DATA_DIR / "vuln_cache.json"   # migration source
 LOCK_FILE      = DATA_DIR / "vuln_monitor.lock"
 ALERT_STATE    = DATA_DIR / "vuln_alert_state.json"
+FETCH_STATE    = DATA_DIR / "fetch_state.json"
 LOG_FILE       = DATA_DIR / "vuln_monitor.log"
 CACHE_TTL_DAYS = 60
 ITEM_PER_FEED  = 50
@@ -2425,6 +2426,26 @@ def send_failure_alert(msg):
 
 
 # ================== MAIN ==================
+def _write_fetch_state(collected, pushed, filtered, already_seen, backfilled, db_size):
+    """Persist last-fetch stats (timestamp + counts) so the dashboard can show them."""
+    try:
+        state = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "collected": collected,
+            "new": collected - already_seen,
+            "pushed": pushed,
+            "filtered": filtered,
+            "already_seen": already_seen,
+            "backfilled": backfilled,
+            "db_size": db_size,
+        }
+        tmp = FETCH_STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, FETCH_STATE)
+    except Exception:
+        log.warning("failed to write fetch_state.json", exc_info=True)
+
+
 def _run(no_push=False):
     with _db() as conn:
         init_db(conn)
@@ -2555,6 +2576,7 @@ def _run(no_push=False):
             f"done: pushed={pushed}  filtered={skipped_filter}  already_seen={skipped_seen}  "
             f"backfilled={backfilled}  db_size={total}"
         )
+        _write_fetch_state(len(items), pushed, skipped_filter, skipped_seen, backfilled, total)
 
         # Send pending Telegram notifications (unless --no-push)
         if not no_push:

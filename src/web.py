@@ -41,6 +41,7 @@ else:
 DB_FILE = DATA_DIR / "vuln_cache.db"
 TOKEN_FILE = DATA_DIR / ".web_token"
 ACCESS_LOG = DATA_DIR / "access.log"
+FETCH_STATE_FILE = DATA_DIR / "fetch_state.json"
 
 # Stealthy access audit — one line per request into access.log, never shown in
 # the UI. The file handler is attached lazily so importing the module (e.g. in
@@ -336,11 +337,19 @@ def api_stats():
         sources = conn.execute("SELECT source, COUNT(*) as n FROM vulns WHERE source IS NOT NULL AND created_at > strftime('%%s','now') - 7*86400 GROUP BY source ORDER BY n DESC").fetchall()
         cat_rows = conn.execute("SELECT COALESCE(category,'(none)') c, COUNT(*) n FROM vulns GROUP BY category").fetchall()
         repro_rows = conn.execute("SELECT reproduced, COUNT(*) n FROM vulns GROUP BY reproduced").fetchall()
+    fetch_state = None
+    try:
+        if FETCH_STATE_FILE.exists():
+            import json
+            fetch_state = json.loads(FETCH_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
     return jsonify({
         "total": total, "pushed": pushed,
         "sources": {r["source"]: r["n"] for r in sources},
         "categories": {r["c"]: r["n"] for r in cat_rows},
         "reproduced": {str(r["reproduced"]): r["n"] for r in repro_rows},
+        "fetch": fetch_state,
     })
 
 
@@ -1005,10 +1014,14 @@ async function loadStats() {
   try {
     const d = await (await fetch('/api/stats')).json();
     const srcCount = Object.keys(d.sources).length;
+    const f = d.fetch || {};
+    const ftime = f.ts ? new Date(f.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—';
+    const fcount = (f.collected != null) ? f.collected : '—';
     document.getElementById('statsBar').innerHTML = `
       <span class="stat-item"><span class="stat-num">${d.total}</span><span class="stat-label">Total Vulns</span></span>
       <span class="stat-item"><span class="stat-num">${d.pushed}</span><span class="stat-label">Pushed</span></span>
       <span class="stat-item"><span class="stat-num">${srcCount}</span><span class="stat-label">Active Sources</span></span>
+      <span class="stat-item"><span class="stat-num">${ftime}</span><span class="stat-label">Last fetch · ${fcount} items</span></span>
     `;
     document.getElementById('srcCount').textContent = srcCount;
 

@@ -13,6 +13,8 @@
 **/vuln_cache.db-shm
 **/vuln_alert_state.json
 **/vuln_alert_state.tmp
+**/fetch_state.json
+**/fetch_state.tmp
 **/vuln_monitor.lock
 **/.web_token
 **/llm_prompt.txt
