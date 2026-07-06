@@ -706,6 +706,9 @@ a:hover { text-decoration: underline; }
 .tag-chip { border: 1.5px solid var(--ink); border-radius: var(--pill); padding: 4px 12px; font-size: 12px; cursor: pointer; background: var(--card); color: var(--ink); font-family: inherit; }
 .tag-chip.on { background: var(--violet); color: var(--white); border-color: var(--violet); }
 .tag-chip:hover { opacity: .85; }
+.tag-input { border: 1.5px solid var(--ink); border-radius: 8px; padding: 3px 8px; font-size: 12px; font-family: inherit; width: 120px; }
+.tag-add { border: 1.5px solid var(--ink); border-radius: 8px; padding: 3px 10px; cursor: pointer; background: var(--cream); color: var(--ink); font-size: 13px; line-height: 1; }
+.tag-x { opacity: .65; font-size: 10px; }
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
@@ -935,7 +938,7 @@ a:hover { text-decoration: underline; }
       </span>
     </div>
     <div class="nm-sep"></div>
-    <div class="nm-label">标签（点选即时生效，卡片显示）</div>
+    <div class="nm-label">标签（点选预设，或输入自定义）</div>
     <div id="nmTags" class="nm-tags"></div>
     <div id="nmErr" class="nm-err"></div>
   </div>
@@ -1256,22 +1259,44 @@ function updateNmCount() { nmCount.textContent = nmTextarea.value.length + '/' +
 
 function renderTags(tags) {
   const cur = new Set(tags || []);
-  nmTags.innerHTML = TAG_PALETTE.map(t =>
+  const palette = TAG_PALETTE.map(t =>
     `<button type="button" class="tag-chip${cur.has(t)?' on':''}" data-tag="${esc(t)}" onclick="toggleTag(this)">${esc(t)}</button>`
   ).join('');
+  const custom = [...cur].filter(t => !TAG_PALETTE.includes(t)).map(t =>
+    `<button type="button" class="tag-chip on" data-tag="${esc(t)}" onclick="toggleTag(this)">${esc(t)}<span class="tag-x"> ✕</span></button>`
+  ).join('');
+  nmTags.innerHTML = palette + custom +
+    `<input type="text" id="nmTagInput" class="tag-input" placeholder="自定义标签…" maxlength="16" onkeydown="if(event.key==='Enter'){event.preventDefault();addCustomTag();}">` +
+    `<button type="button" class="tag-add" onclick="addCustomTag()">+</button>`;
 }
-function toggleTag(btn) {
+function applyTags(next) {
   if (!nmKey) return;
   const v = lastVulns.find(x => x.key === nmKey);
-  if (!v) return;
-  const t = btn.dataset.tag;
-  const cur = new Set(Array.isArray(v.tags) ? v.tags : []);
-  if (cur.has(t)) cur.delete(t); else cur.add(t);
-  const next = [...cur];
-  v.tags = next;                 // optimistic: immediate local update (fixes rapid-toggle race)
+  if (v) v.tags = next;
   renderTags(next);
   refreshCardTags(nmKey);
   postTags(nmKey, next);
+}
+function toggleTag(btn) {
+  const v = lastVulns.find(x => x.key === nmKey);
+  if (!v) return;
+  const cur = new Set(Array.isArray(v.tags) ? v.tags : []);
+  const t = btn.dataset.tag;
+  if (cur.has(t)) cur.delete(t); else cur.add(t);
+  applyTags([...cur]);
+}
+function addCustomTag() {
+  const v = lastVulns.find(x => x.key === nmKey);
+  if (!v) return;
+  const inp = document.getElementById('nmTagInput');
+  const t = ((inp && inp.value) || '').trim();
+  if (!t) return;
+  const cur = new Set(Array.isArray(v.tags) ? v.tags : []);
+  if (cur.has(t)) { if (inp) inp.value = ''; return; }
+  if (cur.size >= 8) return;                  // server cap (≤8 tags)
+  cur.add(t);
+  if (inp) inp.value = '';
+  applyTags([...cur]);
 }
 async function postTags(key, tags) {
   try {
