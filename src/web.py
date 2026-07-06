@@ -699,7 +699,8 @@ a:hover { text-decoration: underline; }
 .exclude-pill { font-size: 11px; }
 .exclude-pill.active { opacity: .5; background: #9ca3af; color: var(--white); text-decoration: line-through; }
 .exclude-pill.active:hover { opacity: .8; }   /* grayed = filtered out; hover hints it's still clickable */
-.tag-badges { display: inline-flex; gap: 4px; }
+.vcard-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.vcard-tags:empty { display: none; }   /* no tags → row collapses, card doesn't grow */
 .tag-badge { background: var(--violet); color: var(--white); font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px; }
 .nm-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag-chip { border: 1.5px solid var(--ink); border-radius: var(--pill); padding: 4px 12px; font-size: 12px; cursor: pointer; background: var(--card); color: var(--ink); font-family: inherit; }
@@ -1204,7 +1205,6 @@ async function loadVulns(append=false) {
           ${v.category&&CATEGORY_STYLE[v.category]?`<span class="reason-badge" style="background:${cs.bg};color:${cs.fg}">${esc(cap1(v.category))}</span>`:''}
           ${sevBadge(v)}
           ${v.pr==='N'?'<span class="pr-badge">Unauth</span>':''}
-          ${(Array.isArray(v.tags)&&v.tags.length)?('<span class="tag-badges" data-tags-key="'+esc(v.key)+'">'+v.tags.map(t=>'<span class="tag-badge">'+esc(t)+'</span>').join('')+'</span>'):''}
           <span class="pushed-dot ${v.pushed?'yes':'no'}" title="${v.pushed?(v.tg_sent?'Sent to Telegram':'Selected for push'):'Filtered'}"></span>
           <span class="vcard-date">${esc(v.date||'-')}</span>
         </div>
@@ -1214,6 +1214,7 @@ async function loadVulns(append=false) {
         ${v.llm_verdict?`<div class="vcard-llm" title="${esc(v.llm_notes||'')}"><span class="llm-prefix">AI</span> ${esc(v.llm_verdict)}</div>`:''}
         ${v.url?`<div class="vcard-link"><a href="${esc(safeUrl(v.url))}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a></div>`:''}
         <button type="button" class="repro-btn ${v.reproduced===1?'success':v.reproduced===2?'wip':v.reproduced===-1?'failed':''}" data-repro="${v.reproduced||0}" onclick="toggleRepro('${esc(v.key)}',this)">${v.reproduced===1?'✔ Reproduced':v.reproduced===2?'↻ Testing':v.reproduced===-1?'✘ Failed':'? Unverified'}</button>
+        <div class="vcard-tags" data-tags-key="${esc(v.key)}">${(Array.isArray(v.tags)&&v.tags.length)?v.tags.map(t=>'<span class="tag-badge">'+esc(t)+'</span>').join(''):''}</div>
       </div>`;
     }).join('');
   } catch(e) {
@@ -1285,13 +1286,8 @@ async function postTags(key, tags) {
 function refreshCardTags(key) {
   const v = lastVulns.find(x => x.key === key);
   const tags = (v && Array.isArray(v.tags)) ? v.tags : [];
-  const html = tags.length ? ('<span class="tag-badges" data-tags-key="'+esc(key)+'">'+tags.map(t => '<span class="tag-badge">'+esc(t)+'</span>').join('')+'</span>') : '';
-  document.querySelectorAll('.vcard').forEach(card => {
-    if (card.dataset.key !== key) return;
-    const existing = card.querySelector('.tag-badges');
-    if (existing) { if (html) existing.outerHTML = html; else existing.remove(); }
-    else if (html) { const top = card.querySelector('.vcard-top'); if (top) top.insertAdjacentHTML('beforeend', html); }
-  });
+  const html = tags.map(t => '<span class="tag-badge">'+esc(t)+'</span>').join('');
+  document.querySelectorAll('.vcard-tags').forEach(el => { if (el.dataset.tagsKey === key) el.innerHTML = html; });
 }
 
 function openNoteModal(v) {
