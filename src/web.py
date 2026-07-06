@@ -652,8 +652,9 @@ a:hover { text-decoration: underline; }
   letter-spacing: .3px; font-family: 'JetBrains Mono', monospace;
   background: #DC2626; color: var(--white); border: 1px solid #991B1B;
 }
-.exclude-pill { opacity: .55; font-size: 11px; }
-.exclude-pill.active { opacity: 1; background: #991B1B; color: var(--white); text-decoration: line-through; }
+.exclude-pill { font-size: 11px; }
+.exclude-pill.active { opacity: .5; background: #9ca3af; color: var(--white); text-decoration: line-through; }
+.exclude-pill.active:hover { opacity: .8; }   /* grayed = filtered out; hover hints it's still clickable */
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
