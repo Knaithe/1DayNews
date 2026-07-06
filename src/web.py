@@ -1259,6 +1259,8 @@ function updateNmCount() { nmCount.textContent = nmTextarea.value.length + '/' +
 
 function renderTags(tags) {
   const cur = new Set(tags || []);
+  const prev = document.getElementById('nmTagInput');
+  const draft = prev ? prev.value : '';              // preserve in-progress typing across re-renders
   const palette = TAG_PALETTE.map(t =>
     `<button type="button" class="tag-chip${cur.has(t)?' on':''}" data-tag="${esc(t)}" onclick="toggleTag(this)">${esc(t)}</button>`
   ).join('');
@@ -1266,7 +1268,7 @@ function renderTags(tags) {
     `<button type="button" class="tag-chip on" data-tag="${esc(t)}" onclick="toggleTag(this)">${esc(t)}<span class="tag-x"> ✕</span></button>`
   ).join('');
   nmTags.innerHTML = palette + custom +
-    `<input type="text" id="nmTagInput" class="tag-input" placeholder="自定义标签…" maxlength="16" onkeydown="if(event.key==='Enter'){event.preventDefault();addCustomTag();}">` +
+    `<input type="text" id="nmTagInput" class="tag-input" placeholder="自定义标签…" maxlength="16" value="${esc(draft)}" onkeydown="if(event.key==='Enter'){event.preventDefault();addCustomTag();}">` +
     `<button type="button" class="tag-add" onclick="addCustomTag()">+</button>`;
 }
 function applyTags(next) {
@@ -1297,6 +1299,7 @@ function addCustomTag() {
   cur.add(t);
   if (inp) inp.value = '';
   applyTags([...cur]);
+  const ni = document.getElementById('nmTagInput'); if (ni) ni.focus();   // keep typing the next tag
 }
 async function postTags(key, tags) {
   try {
