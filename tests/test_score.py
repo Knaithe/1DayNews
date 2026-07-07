@@ -245,3 +245,15 @@ def test_execute_arbitrary_os_commands_still_rce():
     # the fix must keep genuine OS/root command execution as RCE
     _, reason, vt = _score("CVE-x", "Allows an unauthenticated attacker to execute arbitrary OS commands.")
     assert vt == "RCE", f"'execute arbitrary OS commands' should be RCE (reason={reason})"
+
+
+def test_webshell_bypasses_xss_exclude():
+    # webshell is an RCE primitive; a co-occurring XSS must not exclude it
+    _, reason, vt = _score("CVE-2026-1 webshell upload via stored XSS in nginx", "")
+    assert vt == "RCE", f"webshell should stay RCE despite XSS (reason={reason})"
+
+
+def test_arbitrary_file_write_bypasses_xss_exclude():
+    # arbitrary file write is an RCE primitive; a co-occurring XSS must not exclude it
+    _, reason, vt = _score("CVE-2026-1 arbitrary file write chained from XSS in nginx", "")
+    assert vt == "RCE", f"arbitrary file write should stay RCE despite XSS (reason={reason})"

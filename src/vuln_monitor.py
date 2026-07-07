@@ -851,6 +851,8 @@ _ASSET_KW_SET = frozenset(ASSET_KEYWORDS)
 _STRONG_RCE_RE = re.compile(
     _ab("RCE") + r"|remote code execution"
     r"|arbitrary (?:\w+ ){0,3}(?:code|commands?) execution"
+    r"|webshell|web shell"
+    r"|arbitrary file (?:write|upload)"
     r"|execute arbitrary (?:\w+ ){0,3}(?:code|commands?)",
     re.I,
 )
@@ -1435,16 +1437,24 @@ def _ssrf_check_url(url):
     """Validate URL scheme and resolved IPs against SSRF. Returns error string or None."""
     from urllib.parse import urlparse
     import socket, ipaddress
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return "only http/https allowed"
+    host = parsed.hostname or ""
+    ex = ThreadPoolExecutor(max_workers=1)
     try:
-        for info in socket.getaddrinfo(parsed.hostname or "", None):
+        infos = ex.submit(socket.getaddrinfo, host, None).result(timeout=5)  # bound the blocking DNS
+        for info in infos:
             addr = ipaddress.ip_address(info[4][0])
             if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
                 return "internal addresses not allowed"
+    except FuturesTimeout:
+        return "DNS resolution timed out"
     except (socket.gaierror, ValueError):
         return "DNS resolution failed"
+    finally:
+        ex.shutdown(wait=False)   # don't let a slow lookup block the caller; thread resolves in background
     return None
 
 def _tool_fetch_source_page(url):
@@ -1858,42 +1868,6 @@ def fetch_threatbook():
 # NVD API is used only for cve_published date lookup (_nvd_published_date),
 # NOT as an intelligence source. Raw NVD data is too noisy (kernel patches,
 # personal project CVEs, etc.) and has no editorial curation.
-
-
-def fetch_github_cve():
-    out = []
-    year = datetime.now().year
-    headers = {"Accept": "application/vnd.github+json"}
-    if GH_TOKEN:
-        headers["Authorization"] = f"Bearer {GH_TOKEN}"
-    for q in (f"CVE-{year}-", f"CVE-{year - 1}-"):
-        try:
-            r = _get_with_retry(SESS,
-                "https://api.github.com/search/repositories",
-                params={"q": f"{q} in:name", "sort": "updated", "order": "desc", "per_page": 30},
-                headers=headers,
-                timeout=REQUEST_TIMEOUT,
-            )
-            if r.status_code != 200:
-                log.warning(f"GitHub {q} status {r.status_code}: {r.text[:150]}")
-                continue
-            for repo in r.json().get("items", []):
-                stars = repo.get("stargazers_count", 0)
-                if stars < 3:
-                    continue
-                name = repo["full_name"]
-                desc = repo.get("description") or ""
-                out.append({
-                    "source": "GitHub",
-                    "title": name,
-                    "link": repo["html_url"],
-                    "summary": desc[:500],
-                    "text": f"{name}\n{desc}",
-                })
-        except Exception as ex:
-            log.warning(f"GitHub {q} err: {ex}")
-        time.sleep(2)
-    return out
 
 
 def fetch_poc_in_github():

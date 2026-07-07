@@ -153,10 +153,13 @@ def _log_access(response):
     _ensure_access_handler()
     try:
         ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        path = request.path
+        if _MAGIC_TOKEN and path.startswith("/" + _MAGIC_TOKEN):
+            path = "/<token>" + path[len("/" + _MAGIC_TOKEN):]   # don't log the secret
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         _access_log.info(
             ts + " " + _access_line(
-                request.method, request.path, response.status_code, ip,
+                request.method, path, response.status_code, ip,
                 getattr(g, "auth", "none"), request.headers.get("User-Agent"))
         )
     except Exception:
