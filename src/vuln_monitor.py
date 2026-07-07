@@ -892,9 +892,10 @@ def score(text):
 
 # ================== CATEGORY (dashboard filter dimension) ==================
 # One coarser "category" label per record, derived from vuln_type + reason + keywords.
-# Priority: escape > RCE (by vuln_type) > excluded->other > keyword classes
+# Priority: escape > RCE (by vuln_type) > keyword classes
 # (SQLi > privilege escalation > bypass > data leak > XSS/SSRF > DoS)
-# > bypass (by vuln_type) > other. Excluded records -> other (they're noise).
+# > bypass (by vuln_type) > other. Excluded records are keyword-categorized too
+# (so e.g. an excluded SSRF still lands in XSS/SSRF, not hidden in other).
 # Memory-corruption (overflow/UAF/OOB) is RCE-class, never DoS. Stored in `category`.
 CATEGORY_KEYWORDS = [
     ("SQLi",                 [r"sql injection", r"\bsqli\b"]),
@@ -977,9 +978,10 @@ _LLM_JAILBREAK_RE = re.compile(
 def classify_category(vuln_type, text, reason=None):
     """Return one dashboard category label for a record.
 
-    Priority: escape > RCE (by vuln_type) > excluded->other > keyword classes
+    Priority: escape > RCE (by vuln_type) > keyword classes
     (SQLi > privilege escalation > bypass > data leak > XSS/SSRF > DoS)
-    > bypass (by vuln_type) > other. Memory-corruption is never DoS.
+    > bypass (by vuln_type) > other. Excluded records are keyword-categorized
+    too (an excluded SSRF -> XSS/SSRF). Memory-corruption is never DoS.
     A vuln scored RCE is re-routed to privilege escalation when its TITLE says so
     (without also claiming code/command execution) or when it's a local
     memory-corruption EoP — so genuine RCEs aren't downgraded.
@@ -1003,8 +1005,6 @@ def classify_category(vuln_type, text, reason=None):
         if title_is_privesc or (_MEMCORRUPT_RE.search(low) and _PRIVESC_RE.search(low) and not _TITLE_RCE_RE.search(title_low)):
             return "privilege escalation"
         return "RCE"
-    if reason == "excluded":
-        return "other"
     for cat, patterns in CATEGORY_KEYWORDS:
         if any(re.search(p, low, re.I) for p in patterns):
             if cat == "DoS" and _MEMCORRUPT_RE.search(low):

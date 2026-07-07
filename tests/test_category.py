@@ -112,10 +112,12 @@ def test_ssrf_in_combined_bucket():
     assert _cls("other", "CVE-x Server-Side Request Forgery (SSRF) in webhook") == "XSS/SSRF"
 
 
-def test_excluded_records_are_other():
-    # excluded records are noise; never claim a specific category
-    assert _cls(None, "SQL Injection in login", reason="excluded") == "other"
-    assert _cls("other", "denial of service via crash", reason="excluded") == "other"
+def test_excluded_records_keyword_categorized():
+    # excluded records are still categorized by keyword — SSRF/XSS/DoS land in
+    # their own category instead of being hidden in "other"
+    assert _cls(None, "SQL Injection in login", reason="excluded") == "SQLi"
+    assert _cls("other", "denial of service via crash", reason="excluded") == "DoS"
+    assert _cls(None, "Server-Side Request Forgery (SSRF) in webhook", reason="excluded") == "XSS/SSRF"
 
 
 def test_dos_not_when_memory_corruption():
@@ -236,8 +238,8 @@ def test_escape_not_llm_jailbreak():
 
 
 def test_escape_overrides_excluded():
-    # escape is checked BEFORE the excluded->other gate; an explicit escape
-    # signal should not be hidden as noise even when score() marks it excluded
+    # escape is checked first; an explicit escape signal wins even when score()
+    # marks the record excluded
     assert _cls(None, "vm2 has a Sandbox Escape Vulnerability", reason="excluded") == "escape"
 
 
