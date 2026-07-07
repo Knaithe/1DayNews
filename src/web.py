@@ -928,6 +928,9 @@ a:hover { text-decoration: underline; }
     <div id="nmTitle" class="nm-title"></div>
     <a id="nmLink" class="nm-link" target="_blank" rel="noopener noreferrer"></a>
     <hr class="nm-sep">
+    <div class="nm-label">标签（点选预设，或输入自定义）</div>
+    <div id="nmTags" class="nm-tags"></div>
+    <hr class="nm-sep">
     <div class="nm-label">备注</div>
     <textarea id="nmTextarea" readonly placeholder="使用情况说明…（≤__NOTE_MAX__ 字）"></textarea>
     <div class="nm-edit-foot">
@@ -937,9 +940,6 @@ a:hover { text-decoration: underline; }
         <button type="button" class="nm-btn" id="nmSaveBtn" onclick="saveNote()" disabled>保存</button>
       </span>
     </div>
-    <div class="nm-sep"></div>
-    <div class="nm-label">标签（点选预设，或输入自定义）</div>
-    <div id="nmTags" class="nm-tags"></div>
     <div id="nmErr" class="nm-err"></div>
   </div>
 </div>
