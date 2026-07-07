@@ -1252,7 +1252,7 @@ const nmErr = document.getElementById('nmErr');
 const nmEditBtn = document.getElementById('nmEditBtn');
 const nmSaveBtn = document.getElementById('nmSaveBtn');
 let nmKey = '', nmCurrentNote = '';
-const TAG_PALETTE = ['内网目标','重点关注','已处理','误报','无法获取环境'];
+const TAG_PALETTE = ['公网目标极少','重点关注','下载不到环境'];
 const nmTags = document.getElementById('nmTags');
 
 function updateNmCount() { nmCount.textContent = nmTextarea.value.length + '/' + NOTE_MAX; }
