@@ -914,6 +914,8 @@ a:hover { text-decoration: underline; }
 
 <div class="filter-row cat-row" id="catRow" role="group" aria-label="Filter by source"></div>
 
+<div class="new-badge hidden" id="newBadge" role="status" title="有新条目，点击回到顶部"></div>
+
 <div class="grid" id="cardList" aria-live="polite" aria-busy="false"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">Loading...</p></div></div>
 <div class="load-more-row hidden" id="loadMoreRow">
   <button class="load-more-btn" id="loadMoreBtn" type="button">Load more</button>
@@ -975,7 +977,47 @@ const activeSrcs = new Set();
 const activeExcludes = new Set(['chrome','firefox','linux kernel','wordpress','android','adobe']);
 let currentLimit = 100;
 let lastVulns = [];
+let pendingWrites = 0;          // in-flight card writes (repro) — auto-refresh skips while > 0
 const MAX_LIMIT = __LIMIT_MAX__;
+
+// ---- filter state persistence: survives F5 / reopened tab ----
+const FILTER_KEY = 'vmFilters_v1';
+function saveFilters() {
+  try {
+    localStorage.setItem(FILTER_KEY, JSON.stringify({
+      days: activeDays, pr: activePR, ui: activeUI, repro: activeRepro,
+      cats: [...activeCats], sevs: [...activeSevs], srcs: [...activeSrcs],
+      excludes: [...activeExcludes],
+      q: document.getElementById('searchInput').value,
+      pushed: document.getElementById('pushedFilter').checked,
+    }));
+  } catch(e) { /* localStorage disabled (private mode) — non-fatal */ }
+}
+function loadFilters() {
+  let s; try { s = JSON.parse(localStorage.getItem(FILTER_KEY)); } catch(e) { return; }
+  if (!s) return;
+  if (typeof s.days === 'string') activeDays = s.days;
+  if (typeof s.pr === 'string') activePR = s.pr;
+  if (typeof s.ui === 'string') activeUI = s.ui;
+  if (typeof s.repro === 'string') activeRepro = s.repro;
+  if (Array.isArray(s.cats)) { activeCats.clear(); s.cats.forEach(x => activeCats.add(x)); }
+  if (Array.isArray(s.sevs)) { activeSevs.clear(); s.sevs.forEach(x => activeSevs.add(x)); }
+  if (Array.isArray(s.srcs)) { activeSrcs.clear(); s.srcs.forEach(x => activeSrcs.add(x)); }
+  if (Array.isArray(s.excludes)) { activeExcludes.clear(); s.excludes.forEach(x => activeExcludes.add(x)); }
+  if (typeof s.q === 'string') document.getElementById('searchInput').value = s.q;
+  if (typeof s.pushed === 'boolean') document.getElementById('pushedFilter').checked = s.pushed;
+  // reflect restored state on the static pill rows
+  setActive('#timeRow', 'days', activeDays);
+  setMultiActive('#typeRow', 'cat', activeCats);
+  setMultiActive('#sevRow', 'sev', activeSevs);
+  setMultiActive('#excludeRow', 'ex', activeExcludes);
+  setActive('#reproRow', 'repro', activeRepro);
+  document.querySelectorAll('#prRow .cat-pill').forEach(b => {
+    if ('pr' in b.dataset && b.dataset.pr === '') b.classList.toggle('active', !activePR && !activeUI);
+    else if ('pr' in b.dataset) b.classList.toggle('active', activePR === b.dataset.pr);
+    else if ('ui' in b.dataset) b.classList.toggle('active', activeUI === b.dataset.ui);
+  });
+}
 document.getElementById('loadMoreBtn').addEventListener('click', () => {
   currentLimit = Math.min(currentLimit + 100, MAX_LIMIT);
   loadVulns(true);
@@ -1054,6 +1096,7 @@ async function toggleRepro(key, btn) {
   const next = REPRO_CYCLE[(idx + 1) % REPRO_CYCLE.length];
   const prev = reproState(cur), nxt = reproState(next);
   setReproBtn(btn, nxt);
+  pendingWrites++;
   try {
     const r = await fetch('/api/reproduced', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1061,6 +1104,7 @@ async function toggleRepro(key, btn) {
     });
     if (!r.ok) setReproBtn(btn, prev);
   } catch(e) { setReproBtn(btn, prev); }
+  finally { pendingWrites--; }
 }
 
 async function loadSources() {
@@ -1171,8 +1215,10 @@ function sevBadge(v) {
   return `<span class="sev-badge ${cls}">${prefix}${esc(sev || '?')}${cvssStr ? ` &middot; ${cvssStr}` : ''}</span>`;
 }
 
-async function loadVulns(append=false) {
-  if (!append) currentLimit = 100;
+async function loadVulns(append=false, refresh=false) {
+  if (!append && !refresh) currentLimit = 100;
+  if (!refresh) saveFilters();
+  const prevScroll = refresh ? window.scrollY : 0;
   const params = new URLSearchParams();
   const q = document.getElementById('searchInput').value.trim();
   if (q) params.set('q', q);
@@ -1191,8 +1237,22 @@ async function loadVulns(append=false) {
   const moreRow = document.getElementById('loadMoreRow');
   const moreBtn = document.getElementById('loadMoreBtn');
   if (append) { moreBtn.disabled = true; moreBtn.textContent = 'Loading…'; }
+  // remember the topmost visible card so a background refresh can hold its position
+  let anchor = null;
+  if (refresh) {
+    for (const c of container.querySelectorAll('.vcard')) {
+      const r = c.getBoundingClientRect();
+      if (r.bottom > 0) { anchor = { key: c.dataset.key, top: r.top }; break; }
+    }
+  }
   try {
     const vulns = await (await fetch('/api/vulns?' + params)).json();
+    let newKeys = null;
+    if (refresh && lastVulns.length) {
+      const old = new Set(lastVulns.map(v => v.key));
+      newKeys = new Set(vulns.filter(v => !old.has(v.key)).map(v => v.key));
+      if (newKeys.size) showNewBadge(newKeys.size);
+    }
     lastVulns = vulns;
     if (!vulns.length) {
       container.innerHTML = '<div class="empty"><p style="font-size:32px">&#128270;</p><p>No vulnerabilities found</p></div>';
@@ -1205,7 +1265,9 @@ async function loadVulns(append=false) {
     container.innerHTML = vulns.map((v,i) => {
       const ss = SRC_STYLE[v.source] || {bg:'#F3F4F6',fg:'#374151'};
       const cs = CATEGORY_STYLE[v.category] || {bg:'#F3F4F6',fg:'#6B7280'};
-      return `<div class="vcard" data-key="${esc(v.key)}" style="animation:fadeUp .4s ${i*.03}s both">
+      const anim = refresh ? '' : `animation:fadeUp .4s ${i*.03}s both`;
+      const isNew = newKeys && newKeys.has(v.key);
+      return `<div class="vcard ${isNew?'vcard-new':''}" data-key="${esc(v.key)}" style="${anim}">
         <div class="vcard-top">
           <span class="src-badge" style="background:${ss.bg};color:${ss.fg}">${esc(v.source||'?')}</span>
           ${v.category&&CATEGORY_STYLE[v.category]?`<span class="reason-badge" style="background:${cs.bg};color:${cs.fg}">${esc(cap1(v.category))}</span>`:''}
@@ -1223,12 +1285,34 @@ async function loadVulns(append=false) {
         <div class="vcard-tags" data-tags-key="${esc(v.key)}">${(Array.isArray(v.tags)&&v.tags.length)?v.tags.map(t=>'<span class="tag-badge">'+esc(t)+'</span>').join(''):''}</div>
       </div>`;
     }).join('');
+    if (refresh) {
+      if (anchor) {
+        const el = Array.from(container.querySelectorAll('.vcard')).find(c => c.dataset.key === anchor.key);
+        if (el) { window.scrollBy(0, el.getBoundingClientRect().top - anchor.top); }
+        else { window.scrollTo(0, prevScroll); }   // anchor card dropped off the list: best-effort
+      }
+    }
   } catch(e) {
+    if (refresh) return;  // transient blip during background poll: keep the existing list
     container.innerHTML = '<div class="empty"><p>Failed to load</p></div>';
     moreRow.classList.add('hidden');
     moreBtn.disabled = false; moreBtn.textContent = 'Load more';
   }
 }
+
+// ---- background refresh: "+N new" badge (shown when a poll adds cards) ----
+const newBadge = document.getElementById('newBadge');
+let newBadgeTimer;
+function showNewBadge(n) {
+  newBadge.textContent = '+' + n + ' new';
+  newBadge.classList.remove('hidden');
+  clearTimeout(newBadgeTimer);
+  newBadgeTimer = setTimeout(() => newBadge.classList.add('hidden'), 10000);
+}
+newBadge.addEventListener('click', () => {
+  newBadge.classList.add('hidden');
+  window.scrollTo({top: 0, behavior: 'smooth'});
+});
 
 // Floating stats card: collapse toggle (persisted) — survives 60s reloads since
 // the toggle is a static element, only #sideStatsBody is re-rendered.
@@ -1401,11 +1485,28 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !noteModal.classList.contains('hidden')) closeNoteModal();
 });
 
-loadSources(); loadStats(); loadVulns();
+loadFilters();
+loadSources().then(() => setMultiActive('#catRow', 'src', activeSrcs));
+loadStats(); loadVulns();
 setInterval(loadStats, 60000);  // refresh stats card + stats bar as new vulns arrive
+function maybeRefresh() {
+  if (document.hidden) return;                          // background tab: skip
+  if (!noteModal.classList.contains('hidden')) return;  // editing a note: skip
+  if (pendingWrites) return;                            // a card write is mid-flight: skip
+  loadVulns(false, true);                               // quiet in-place refresh, keeps filters + scroll
+}
+setInterval(maybeRefresh, 30000);  // auto-refresh the card list so a manual F5 isn't needed
 </script>
 <style>
 @keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+.new-badge { display:block; width:fit-content; margin:0 auto 10px; padding:6px 16px;
+  background:#4f46e5; color:#fff; border-radius:999px; font-size:13px; font-weight:600;
+  cursor:pointer; user-select:none; box-shadow:0 2px 10px rgba(79,70,229,.35);
+  animation:newBadgeIn .3s ease both; }
+.new-badge.hidden { display:none; }
+@keyframes newBadgeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+.vcard-new { animation:vcardNewFlash 2.5s ease-out 1; }
+@keyframes vcardNewFlash { from { outline:2px solid #6366f1; } to { outline:2px solid transparent; } }
 ::selection { background: var(--peach); color: var(--ink); }
 </style>
 </body>
