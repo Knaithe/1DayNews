@@ -1,6 +1,8 @@
+import os
 import sqlite3
 
-conn = sqlite3.connect('/opt/vuln-monitor/vuln_cache.db')
+DB = os.environ.get("VULN_DB", "/opt/vuln-monitor/vuln_cache.db")
+conn = sqlite3.connect(DB)
 conn.row_factory = sqlite3.Row
 
 keywords = ['Tomcat','Laravel','Linux kernel','ksmbd','MantisBT','hashcat',

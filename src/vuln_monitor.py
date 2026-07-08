@@ -118,6 +118,8 @@ _JSON_LEGACY   = DATA_DIR / "vuln_cache.json"   # migration source
 LOCK_FILE      = DATA_DIR / "vuln_monitor.lock"
 ALERT_STATE    = DATA_DIR / "vuln_alert_state.json"
 FETCH_STATE    = DATA_DIR / "fetch_state.json"
+SEED_MARKER    = DATA_DIR / ".seeded"     # written after the first run — a later DB reset
+                                       # (marker present) won't re-trigger cold-start suppression
 LOG_FILE       = DATA_DIR / "vuln_monitor.log"
 CACHE_TTL_DAYS = 60
 ITEM_PER_FEED  = 50
@@ -848,14 +850,14 @@ _ASSET_KW_SET = frozenset(ASSET_KEYWORDS)
 # Unambiguous RCE indicators. If any is present, the noise EXCLUDE filters (XSS/
 # CSRF/SSRF/info-disclosure/DoS) are bypassed — an XSS->RCE or "RCE ... SSRF"
 # chain is still RCE regardless of which term appears first or which is stronger.
-_STRONG_RCE_RE = re.compile(
-    _ab("RCE") + r"|remote code execution"
-    r"|arbitrary (?:\w+ ){0,3}(?:code|commands?) execution"
-    r"|webshell|web shell"
-    r"|arbitrary file (?:write|upload)"
-    r"|execute arbitrary (?:\w+ ){0,3}(?:code|commands?)",
-    re.I,
-)
+_STRONG_RCE_RE = re.compile("|".join([
+    _ab("RCE"), r"remote code execution",
+    r"arbitrary (?:\w+ ){0,3}(?:code|commands?) execution",
+    r"webshell|web shell",
+    r"arbitrary file (?:write|upload)",
+    _ab("JNDI"), _ab("OGNL"),
+    r"execute arbitrary (?:\w+ ){0,3}(?:code|commands?)",
+]), re.I)
 
 
 def score(text):
@@ -2429,8 +2431,13 @@ def _run(no_push=False):
         _warm_nvd_cache(conn)
         now = datetime.now(timezone.utc).timestamp()
 
-        # detect cold start: if DB is empty, this is initial seeding — suppress push
-        _cold_start = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0] == 0
+        # detect cold start: suppress push only on the first-ever seeding run.
+        # Combined condition (no SEED_MARKER yet AND DB empty) so that a later DB
+        # reset — marker still present — does NOT silently re-suppress real 0day
+        # alerts, and an existing install (non-empty DB) is never treated as cold
+        # on deploy.
+        _cold_start = (not SEED_MARKER.exists()) and \
+            conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0] == 0
 
         items = _fetch_all_sources()
         log.info(f"collected {len(items)} items")
@@ -2545,6 +2552,14 @@ def _run(no_push=False):
             conn.commit()
             if suppressed:
                 log.info(f"cold start: suppressed {suppressed} initial notifications (seeding run)")
+
+        # mark this install as seeded once the first run completes — future DB
+        # resets (marker present) won't re-trigger cold-start suppression.
+        if not SEED_MARKER.exists():
+            try:
+                SEED_MARKER.touch()
+            except OSError:
+                log.warning("failed to write seed marker", exc_info=True)
 
         db_cleanup(conn)
         total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]

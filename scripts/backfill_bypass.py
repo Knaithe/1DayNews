@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from vuln_monitor import score, SESS, NVD_API_KEY
 
-DB = os.environ.get("VULN_DB", os.path.join(os.path.dirname(__file__), '..', 'vuln_cache_remote.db'))
+DB = os.environ.get("VULN_DB", os.path.join(os.path.dirname(__file__), '..', 'vuln_cache.db'))
 NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 DRY_RUN = "--dry" in sys.argv
 
@@ -146,7 +146,7 @@ def main():
             write_conn.execute(
                 """INSERT INTO vulns (key, cve_id, source, title, link, summary, reason, vuln_type,
                    cvss, severity, cvss_vector, pushed, freshness, freshness_reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'fresh', 'backfill', ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'nday', 'backfill', ?)""",
                 (c["key"], c["cve_id"], c["source"], c["title"], c["link"], c["summary"],
                  c["reason"], c["vuln_type"], c["cvss"], c["severity"], c["cvss_vector"], now_ts),
             )

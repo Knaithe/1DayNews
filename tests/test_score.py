@@ -257,3 +257,11 @@ def test_arbitrary_file_write_bypasses_xss_exclude():
     # arbitrary file write is an RCE primitive; a co-occurring XSS must not exclude it
     _, reason, vt = _score("CVE-2026-1 arbitrary file write chained from XSS in nginx", "")
     assert vt == "RCE", f"arbitrary file write should stay RCE despite XSS (reason={reason})"
+
+
+def test_jndi_bypasses_ssrf_exclude():
+    # JNDI/OGNL are unambiguous injection-to-RCE primitives (not DoS-confusable);
+    # a co-occurring SSRF must not exclude them. deserialization/SSTI stay OUT of
+    # _STRONG_RCE_RE because they can be DoS — see test_dos_deserialization_not_rce.
+    _, reason, vt = _score("CVE-2026-1 JNDI injection via SSRF endpoint in log4j", "")
+    assert vt == "RCE", f"JNDI should stay RCE despite SSRF (reason={reason})"
