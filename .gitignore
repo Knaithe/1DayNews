@@ -16,6 +16,8 @@
 **/fetch_state.json
 **/fetch_state.tmp
 **/.seeded
+**/source_health.json
+**/source_health.tmp
 **/vuln_monitor.lock
 **/.web_token
 **/llm_prompt.txt

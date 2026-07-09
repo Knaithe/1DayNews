@@ -43,6 +43,7 @@ DB_FILE = DATA_DIR / "vuln_cache.db"
 TOKEN_FILE = DATA_DIR / ".web_token"
 ACCESS_LOG = DATA_DIR / "access.log"
 FETCH_STATE_FILE = DATA_DIR / "fetch_state.json"
+SOURCE_HEALTH_FILE = DATA_DIR / "source_health.json"
 
 # Stealthy access audit — one line per request into access.log, never shown in
 # the UI. The file handler is attached lazily so importing the module (e.g. in
@@ -368,12 +369,24 @@ def api_stats():
                 fetch_state = raw
     except Exception:
         pass
+    source_health = {}
+    try:
+        if SOURCE_HEALTH_FILE.exists():
+            raw = json.loads(SOURCE_HEALTH_FILE.read_text(encoding="utf-8"))
+            srcs = raw.get("sources") if isinstance(raw, dict) else None
+            if isinstance(srcs, dict):
+                for name, v in srcs.items():
+                    if isinstance(v, dict) and "healthy" in v:
+                        source_health[name] = bool(v["healthy"])
+    except Exception:
+        pass
     return jsonify({
         "total": total, "pushed": pushed,
         "sources": {r["source"]: r["n"] for r in sources},
         "categories": {r["c"]: r["n"] for r in cat_rows},
         "reproduced": {str(r["reproduced"]): r["n"] for r in repro_rows},
         "fetch": fetch_state,
+        "source_health": source_health,
     })
 
 
@@ -715,6 +728,10 @@ a:hover { text-decoration: underline; }
 .pushed-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .pushed-dot.yes { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
 .pushed-dot.no { background: var(--muted); }
+.src-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; background: var(--muted); flex: 0 0 auto; }
+.src-dot.ok { background: var(--mint); box-shadow: 0 0 0 2px rgba(57,191,151,.25); }
+.src-dot.bad { background: #dc2626; box-shadow: 0 0 0 2px rgba(220,38,38,.25); animation: srcDotPulse 1.6s ease-in-out infinite; }
+@keyframes srcDotPulse { 50% { box-shadow: 0 0 0 4px rgba(220,38,38,.18); } }
 .note-modal {
   position: fixed; inset: 0; z-index: 1000;
   background: rgba(17,16,19,0.45);
@@ -1107,15 +1124,27 @@ async function toggleRepro(key, btn) {
   finally { pendingWrites--; }
 }
 
+let latestSourceHealth = {};
+function paintSourceDots(health) {
+  health = health || {};
+  document.querySelectorAll('#catRow .cat-pill[data-src]').forEach(p => {
+    const dot = p.querySelector('.src-dot');
+    if (!dot) return;
+    const name = p.dataset.src;
+    dot.className = 'src-dot' + (name && (name in health) ? ' ' + (health[name] ? 'ok' : 'bad') : '');
+  });
+}
+
 async function loadSources() {
   try {
     const sources = await (await fetch('/api/sources')).json();
     const row = document.getElementById('catRow');
     row.innerHTML = `<button type="button" class="cat-pill active" data-src="">All</button>` +
-      sources.map(s => `<button type="button" class="cat-pill" data-src="${esc(s)}">${esc(s)}</button>`).join('');
+      sources.map(s => `<button type="button" class="cat-pill" data-src="${esc(s)}"><span class="src-dot"></span>${esc(s)}</button>`).join('');
     row.querySelectorAll('.cat-pill[data-src]').forEach(p => p.addEventListener('click', () => {
       toggleMulti(activeSrcs, p.dataset.src, '#catRow', 'src');
     }));
+    paintSourceDots(latestSourceHealth);
   } catch(e) { console.error('loadSources failed', e); }
 }
 
@@ -1124,6 +1153,8 @@ async function loadStats() {
     const d = await (await fetch('/api/stats')).json();
     const srcCount = Object.keys(d.sources).length;
     const f = d.fetch || {};
+    latestSourceHealth = d.source_health || {};
+    paintSourceDots(latestSourceHealth);
     const fd = f.ts ? new Date(f.ts) : null;
     const ftime = (fd && Number.isFinite(fd.getTime())) ? fd.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—';
     const fcount = (typeof f.collected === 'number') ? f.collected : '—';

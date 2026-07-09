@@ -120,6 +120,7 @@ ALERT_STATE    = DATA_DIR / "vuln_alert_state.json"
 FETCH_STATE    = DATA_DIR / "fetch_state.json"
 SEED_MARKER    = DATA_DIR / ".seeded"     # written after the first run — a later DB reset
                                        # (marker present) won't re-trigger cold-start suppression
+SOURCE_HEALTH  = DATA_DIR / "source_health.json"   # per-source last-3 fetch counts → web health dots
 LOG_FILE       = DATA_DIR / "vuln_monitor.log"
 CACHE_TTL_DAYS = 60
 ITEM_PER_FEED  = 50
@@ -2152,7 +2153,48 @@ def _fetch_all_sources():
         counts[name] = len(batch)
         items.extend(batch)
     log.info("source counts: " + "  ".join(f"{k}={v}" for k, v in counts.items()))
+    _update_source_health(counts)
     return items
+
+
+# Sources whose fetch legitimately returns 0 items on a healthy cycle, so 0 must NOT be
+# treated as a failure. PoC-in-GitHub diffs only the latest commit — no new commit ⇒ 0
+# items, even though the source is working fine.
+_LEGIT_EMPTY_SOURCES = frozenset(["PoC-GitHub"])
+
+
+def _update_source_health(counts):
+    """Record per-source item counts over the last 3 fetch cycles → source_health.json.
+
+    The web dashboard colors each source pill: green (healthy) or red (the source has
+    returned 0 items for 3 consecutive cycles — i.e. it is timing out / dead). A source
+    that can legitimately return 0 (see _LEGIT_EMPTY_SOURCES) is never flagged red.
+    """
+    state = {"ts": datetime.now(timezone.utc).isoformat(), "sources": {}}
+    try:
+        if SOURCE_HEALTH.exists():
+            raw = json.loads(SOURCE_HEALTH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and isinstance(raw.get("sources"), dict):
+                state["sources"] = raw["sources"]
+    except Exception:
+        pass
+    hist = state["sources"]
+    for name, cnt in counts.items():
+        prev = hist.get(name)
+        prev_recent = prev.get("recent") if isinstance(prev, dict) else None
+        recent = (prev_recent if isinstance(prev_recent, list) else []) + [int(cnt or 0)]
+        recent = recent[-3:]
+        bad = (name not in _LEGIT_EMPTY_SOURCES
+               and len(recent) >= 3 and all(c == 0 for c in recent))
+        hist[name] = {"recent": recent, "healthy": not bad}
+    for stale in [n for n in hist if n not in counts]:   # drop decommissioned sources
+        del hist[stale]
+    try:
+        tmp = SOURCE_HEALTH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, SOURCE_HEALTH)
+    except Exception:
+        log.warning("failed to write source_health.json", exc_info=True)
 
 
 # ================== PUSH ==================
