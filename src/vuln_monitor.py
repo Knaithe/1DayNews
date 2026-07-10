@@ -2359,10 +2359,14 @@ def fetch_twcert():
     """
     _TWCERT_TIMEOUT = 8          # per-request — twcert is slow / TLS-interfered
     _TWCERT_MAX_FAILS = 3        # circuit-break threshold for consecutive failures
+    _twcert_headers = {"User-Agent": "Mozilla/5.0"}
     out = []
     try:
-        r = _get_with_retry(SESS, TWCERT_RSS_URL, timeout=_TWCERT_TIMEOUT,
-                            headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+        # Single-shot (no _get_with_retry): on TLS-interfered networks twcert.org.tw
+        # handshakes hang until timeout; retrying multiplies the stall. One attempt
+        # + circuit-break keeps worst case at ~3×8s.
+        r = SESS.get(TWCERT_RSS_URL, timeout=_TWCERT_TIMEOUT,
+                     headers=_twcert_headers, verify=False)
         if r.status_code != 200:
             log.warning(f"TWCERT RSS HTTP {r.status_code}")
             return out
@@ -2375,11 +2379,11 @@ def fetch_twcert():
         for link in links:
             if consecutive_fails >= _TWCERT_MAX_FAILS:
                 log.warning(f"TWCERT: circuit-break after {consecutive_fails} consecutive "
-                            f"detail failures (network interference?), skipping {len(links)-len(out)} remaining")
+                            f"detail failures (network interference?), skipping remaining")
                 break
             try:
-                pr = _get_with_retry(SESS, link, timeout=_TWCERT_TIMEOUT,
-                                     headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+                pr = SESS.get(link, timeout=_TWCERT_TIMEOUT,
+                              headers=_twcert_headers, verify=False)
                 if pr.status_code != 200:
                     consecutive_fails += 1
                     continue
