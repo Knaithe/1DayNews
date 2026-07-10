@@ -2352,10 +2352,16 @@ def fetch_twcert():
     TWCERT's TLS cert carries a non-standard 32-byte Subject Key Identifier
     (RFC 5280 mandates 20); strict verifiers (Windows Schannel, newer OpenSSL)
     reject it. verify=False is a deliberate trade-off for this official CERT source.
+
+    Detail-page fetches use a short timeout (8s) and circuit-break after 3
+    consecutive failures: some networks interfere with twcert.org.tw TLS handshakes
+    (timeouts pile up), so we bail early rather than stall the fetch cycle.
     """
+    _TWCERT_TIMEOUT = 8          # per-request — twcert is slow / TLS-interfered
+    _TWCERT_MAX_FAILS = 3        # circuit-break threshold for consecutive failures
     out = []
     try:
-        r = _get_with_retry(SESS, TWCERT_RSS_URL, timeout=REQUEST_TIMEOUT,
+        r = _get_with_retry(SESS, TWCERT_RSS_URL, timeout=_TWCERT_TIMEOUT,
                             headers={"User-Agent": "Mozilla/5.0"}, verify=False)
         if r.status_code != 200:
             log.warning(f"TWCERT RSS HTTP {r.status_code}")
@@ -2365,14 +2371,26 @@ def fetch_twcert():
                              r.text):
             links.append(m.group(1))
         links = list(dict.fromkeys(links))[:ITEM_PER_FEED]
+        consecutive_fails = 0
         for link in links:
+            if consecutive_fails >= _TWCERT_MAX_FAILS:
+                log.warning(f"TWCERT: circuit-break after {consecutive_fails} consecutive "
+                            f"detail failures (network interference?), skipping {len(links)-len(out)} remaining")
+                break
             try:
-                pr = _get_with_retry(SESS, link, timeout=REQUEST_TIMEOUT,
+                pr = _get_with_retry(SESS, link, timeout=_TWCERT_TIMEOUT,
                                      headers={"User-Agent": "Mozilla/5.0"}, verify=False)
                 if pr.status_code != 200:
+                    consecutive_fails += 1
                     continue
-                out.extend(_parse_twcert_detail(pr.text, link))
+                parsed = _parse_twcert_detail(pr.text, link)
+                if parsed:
+                    out.extend(parsed)
+                    consecutive_fails = 0
+                else:
+                    consecutive_fails += 1
             except Exception as ex:
+                consecutive_fails += 1
                 log.debug(f"TWCERT detail {link}: {ex}")
             time.sleep(0.5)
     except Exception as ex:
