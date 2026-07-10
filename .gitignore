@@ -67,3 +67,9 @@ vuln_cache_remote.db-wal
 vuln_cache_prod.db
 .agents/
 skills-lock.json
+
+# agent/IDE working dirs
+.zcode/
+
+# ad-hoc debug scripts
+_dash_check.js
