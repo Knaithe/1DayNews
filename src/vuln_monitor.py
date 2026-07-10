@@ -2355,24 +2355,31 @@ def fetch_twcert():
 
     Detail-page fetches use a short timeout (8s) and circuit-break after 3
     consecutive failures: some networks interfere with twcert.org.tw TLS handshakes
-    (timeouts pile up), so we bail early rather than stall the fetch cycle.
+    (connections establish but stall, leaking into the shared connection pool);
+    so we use a dedicated session, close every response explicitly, and bail early
+    rather than stall the fetch cycle.
     """
     _TWCERT_TIMEOUT = 8          # per-request — twcert is slow / TLS-interfered
     _TWCERT_MAX_FAILS = 3        # circuit-break threshold for consecutive failures
     _twcert_headers = {"User-Agent": "Mozilla/5.0"}
+    # Dedicated session: twcert's stalling connections leak CLOSE-WAIT sockets that
+    # can exhaust the shared SESS pool and block other sources. Isolate them here.
+    twsess = requests.Session()
     out = []
     try:
         # Single-shot (no _get_with_retry): on TLS-interfered networks twcert.org.tw
-        # handshakes hang until timeout; retrying multiplies the stall. One attempt
-        # + circuit-break keeps worst case at ~3×8s.
-        r = SESS.get(TWCERT_RSS_URL, timeout=_TWCERT_TIMEOUT,
-                     headers=_twcert_headers, verify=False)
+        # handshakes hang until timeout; retrying multiplies the stall.
+        r = twsess.get(TWCERT_RSS_URL, timeout=_TWCERT_TIMEOUT,
+                       headers=_twcert_headers, verify=False)
         if r.status_code != 200:
             log.warning(f"TWCERT RSS HTTP {r.status_code}")
+            r.close()
             return out
+        rss_text = r.text
+        r.close()
         links = []
         for m in re.finditer(r"<link>(https://www\.twcert\.org\.tw/tw/cp-132-[^<]+)</link>",
-                             r.text):
+                             rss_text):
             links.append(m.group(1))
         links = list(dict.fromkeys(links))[:ITEM_PER_FEED]
         consecutive_fails = 0
@@ -2382,12 +2389,14 @@ def fetch_twcert():
                             f"detail failures (network interference?), skipping remaining")
                 break
             try:
-                pr = SESS.get(link, timeout=_TWCERT_TIMEOUT,
-                              headers=_twcert_headers, verify=False)
+                pr = twsess.get(link, timeout=_TWCERT_TIMEOUT,
+                                headers=_twcert_headers, verify=False)
                 if pr.status_code != 200:
                     consecutive_fails += 1
+                    pr.close()
                     continue
                 parsed = _parse_twcert_detail(pr.text, link)
+                pr.close()
                 if parsed:
                     out.extend(parsed)
                     consecutive_fails = 0
@@ -2399,6 +2408,8 @@ def fetch_twcert():
             time.sleep(0.5)
     except Exception as ex:
         log.warning(f"TWCERT err: {ex}")
+    finally:
+        twsess.close()
     return out
 
 
