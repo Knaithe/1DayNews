@@ -165,6 +165,11 @@ CHAITIN_API_URL = "https://stack.chaitin.com/api/v2/vuln/list/"
 # ThreatBook (微步在线) — public homePage endpoint, returns premium + highrisk vulns.
 THREATBOOK_API_URL = "https://x.threatbook.com/v5/node/vul_module/homePage"
 
+# TWCERT/CC (台灣電腦網路危機處理暨協調中心) — Taiwan Vulnerability Notes (TVN).
+# The RSS lists advisory titles only (no CVE/CVSS); each detail page (cp-132-*)
+# carries the structured fields (CVE ID, CVSS score+vector, product, vuln type).
+TWCERT_RSS_URL = "https://www.twcert.org.tw/tw/rss-132-1.xml"
+
 # Microsoft MSRC — CVRF XML API (the RSS feed was deprecated in 2026 and now
 # serves a frozen months-old snapshot).
 MSRC_CVRF_API      = "https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/{alias}"
@@ -176,6 +181,29 @@ FORTINET_PSIRT_URL = "https://www.fortiguard.com/psirt"
 # watchTowr labs — RSS froze in 2026-Q2; the posts sitemap is live and each
 # vulnerability writeup's URL slug carries its CVE-Id (e.g. ...-cve-2026-8037/).
 WATCHTOWR_SITEMAP  = "https://labs.watchtowr.com/sitemap-posts.xml"
+
+# GitHub repo-level Security Advisories — independent software products (firewall/
+# VPN/web server/runtime) whose vulns are NOT published to any package ecosystem,
+# so they never appear in the global /advisories endpoint (fetch_github_advisories).
+# Each is a boundary device or core infra component in ASSET_KEYWORDS. The repo
+# endpoint repos/{owner}/{repo}/security-advisories exposes advisories that GitHub's
+# global Advisory Database doesn't index (e.g. OPNsense CVE-2026-57155 Root RCE).
+REPO_ADVISORY_SOURCES = [
+    "opnsense/core",               # OPNsense firewall
+    "vyos/vyos",                   # VyOS router
+    "FreeRDP/FreeRDP",             # RDP client
+    "nginx/nginx",                 # nginx
+    "apache/httpd",                # Apache httpd
+    "apache/tomcat",               # Tomcat
+    "haproxy/haproxy",             # HAProxy
+    "envoyproxy/envoy",            # Envoy
+    "caddyserver/caddy",           # Caddy
+    "openssl/openssl",             # OpenSSL
+    "libressl-portable/portable",  # LibreSSL
+    "php/php-src",                 # PHP
+    "nodejs/node",                 # Node.js
+    "python/cpython",              # CPython
+]
 
 
 def _ab(acro):
@@ -1983,6 +2011,78 @@ def fetch_github_advisories():
     return out
 
 
+def fetch_repo_advisories():
+    """Fetch repo-level GitHub Security Advisories for independent software products.
+
+    The global /advisories endpoint (fetch_github_advisories) only indexes advisories
+    bound to a package ecosystem (npm/pip/maven...). Software shipped outside any
+    package manager — firewalls (OPNsense), web servers (nginx/Apache), runtimes
+    (PHP/Node/OpenSSL) — publishes advisories to their own repo via the
+    repos/{owner}/{repo}/security-advisories endpoint, which never reach the global
+    database. This fetcher closes that gap (e.g. OPNsense CVE-2026-57155 Root RCE).
+
+    Source is labelled "GHSA-Repo" so the dashboard can distinguish it from global
+    GHSA. Dedup is by CVE id (item_key → "cve:CVE-...") so overlap with global GHSA
+    is harmless: whichever source arrives first claims the record.
+    """
+    out = []
+    headers = {"Accept": "application/vnd.github+json"}
+    if GH_TOKEN:
+        headers["Authorization"] = f"Bearer {GH_TOKEN}"
+    else:
+        # Without a token GitHub allows only 60 req/hr (shared with GHSA + PoC-GitHub);
+        # this fetcher alone needs ~14 req/cycle. Warn once so operators know GHSA-Repo
+        # will be starved until GH_TOKEN is set in .env.
+        log.warning("GHSA-Repo: no GH_TOKEN — unauthenticated rate limit (60/hr) will "
+                    "starve this source; set GH_TOKEN for reliable coverage")
+    for repo in REPO_ADVISORY_SOURCES:
+        try:
+            r = _get_with_retry(
+                SESS, f"https://api.github.com/repos/{repo}/security-advisories",
+                params={"per_page": 100, "sort": "published", "direction": "desc"},
+                headers=headers, timeout=15)
+            if r.status_code != 200:
+                # Rate-limited? Stop early — remaining repos will also 403.
+                if r.status_code in (403, 429):
+                    rem = r.headers.get("X-RateLimit-Remaining")
+                    if rem == "0" or r.status_code == 429:
+                        log.warning(f"GHSA-Repo {repo}: rate-limited "
+                                    f"(remaining={rem}), aborting remaining repos")
+                        break
+                # 404 = repo hasn't enabled advisories; skip to next repo
+                continue
+            advs = r.json()
+            if not isinstance(advs, list):
+                continue
+            for adv in advs:
+                sev = (adv.get("severity") or "").lower()
+                if sev not in ("critical", "high"):
+                    continue
+                cve = adv.get("cve_id") or adv.get("ghsa_id", "")
+                summary = adv.get("summary", "")
+                desc = adv.get("description", "")
+                cvss_obj = adv.get("cvss", {})
+                cvss = cvss_obj.get("score")
+                vec = cvss_obj.get("vector_string", "")
+                cvss_str = f" (CVSS {cvss})" if cvss else ""
+                sev_str = f"[{sev.upper()}]" if sev else ""
+                full_text = desc or summary
+                out.append({
+                    "source": "GHSA-Repo",
+                    "title": f"[GHSA-Repo] {sev_str} {cve} {summary[:200]}".strip(),
+                    "link": adv.get("html_url", ""),
+                    "summary": (desc or summary)[:500] + cvss_str,
+                    "text": f"{cve} {full_text}",
+                    "_severity": sev or None,
+                    "_cvss": cvss,
+                    "_cvss_vector": vec or None,
+                })
+        except Exception as ex:
+            log.warning(f"GHSA-Repo {repo}: {ex}")
+        time.sleep(0.5)
+    return out
+
+
 def _parse_msrc_cvrf(xml_bytes):
     """Parse a MSRC CVRF security bundle (XML) into CVE-level items."""
     out = []
@@ -2135,6 +2235,151 @@ def fetch_watchtowr():
     return out
 
 
+# Matches "9.8 (Critical) CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+_TWCERT_CVSS_RE = re.compile(
+    r"(\d+\.\d+)\s*\((Critical|High|Medium|Low)\)\s*(CVSS:[\d.]+/[^\s<]+)", re.I)
+_TWCERT_CVE_RE = re.compile(r"CVE-\d{4}-\d+", re.I)
+
+
+def _parse_twcert_detail(html, link):
+    """Parse a TWCERT/CC detail page into one item per CVE.
+
+    Each advisory page lists 1+ CVEs, each with its own CVSS score+vector, a
+    product name, and a description block. We split per-CVE so item_key dedups
+    by CVE id (cve:CVE-...), matching the rest of the pipeline.
+    """
+    out = []
+    plain = re.sub(r"<[^>]+>", "\n", html)
+    plain = re.sub(r"\n\s*\n", "\n", plain).strip()
+
+    # Product name(s) — the 影響產品 section lists per-CVE affected products:
+    #   【CVE-2026-7489】\n CTMS培訓大師 所有版本\n【CVE-2026-7490】\n CTMS...\n CAPS...
+    # (single-product pages just have the bare name without 【CVE-】 markers)
+    product_section = ""
+    m = re.search(r"影響產品\s*\n(.+?)(?:問題描述|解決方法|公開日期|$)", plain, re.S)
+    if m:
+        product_section = m.group(1)
+    per_cve_product = {}
+    for pm in re.finditer(r"【\s*(CVE-\d{4}-\d+)\s*】(.+?)(?=【\s*CVE-\d|$)",
+                          product_section, re.S):
+        per_cve_product[pm.group(1).upper()] = re.sub(r"\s+", " ", pm.group(2)).strip()
+    # fallback: bare product name (no per-CVE markers)
+    fallback_product = re.sub(r"\s+", " ", product_section).strip() if product_section else ""
+
+    # Publication date: "公開日期  2026-07-06"
+    pub_date = ""
+    m = re.search(r"公開日期\s*\n\s*(\d{4}-\d{2}-\d{2})", plain)
+    if m:
+        pub_date = m.group(1)
+
+    # Per-CVE descriptions in the 問題描述 section:
+    #   【CVE-2026-14808(Exposure of Sensitive Information)】 描述...
+    #   【CVE-2026-14809(SQL Injection)】 描述...
+    desc_section = ""
+    m = re.search(r"問題描述\s*\n(.+?)(?:解決方法|漏洞通報者|公開日期)", plain, re.S)
+    if m:
+        desc_section = m.group(1)
+    # map each CVE → its own description (the text up to the next 【CVE- marker)
+    per_cve_desc = {}
+    for dm in re.finditer(r"【\s*(CVE-\d{4}-\d+)\s*\(([^)]*)\)\s*】(.+?)(?=【\s*CVE-\d|$)",
+                          desc_section, re.S):
+        cve_id, vuln_type, body = dm.group(1).upper(), dm.group(2), dm.group(3)
+        body_clean = re.sub(r"\s+", " ", body).strip()
+        per_cve_desc[cve_id] = f"{vuln_type}. {body_clean}"
+
+    # CVSS scores — the CVSS section lists per-CVE blocks (multi-CVE pages):
+    #   【CVE-2026-7489】\n8.8 (High) CVSS:3.1/...
+    # Single-CVE pages have a bare score with no 【CVE-】 marker:
+    #   9.8 (Critical) \nCVSS:3.1/...
+    cvss_section = ""
+    m = re.search(r"CVSS\s*\n(.+?)(?:影響產品|問題描述)", plain, re.S)
+    if m:
+        cvss_section = m.group(1)
+    per_cve_cvss = {}
+    for cm in re.finditer(r"【\s*(CVE-\d{4}-\d+)\s*】\s*\n(.+?)(?=【\s*CVE-\d|$)",
+                          cvss_section, re.S):
+        cve_id = cm.group(1).upper()
+        cvm = _TWCERT_CVSS_RE.search(cm.group(2))
+        if cvm:
+            per_cve_cvss[cve_id] = (cvm.group(1), cvm.group(2).lower(), cvm.group(3))
+    # fallback: bare score (single-CVE page, no per-CVE markers)
+    fallback_cvss = None
+    if not per_cve_cvss:
+        fm = _TWCERT_CVSS_RE.search(cvss_section)
+        if fm:
+            fallback_cvss = (fm.group(1), fm.group(2).lower(), fm.group(3))
+
+    cves = list(dict.fromkeys(c.upper() for c in _TWCERT_CVE_RE.findall(plain)))
+    if not cves:
+        # TVN-only advisory (no CVE assigned) — can't dedup/track without a CVE id
+        log.debug(f"TWCERT {link}: no CVE, skipped")
+        return out
+
+    for cve in cves:
+        score, severity, vector = (None, None, None)
+        cv = per_cve_cvss.get(cve) or fallback_cvss
+        if cv:
+            score, severity, vector = cv
+        product = per_cve_product.get(cve) or fallback_product
+        desc = per_cve_desc.get(cve, "")[:500]
+        # Strip any cross-referenced CVE IDs from the description so item_key (which
+        # picks the alphabetically-smallest CVE in text) keys on THIS cve only.
+        desc_sanitized = _TWCERT_CVE_RE.sub("", desc).strip()
+        full = f"[TWCERT] {cve} {product}".strip()
+        text = f"{full}\n{product}. {desc_sanitized}"
+        out.append({
+            "source": "TWCERT",
+            "title": full[:300],
+            "link": link,
+            "summary": f"{product}. {desc}"[:500],
+            "text": text,
+            "_pub_date": pub_date or None,
+            "_severity": severity,
+            "_cvss": float(score) if score else None,
+            "_cvss_vector": vector,
+        })
+    return out
+
+
+def fetch_twcert():
+    """TWCERT/CC — Taiwan Vulnerability Notes (TVN).
+
+    The RSS (rss-132-1.xml) lists advisory titles/links but no CVE/CVSS. We pull
+    the RSS for the link list, then fetch each detail page (cp-132-*) to extract
+    structured fields (CVE ID, CVSS score+vector, product, vuln type). Each CVE
+    becomes a separate item so item_key dedups by CVE id.
+
+    TWCERT's TLS cert carries a non-standard 32-byte Subject Key Identifier
+    (RFC 5280 mandates 20); strict verifiers (Windows Schannel, newer OpenSSL)
+    reject it. verify=False is a deliberate trade-off for this official CERT source.
+    """
+    out = []
+    try:
+        r = _get_with_retry(SESS, TWCERT_RSS_URL, timeout=REQUEST_TIMEOUT,
+                            headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+        if r.status_code != 200:
+            log.warning(f"TWCERT RSS HTTP {r.status_code}")
+            return out
+        links = []
+        for m in re.finditer(r"<link>(https://www\.twcert\.org\.tw/tw/cp-132-[^<]+)</link>",
+                             r.text):
+            links.append(m.group(1))
+        links = list(dict.fromkeys(links))[:ITEM_PER_FEED]
+        for link in links:
+            try:
+                pr = _get_with_retry(SESS, link, timeout=REQUEST_TIMEOUT,
+                                     headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+                if pr.status_code != 200:
+                    continue
+                out.extend(_parse_twcert_detail(pr.text, link))
+            except Exception as ex:
+                log.debug(f"TWCERT detail {link}: {ex}")
+            time.sleep(0.5)
+    except Exception as ex:
+        log.warning(f"TWCERT err: {ex}")
+    return out
+
+
 def _fetch_all_sources():
     """Collect items from all configured sources. Used by _run() and cmd_rebuild()."""
     items = []
@@ -2147,8 +2392,9 @@ def _fetch_all_sources():
                         ("ThreatBook", fetch_threatbook),
                         ("PoC-GitHub", fetch_poc_in_github),
                         ("GHSA", fetch_github_advisories),
+                        ("GHSA-Repo", fetch_repo_advisories),
                         ("MSRC", fetch_msrc), ("Fortinet", fetch_fortinet),
-                        ("watchTowr", fetch_watchtowr)]:
+                        ("watchTowr", fetch_watchtowr), ("TWCERT", fetch_twcert)]:
         batch = func()
         counts[name] = len(batch)
         items.extend(batch)
