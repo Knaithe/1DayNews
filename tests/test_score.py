@@ -247,6 +247,43 @@ def test_execute_arbitrary_os_commands_still_rce():
     assert vt == "RCE", f"'execute arbitrary OS commands' should be RCE (reason={reason})"
 
 
+# --- short asset keywords must use word boundaries (not raw substring) ---
+
+def test_short_asset_ise_not_inside_enterprise():
+    # 'ise' must not match inside 'enterprise' → no asset+CVE false positive
+    hit, reason, vt = _score(
+        "CVE-2026-1 enterprise noise",
+        "Something in the enterprise product line. (CVSS 9.8)",
+    )
+    assert "asset" not in reason, f"'ise' leaked from enterprise (reason={reason})"
+
+
+def test_short_asset_nsa_not_inside_transaction():
+    hit, reason, _ = _score(
+        "CVE-2026-1 transaction processing flaw",
+        "A flaw in transaction handling. (CVSS 7.5)",
+    )
+    assert "asset" not in reason, f"'nsa' leaked from transaction (reason={reason})"
+
+
+def test_short_asset_tar_not_inside_start():
+    hit, reason, _ = _score(
+        "CVE-2026-1 start of request parser",
+        "Bug at the start of the request pipeline. (CVSS 7.5)",
+    )
+    assert "asset" not in reason, f"'tar' leaked from start (reason={reason})"
+
+
+def test_short_asset_real_product_still_hits():
+    # real short tokens as whole words still count
+    assert vm.asset_hit("cisco ise vulnerability")
+    assert vm.asset_hit("progress adc rce")
+    assert vm.asset_hit("sonicwall nsa 2700")
+    # long keywords unchanged
+    assert vm.asset_hit("fortigate rce")
+    assert vm.asset_hit("remote code execution in nginx")
+
+
 def test_webshell_bypasses_xss_exclude():
     # webshell is an RCE primitive; a co-occurring XSS must not exclude it
     _, reason, vt = _score("CVE-2026-1 webshell upload via stored XSS in nginx", "")

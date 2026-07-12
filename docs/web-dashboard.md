@@ -21,7 +21,8 @@ ssh -L 8001:127.0.0.1:8001 user@server
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Flask + waitress（多线程生产服务器），单文件 `src/web.py` |
+| 后端 | Flask + waitress，`src/web.py` |
+| 前端 | `src/static/dashboard.html`（启动时加载并注入 LIMIT/NOTE 常量） |
 | 前端 | 内嵌 HTML/CSS/JS，无构建步骤 |
 | 数据库 | 只读打开 SQLite（`?mode=ro`） |
 | 字体 | Poppins（正文）+ Unbounded（标题/数字）+ JetBrains Mono（CVE ID） |
@@ -62,13 +63,35 @@ ssh -L 8001:127.0.0.1:8001 user@server
 - 所有 `href` 走 `safeUrl()`，`rel` 加 `noreferrer`
 - LIMIT 参数化（`?` 占位符），不拼 SQL
 
-### 网络层
+### 网络层与鉴权
 
-- **默认只绑 127.0.0.1**：不暴露到公网
-- **只读 SQLite**：`file:xxx?mode=ro`，Web 界面无法修改数据
-- **无认证**：依赖网络层隔离（localhost + SSH），不依赖应用层认证
+- **默认只绑 127.0.0.1**
+- **读**：`file:xxx?mode=ro` 打开 SQLite；列表/stats 为读接口
+- **写**：备注 / 标签 / 复现标记走受控 `POST`（`get_db_rw`），列白名单
 
-如需公网暴露（不推荐），加 Nginx 反代 + Basic Auth + HTTPS。
+| 模式 | 读（GET） | 写（POST note/tags/reproduced） |
+|---|---|---|
+| **localhost**（默认） | 开放（SSH 隧道友好） | **必须 magic token**（首页加载时下发 `SameSite=Strict` cookie） |
+| **`--public` / 非 loopback** | 必须 token | 必须 token |
+
+Token 文件：`DATA_DIR/.web_token`（启动时自动生成）。也可用 `Authorization: Bearer …` / `?token=` / URL 前缀 `/TOKEN/…`。
+
+**Cookie 属性**：`HttpOnly` + `SameSite=Strict`；`Secure` 在以下情况开启：
+
+- 请求已是 HTTPS，或 `X-Forwarded-Proto: https`（反代透传）
+- 或显式 `VULN_WEB_SECURE=1`（TLS 在反代终止、后端只听 HTTP 时推荐）
+
+纯 HTTP / SSH 隧道默认不加 `Secure`，否则浏览器拒存 cookie、写接口会 403。
+
+```bash
+python src/web.py --public              # 0.0.0.0 + 全站 token
+python src/web.py --show-token          # 打印当前 token
+python src/web.py --rotate-token        # 轮换 token
+# 反代 HTTPS 示例：
+# VULN_WEB_SECURE=1 python src/web.py --public
+```
+
+如需再加一层公网防护，可叠加 Nginx Basic Auth + HTTPS。
 
 ## API 端点
 

@@ -48,7 +48,8 @@ def app(tmp_path):
 
     web_mod.DB_FILE = db_path
     web_mod.TOKEN_FILE = tmp_path / ".web_token"
-    web_mod._MAGIC_TOKEN = None
+    web_mod._MAGIC_TOKEN = "test-token"
+    web_mod._LOOPBACK_MODE = True
     web_mod.app.config["TESTING"] = True
     yield web_mod.app
 
@@ -104,7 +105,9 @@ class TestAPIPending:
 
 class TestBearerAuth:
     def test_bearer_pending(self, app, tmp_path):
+        # Non-loopback (= public-style): every method needs the magic token.
         web_mod._MAGIC_TOKEN = "test-secret-token"
+        web_mod._LOOPBACK_MODE = False
         c = app.test_client()
         resp = c.get("/api/pending")
         assert resp.status_code == 403
@@ -115,6 +118,7 @@ class TestBearerAuth:
 
     def test_query_param_still_works(self, app, tmp_path):
         web_mod._MAGIC_TOKEN = "test-secret-token"
+        web_mod._LOOPBACK_MODE = False
         c = app.test_client()
         resp = c.get("/api/pending?token=test-secret-token")
         assert resp.status_code == 200

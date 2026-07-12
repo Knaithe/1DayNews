@@ -32,3 +32,22 @@ def test_access_line_truncates_long_ua():
     line = web._access_line("GET", "/", 200, "1.1.1.1", "loopback", "X" * 500)
     # ua is capped at 160 chars so a pathological UA can't blow up the log line
     assert len(line) < 300
+
+
+def test_cookie_secure_force_env(monkeypatch):
+    monkeypatch.setattr(web, "_FORCE_SECURE_COOKIE", True)
+    assert web._cookie_secure() is True
+
+
+def test_cookie_secure_off_by_default(monkeypatch):
+    monkeypatch.setattr(web, "_FORCE_SECURE_COOKIE", False)
+    # no request context → False (HTTP/tunnel safe default)
+    assert web._cookie_secure() is False
+
+
+def test_dashboard_html_loaded_from_static():
+    # HTML lives in src/static/dashboard.html, not inline in web.py
+    assert "vuln-monitor" in web.DASHBOARD_HTML
+    assert "vcard" in web.DASHBOARD_HTML
+    from pathlib import Path
+    assert (Path(web.__file__).parent / "static" / "dashboard.html").is_file()

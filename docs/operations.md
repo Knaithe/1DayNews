@@ -21,11 +21,11 @@
 - **进程异常退出**：OS 自动释放 flock / Windows locking
 - **手动留着的锁文件**：重启机器后内核 flock 不再生效，文件内容不重要
 
-systemd timer 如果前一次还没跑完，下一次触发自然被锁挡住——不用配 `OnUnitActiveSec` 额外串行化。
+daemon 单进程循环内持锁跑 fetch+enrich；若另起 CLI 实例撞锁会立刻退出（exit 0）。
 
 ## 原子写
 
-位置：`save_cache()` 与 `send_failure_alert()` 的状态保存
+JSON 状态文件（`fetch_state.json` / `source_health.json` / `vuln_alert_state.json` 等）统一：
 
 ```python
 tmp = target.with_suffix(target.suffix + ".tmp")
@@ -33,8 +33,8 @@ tmp.write_text(json.dumps(data), encoding="utf-8")
 os.replace(tmp, target)      # POSIX 原子，Windows 10+ 近似原子
 ```
 
-- 即使写 cache 的过程被 kill -9，磁盘上要么是旧 cache 要么是完整新 cache，不会出现半截 JSON
-- 避免下一次启动时 `json.loads()` 炸 → 整个程序无法启动
+- 主库已是 SQLite WAL，不再使用旧版 `vuln_cache.json` 作为权威存储
+- kill -9 时磁盘上要么是旧完整 JSON，要么是新完整 JSON，不会半截
 
 ## 日志轮转
 

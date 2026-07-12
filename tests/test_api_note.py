@@ -32,9 +32,13 @@ def client(tmp_path):
     web_mod.DB_FILE = db_path
     web_mod.TOKEN_FILE = tmp_path / ".web_token"
     web_mod.FETCH_STATE_FILE = tmp_path / "fetch_state.json"
-    web_mod._MAGIC_TOKEN = None
+    # Loopback + token: GET open, POST needs Authorization (mirrors production localhost).
+    web_mod._MAGIC_TOKEN = "test-token"
+    web_mod._LOOPBACK_MODE = True
     web_mod.app.config["TESTING"] = True
-    yield web_mod.app.test_client()
+    client = web_mod.app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+    yield client
 
 
 def _note_in_db(db_path, key):
@@ -49,6 +53,37 @@ def test_save_note_roundtrip_via_db(client, tmp_path):
     assert resp.status_code == 200
     assert resp.get_json() == {"ok": True, "key": "cve:CVE-2026-1001", "note": "在野利用确认"}
     assert _note_in_db(tmp_path / "vuln_cache.db", "cve:CVE-2026-1001") == "在野利用确认"
+
+
+def test_write_without_token_forbidden(tmp_path):
+    # Loopback still requires magic token on mutating methods.
+    db_path = tmp_path / "vuln_cache.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""CREATE TABLE vulns (
+        key TEXT, cve_id TEXT, source TEXT, title TEXT, link TEXT,
+        summary TEXT, reason TEXT, vuln_type TEXT, category TEXT, freshness TEXT,
+        freshness_reason TEXT, pushed INTEGER DEFAULT 0,
+        created_at REAL, cve_published TEXT, severity TEXT, cvss REAL,
+        llm_verified INTEGER DEFAULT 0, llm_verdict TEXT, llm_notes TEXT,
+        tg_sent INTEGER DEFAULT 0, wecom_sent INTEGER DEFAULT 0,
+        dingtalk_sent INTEGER DEFAULT 0, feishu_sent INTEGER DEFAULT 0,
+        cvss_vector TEXT, cvss_pr TEXT, reproduced INTEGER DEFAULT 0
+    )""")
+    conn.execute(
+        "INSERT INTO vulns (key, cve_id, source, title, pushed, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        ("cve:CVE-2026-1001", "CVE-2026-1001", "CISA_KEV", "RCE", 1, 0),
+    )
+    conn.commit(); conn.close()
+    web_mod.DB_FILE = db_path
+    web_mod.TOKEN_FILE = tmp_path / ".web_token"
+    web_mod._MAGIC_TOKEN = "secret-token"
+    web_mod._LOOPBACK_MODE = True
+    web_mod.app.config["TESTING"] = True
+    c = web_mod.app.test_client()
+    # no Authorization header
+    assert c.post("/api/note", json={"key": "cve:CVE-2026-1001", "note": "x"}).status_code == 403
+    assert c.get("/api/vulns").status_code == 200  # reads still open on loopback
 
 
 def test_too_long_note_rejected(client):

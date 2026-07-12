@@ -4,12 +4,12 @@
 
 | 类别 | 源 | 采集方式 | CVE 覆盖率 | 说明 |
 |---|---|---|---|---|
-| **厂商 PSIRT** | Fortinet | RSS | 0%（FG-IR 在 link 中） | FortiGuard 官方公告 |
+| **厂商 PSIRT** | Fortinet | HTML 门户刮取 | 0%（FG-IR 在 link 中） | RSS 2026-Q2 冻结，改 scrape fortiguard.com/psirt |
 | | PaloAlto | RSS | 55% | 安全公告 |
 | | Cisco | RSS | 100% | 安全公告 |
-| | MSRC | RSS | 100% | 微软安全更新 |
+| | MSRC | CVRF XML API | 100% | RSS 已废弃/冻结，改 `api.msrc.microsoft.com/cvrf` |
 | **漏洞披露** | ZDI | RSS | 85% | Zero Day Initiative 公告 |
-| | watchTowr | RSS | 73% | 高质量 1day 分析 + PoC |
+| | watchTowr | posts sitemap | 73% | RSS 冻结，改 labs.watchtowr.com/sitemap-posts.xml |
 | **漏洞披露** | DailyCVE | RSS | 42% | 每日 CVE 汇总，标题含产品+类型+严重等级 |
 | **漏洞研究** | Horizon3 | RSS | 40% | 攻击面分析 |
 | | Rapid7 | RSS | 35% | Metasploit 周报 + 研究 |
@@ -27,15 +27,17 @@
 
 | 源 | 特殊处理 |
 |---|---|
-| Fortinet | CVE 不在 RSS 中，通过 `ADVISORY_RE` 从 link 提取 FG-IR 编号 |
+| Fortinet | `fetch_fortinet` 刮 PSIRT 列表；CVE 常不在条目中，`ADVISORY_RE` 从 link 提取 FG-IR 编号 |
+| MSRC | `fetch_msrc` 拉当月（及必要时上月）CVRF；解析 Vulnerability 节点 |
+| watchTowr | `fetch_watchtowr` 解析 posts sitemap；URL slug 常带 CVE-Id |
 | Chaitin | SafeLine WAF 限频，独立 session + Referer 头，每周期仅 1 次 API 调用 |
-| ThreatBook | 独立 session，homePage 端点返回编辑精选 |
-| PoC-in-GitHub | 解析最新 commit diff，只取当年+去年 CVE 的 JSON 文件变更 |
+| ThreatBook | 独立 session，homePage 端点返回编辑精选；**不在** `FRESH_SOURCES`（混入旧洞） |
+| PoC-in-GitHub | 解析最新 commit diff，只取当年+去年 CVE 的 JSON 文件变更；合法空结果不标红健康点 |
 | GHSA | 全局 `/advisories` 端点按 severity=critical,high + published 时间窗（30 天，7 天滑动）分页拉取 |
-| GHSA-Repo | 仓库级 `repos/{repo}/security-advisories` 端点，遍历 `REPO_ADVISORY_SOURCES` 清单（14 个独立软件产品仓库），客户端过滤 critical/high。与全局 GHSA 互补——补齐不发布到包生态的软件（OPNsense/nginx 等）的盲区。去重靠 CVE id（`item_key` → `cve:CVE-…`），与 GHSA 重叠时先入库者占位 |
+| GHSA-Repo | 仓库级 `repos/{repo}/security-advisories`，遍历 `REPO_ADVISORY_SOURCES`（边界设备/核心运行时），客户端过滤 critical/high；与全局 GHSA 互补 |
 | KEV | 按 `dateAdded` 过滤最近 60 天，不拉全量 1500+ 条 |
-| TWCERT | RSS 仅含标题/链接，需抓详情页（cp-132-*）提取 CVE/CVSS/产品/漏洞类型。多 CVE 公告按 CVE 拆分为独立 item。TLS 证书 SKI 扩展非标准（32 字节，RFC 5280 规定 20），严格校验失败，故 `verify=False` |
-| 全部 | `_get_with_retry()` 3 次重试，间隔 3 秒 |
+| TWCERT | RSS 仅含标题/链接，需抓详情页（cp-132-*）提取 CVE/CVSS/产品/漏洞类型。多 CVE 公告按 CVE 拆分。TLS 证书 SKI 非标准，故 `verify=False`；短超时 + 连续失败熔断 |
+| 全部 | `_get_with_retry()` 3 次重试，间隔 3 秒（TWCERT 等例外见代码） |
 
 ## 故意未纳入的源
 

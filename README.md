@@ -6,16 +6,15 @@
 
 ## 核心特性
 
-- **16 个数据源**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus_Citrix/PoC-GitHub）、漏洞研究（Horizon3/Rapid7）、在野利用（CISA KEV）、漏洞库（长亭/微步）、Advisory（GHSA）、CERT（CERT_CC）
-- **聚焦 RCE + bypass**：60+ 正则 + 500 资产关键词 + 排除规则，过滤 XSS/CSRF/LPE/DoS 噪声；CJK 边界匹配（`_ab()`）确保 `认证绕过RCE漏洞` 不被 `\b` 漏掉
-- **增量去重**：SQLite WAL 模式，CVE 为主键，60 天 TTL，同一 CVE 跨源只推一次；CVE 年份 > 1 年硬过滤 nday，无例外
-- **多视图查询**：简表 / 详细 / 通知友好 / JSON，支持 CVE/厂商/关键词/时间过滤
-- **Web 仪表盘**：暖色卡片式界面，实时搜索过滤，双击卡片记备注，统计栏显示最近抓取时间/条数，只绑 localhost（SSH 隧道访问）
-- **自动补全**：缺字段的高价值记录自动从 CVE/公告编号/标题推断链接和来源
-- **AI 驱动**：Claude Code skill（`/vuln`），自然语言查询漏洞情报
-- **LLM 研判**：DeepSeek/GPT function calling 核验漏洞真实性，verdict = confirmed/not_relevant/noise，NVD CVSS 自动补全
-- **双服务部署**：monitor daemon + web 仪表盘各一个 systemd 服务，无需 timer
-- **生产级**：文件锁防并发、失败重试、日志轮转、告警限流、一键部署/卸载
+- **多源采集（约 18 通道）**：厂商 PSIRT（Fortinet/PaloAlto/Cisco/MSRC）、漏洞披露（ZDI/watchTowr/DailyCVE）、Exploit/PoC（Sploitus_Citrix/PoC-GitHub）、研究（Horizon3/Rapid7）、CISA KEV、长亭/微步、GHSA(+Repo)、CERT_CC/TWCERT
+- **模块化源码**：`config` / `scoring` / `db` / `sources` / `notify` / `web` + `static/dashboard.html`；编排在 `vuln_monitor.py`
+- **聚焦 RCE + bypass**：模式与 `score()` 在 `src/scoring.py`；短资产词词边界防误伤；CJK `_ab()` 边界
+- **增量去重**：SQLite WAL，CVE 主键，60 天 TTL；CVE 年份 >1 年硬 nday
+- **统一推送门禁**：配 LLM 时仅 enrich 后推送；公平 enrich 队列（新高优 + 旧积压）；硬约束 freshness/PR=N/非 GitHub
+- **多视图查询** + **Web 仪表盘**（localhost 读开放，写接口 magic token）
+- **LLM 研判**：DeepSeek/GPT + NVD CVSS；daemon = fetch → enrich → push
+- **双服务 systemd**：monitor daemon + web，无需 timer
+- **生产级**：文件锁、重试、日志轮转、告警限流、一键部署/卸载
 
 ## 快速开始
 
@@ -29,18 +28,15 @@ python src/web.py                   # Web 仪表盘 http://127.0.0.1:8001
 ## CLI 子命令
 
 ```bash
-python src/vuln_monitor.py fetch                              # 抓取 → 去重 → 存库 → 推送
+python src/vuln_monitor.py fetch                              # 抓取入库（有 LLM 时不推送）
+python src/vuln_monitor.py fetch --no-push                    # 显式只采集
+python src/vuln_monitor.py enrich                             # NVD + LLM 研判 + 推送
+python src/vuln_monitor.py enrich --dry                       # 研判但不推送
+python src/vuln_monitor.py daemon                             # 常驻：fetch→enrich→push（systemd）
 python src/vuln_monitor.py query --pushed --days 1            # 简表
 python src/vuln_monitor.py query --full --cve CVE-2026-1340   # 详细
-python src/vuln_monitor.py query --json --source CISA_KEV     # JSON
-python src/vuln_monitor.py brief --pushed --days 1            # 通知格式（自动补全+质量过滤）
-python src/vuln_monitor.py stats                              # 统计
-python src/vuln_monitor.py rebuild                            # 回填历史记录缺失字段
-python src/vuln_monitor.py rescore                            # 用当前规则重新评估所有记录
-python src/vuln_monitor.py fetch --no-push                    # 只采集不推送（配合 enrich）
-python src/vuln_monitor.py enrich                             # LLM 研判 + NVD CVSS 补全 + 推送
-python src/vuln_monitor.py enrich --dry                       # 研判但不推送
-python src/vuln_monitor.py daemon                             # 常驻循环 fetch+enrich（systemd 用）
+python src/vuln_monitor.py brief --pushed --days 1            # 通知格式
+python src/vuln_monitor.py stats | rescore | rebuild          # 统计 / 重评 / 回填
 ```
 
 过滤参数：`--cve` / `--source` / `--keyword` / `--days` / `--pushed` / `--reason` / `--limit`
@@ -52,7 +48,7 @@ python src/web.py                    # http://127.0.0.1:8001
 ssh -L 8001:127.0.0.1:8001 user@srv  # 远程 SSH 隧道访问
 ```
 
-Pluto Security 风格暖色卡片布局，实时搜索，药丸式源/原因/时间筛选，严重性颜色编码。默认只显示精选（pushed），可切换全量。**双击卡片**弹出备注编辑器（≤200 字，记使用情况/复现状态），统计栏显示**最近一次抓取时间 + 条数**。安全加固（CSP/X-Frame-Options/nosniff），waitress + SQLite（读为主；备注、复现标记走受控写接口），只绑 127.0.0.1。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
+Pluto Security 风格暖色卡片布局，实时搜索，药丸式源/原因/时间筛选，严重性颜色编码。默认只显示精选（pushed），可切换全量。**双击卡片**弹出备注编辑器（≤200 字，记使用情况/复现状态），统计栏显示**最近一次抓取时间 + 条数**。安全加固（CSP/X-Frame-Options/nosniff），waitress + SQLite（读为主；备注/标签/复现走 POST，**即使 localhost 也要 magic token**）。详见 [`docs/web-dashboard.md`](docs/web-dashboard.md)。
 
 ## 推送通道
 

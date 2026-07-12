@@ -9,13 +9,15 @@ os.environ.setdefault("VULN_DATA_DIR", "")
 
 from datetime import datetime, timezone
 
+import src.nvd as nvd
 import src.vuln_monitor as v
 
 
 def test_fresh_source_calls_nvd(monkeypatch):
     """High-trust sources must go through NVD — extra verification never hurts."""
     called = []
-    monkeypatch.setattr(v, "_nvd_published_date",
+    # Patch the module that owns _is_fresh (nvd.py), not only the re-export.
+    monkeypatch.setattr(nvd, "_nvd_published_date",
                         lambda c: (called.append(c), (None, None))[1])
     fresh, _pub, reason = v._is_fresh("MSRC", "CVE-2026-12345 RCE in Windows")
     assert called, "high-trust source must query NVD for verification"
@@ -26,7 +28,7 @@ def test_fresh_source_calls_nvd(monkeypatch):
 def test_fresh_source_nvd_confirms_recent(monkeypatch):
     """NVD confirms CVE is recent → 1day."""
     recent = datetime.now(timezone.utc)
-    monkeypatch.setattr(v, "_nvd_published_date",
+    monkeypatch.setattr(nvd, "_nvd_published_date",
                         lambda c: (recent, recent.strftime("%Y-%m-%d")))
     fresh, pub, reason = v._is_fresh("Fortinet", "CVE-2026-99999 FG-IR vuln")
     assert fresh is True
@@ -37,7 +39,7 @@ def test_fresh_source_nvd_confirms_recent(monkeypatch):
 def test_fresh_source_nvd_stale(monkeypatch):
     """NVD says CVE is >60 days old → nday even for high-trust source."""
     old_dt = datetime(2025, 1, 15, tzinfo=timezone.utc)
-    monkeypatch.setattr(v, "_nvd_published_date",
+    monkeypatch.setattr(nvd, "_nvd_published_date",
                         lambda c: (old_dt, "2025-01-15"))
     fresh, pub, reason = v._is_fresh("MSRC", "CVE-2025-12345 old advisory update")
     assert fresh is False
@@ -46,7 +48,7 @@ def test_fresh_source_nvd_stale(monkeypatch):
 
 def test_fresh_source_old_cve_still_nday(monkeypatch):
     """Even for a high-trust source, a CVE older than a year is nday."""
-    monkeypatch.setattr(v, "_nvd_published_date", lambda c: (None, None))
+    monkeypatch.setattr(nvd, "_nvd_published_date", lambda c: (None, None))
     fresh, _pub, reason = v._is_fresh("Fortinet", "CVE-2020-1111 old rehash")
     assert fresh is False
     assert reason == "old_cve"
@@ -54,7 +56,7 @@ def test_fresh_source_old_cve_still_nday(monkeypatch):
 
 def test_low_trust_source_still_uses_nvd(monkeypatch):
     called = []
-    monkeypatch.setattr(v, "_nvd_published_date",
+    monkeypatch.setattr(nvd, "_nvd_published_date",
                         lambda c: (called.append(c), (None, None))[1])
     v._is_fresh("PoC-GitHub", "CVE-2026-12345 whatever")
     assert called, "low-trust source must still query NVD to confirm freshness"

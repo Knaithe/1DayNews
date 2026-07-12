@@ -5,8 +5,19 @@
 ```
 1DayNews/
 ├── src/
-│   ├── vuln_monitor.py        # 主程序（采集/评分/LLM研判/推送）
-│   └── web.py                 # Web 仪表盘（Flask + waitress）
+│   ├── __init__.py
+│   ├── vuln_monitor.py        # CLI 入口 + re-export（薄）
+│   ├── config.py              # 路径、凭证、HTTP session、日志
+│   ├── scoring.py             # RCE/bypass/资产 + score() + category
+│   ├── db.py                  # SQLite schema / 迁移 / TTL
+│   ├── sources.py             # 各数据源 fetchers
+│   ├── notify.py              # Telegram / 企微 / 钉钉 / 飞书
+│   ├── nvd.py                 # NVD/GH 查询、CVSS 回填、freshness
+│   ├── push_gate.py           # pushed 门禁（正则 + LLM verdict）
+│   ├── enrich.py              # LLM agent + 公平批处理队列
+│   ├── pipeline.py            # fetch 流水线 / rescore / rebuild / push_pending
+│   ├── web.py                 # 仪表盘 API
+│   └── static/dashboard.html  # 前端模板
 ├── scripts/
 │   ├── probe_feeds.py         # 源失效时用来批量探测替代 URL 的工具
 │   └── configure.py           # 本地交互式写 ~/.config/vuln-monitor/config.json
@@ -24,24 +35,51 @@
 └── README.md                  # 速览与快速开始
 ```
 
+| 模块 | 职责 | I/O |
+|---|---|---|
+| `scoring.py` | 过滤/分类 | 无 |
+| `push_gate.py` | 推送硬门禁 | 无（读 config 密钥） |
+| `config.py` | 配置与共享 session | 读 env / config.json |
+| `db.py` | 库表 | SQLite |
+| `sources.py` | 采集 | HTTP |
+| `nvd.py` | NVD/CVSS/freshness | HTTP |
+| `enrich.py` | LLM 研判 | HTTP |
+| `notify.py` | 多通道推送 | HTTP webhooks |
+| `pipeline.py` | fetch/rescore/rebuild | 编排 |
+| `vuln_monitor.py` | CLI + re-export | 入口 |
+| `web.py` + `static/` | 仪表盘 | HTTP |
+
+包导入统一走 `src.*`（避免 `nvd` / `src.nvd` 双模块身份），测试与 `import src.vuln_monitor` 共用同一实例。
+
+### enrich 批处理（`ENRICH_LIMIT`，默认 200）
+
+旧逻辑 `ORDER BY created_at DESC LIMIT 500` 在入库速度快于 LLM 时会**饿死**旧行（永远排不到）。  
+现 `_select_enrich_candidates` 每轮：
+
+1. 最多 `limit//2` 条**最新**高优先级（`RCE`/`bypass` + `1day`）
+2. 剩余名额给**最旧**未研判行（FIFO 消化积压）
+
+可用环境变量 `ENRICH_LIMIT` 调整；日志打印 `backlog` / `backlog_left`。  
+LLM 故障 fallback 只作用于**本批** keys，避免全表突然灌推送。
+
 ## 部署布局（服务器）
 
 ```
 /opt/vuln-monitor/
 ├── src/
-│   ├── vuln_monitor.py        # 采集/去重/推送
-│   └── web.py                 # Web 仪表盘（Flask + waitress）
+│   ├── vuln_monitor.py / config.py / scoring.py / db.py
+│   ├── sources.py / notify.py / web.py
+│   └── static/dashboard.html
 ├── scripts/
-│   ├── probe_feeds.py
-│   └── configure.py
 ├── systemd/
-│   ├── vuln-monitor.service   # fetch+enrich daemon
-│   └── vuln-web.service       # Web 仪表盘
-├── venv/                      # Python 虚拟环境（deploy.sh 创建）
+├── venv/
 ├── .env                       # 敏感变量，600
 ├── vuln_cache.db              # ←│ SQLite WAL 模式
-├── vuln_monitor.lock          # ←│ runtime state（DATA_DIR，跟代码分离）
+├── vuln_monitor.lock          # ←│ runtime state（DATA_DIR）
 ├── vuln_monitor.log[.1-.5]    # ←│
+├── .seeded                    # ←│ 冷启动标记（首次入库后 touch）
+├── fetch_state.json           # ←│ 最近一次 fetch 统计
+├── source_health.json         # ←│ 各源近 3 轮健康状态
 └── vuln_alert_state.json      # ←│
 ```
 
@@ -49,11 +87,11 @@
 
 - 升级（`git pull`）只动 `src/`，不会误删/误写 cache 或日志
 - `ProtectSystem=strict` 只需要把 `/opt/vuln-monitor` 整体设为 `ReadWritePaths`
-- 本地 `python src/vuln_monitor.py` 开发时，state 文件自动落在仓库根（见下方 `DATA_DIR` 规则）
+- 本地 `python src/vuln_monitor.py` 开发时，state 文件自动落在仓库根
 
-## 凭证解析规则（Telegram / GitHub token）
+## 凭证解析规则
 
-Python 启动时按优先级解析 `TG_BOT_TOKEN` / `TG_CHAT_ID` / `GH_TOKEN` / `HTTPS_PROXY`：
+Python 启动时按优先级解析推送/API 凭证：
 
 ```
 1. 环境变量                              ← CI / systemd / 一次性覆盖
@@ -61,23 +99,10 @@ Python 启动时按优先级解析 `TG_BOT_TOKEN` / `TG_CHAT_ID` / `GH_TOKEN` / 
 3. 空字符串（TG_* 空即进入 dry mode）
 ```
 
-**用户配置文件路径**（跨平台）：
-
-| 平台 | 路径 |
+| 平台 | 配置文件路径 |
 |---|---|
 | Linux / macOS | `$XDG_CONFIG_HOME/vuln-monitor/config.json`（默认 `~/.config/...`） |
 | Windows | `%APPDATA%\vuln-monitor\config.json` |
-
-格式：
-
-```json
-{
-  "tg_bot_token": "123456:ABC...",
-  "tg_chat_id":   "-1001234567890",
-  "gh_token":     "ghp_...",
-  "https_proxy":  ""
-}
-```
 
 创建：`python scripts/configure.py`（交互式，POSIX 下自动 `chmod 600`）。
 
@@ -85,104 +110,105 @@ Python 启动时按优先级解析 `TG_BOT_TOKEN` / `TG_CHAT_ID` / `GH_TOKEN` / 
 
 ## DATA_DIR 解析规则
 
-Python 启动时按优先级决定运行态文件放哪：
-
 ```python
 1. $VULN_DATA_DIR (env)            ← systemd 在 service 里 pin 成 /opt/vuln-monitor
 2. SCRIPT_DIR.parent if name=="src" ← 仓库里跑 `python src/vuln_monitor.py`，落在仓库根
 3. SCRIPT_DIR                       ← 单文件直接跑，就地落
 ```
 
-好处是三种场景都不需要手动配置：systemd 运行、仓库里开发、临时下载脚本调试。
+## 数据流水线（现状）
 
-## 数据流水线
+生产路径是 **daemon 循环**：`fetch(no_push) → enrich(LLM) → push → sleep`。
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│                          main() 入口                                │
-└──────────────────┬─────────────────────────────────────────────────┘
-                   │
-                   ▼
-      ┌───────────────────────────┐
-      │  SingletonLock (fcntl /    │  非阻塞：已有实例在跑就直接退出
-      │  msvcrt)                   │
-      └──────────────────┬────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  daemon (systemd vuln-monitor.service)                      │
+│  interval = FETCH_INTERVAL (default 300s)                   │
+└────────────────────────┬────────────────────────────────────┘
                          │
-                         ▼
-            ┌─────────────────────────┐
-            │  load cache (60d TTL)   │  key=CVE 号，无 CVE fallback 到 SHA1(title+link)
-            └────────────┬────────────┘
+           ┌─────────────▼─────────────┐
+           │ SingletonLock (非阻塞)     │
+           └─────────────┬─────────────┘
                          │
-    ┌────────────────────┼────────────────────────────┐
-    │                    │                            │
-    ▼                    ▼                            ▼
- fetch_rss()*12     fetch_kev_json()           fetch_github_cve()
- (vendor + research + sploitus)   (1500+ 结构化条目)    (CVE-YYYY- 仓库，最近创建)
-    │                    │                            │
-    └────────────────────┼────────────────────────────┘
+           ┌─────────────▼─────────────┐
+           │ fetch (_run no_push=True) │
+           │  · 拉全部源               │
+           │  · CVE 去重入库           │
+           │  · score + freshness      │
+           │  · CVSS PR/UI 硬约束      │
+           │  · 有 LLM 时 pushed 保持 0│
+           │    （不在此处推送）        │
+           └─────────────┬─────────────┘
                          │
-                         ▼
-                  ┌─────────────┐
-                  │  去重（CVE  │  cache hit → 跳过
-                  │   为主键）  │
-                  └──────┬──────┘
-                         │
-                         ▼
-                  ┌─────────────┐
-                  │   score()   │  RCE_PATTERNS ∧ ¬EXCLUDE_PATTERNS ∧ (ASSET_KEYWORDS ∨ CVE号)
-                  └──────┬──────┘
-                         │
-                ┌────────┴────────┐
-                │                 │
-            score>0          score==0
-                │                 │
-                ▼                 ▼
-        send_telegram()       filter / log only
-                │
-                ▼
-        写回 cache（原子：tmp + os.replace）
-                │
-                ▼
-        释放锁，退出
+           ┌─────────────▼─────────────┐
+           │ enrich                    │
+           │  · NVD CVSS/PR 回填       │
+           │  · LLM 研判 / 高信任自动  │
+           │  · _resolve_pushed()      │
+           │  · _push_pending()        │
+           └───────────────────────────┘
 ```
 
-## 为什么是 pull-batch 而不是 daemon
+### 推送门禁（统一）
 
-- 源本身不是实时（RSS 刷新周期通常 > 5 分钟，KEV 每天更新一次）
-- pull-batch 的失败代价 = 少一次触发，下一轮继续；daemon 崩了就彻底停
-- systemd timer + oneshot 天然支持"跑完就退出 + 下次重新拉起"，不用自己写守护循环
-- 5 分钟粒度对 0day/1day 足够——实际瓶颈是源刷新频率，不是我们的轮询频率
+| 场景 | 谁决定 `pushed` | 谁真正发通知 |
+|---|---|---|
+| **配了 LLM**（`DEEPSEEK_API_KEY` / `OPENAI_API_KEY`） | 仅 `enrich` 经 `_resolve_pushed` | `_push_pending` 且要求 `llm_verified=1` |
+| **未配 LLM** | `fetch`/`rescore` 的正则门禁 `_initial_pushed` | `_push_pending` 对 `pushed=1` 发送 |
+
+因此：
+
+- 单独跑 `fetch` **且已配 LLM** → 只入库，不推送（与 daemon 一致）
+- 单独跑 `fetch` **未配 LLM** → 正则命中即推（regex-only 模式）
+- LLM 故障 fallback 只放行 `vuln_type IN ('RCE','bypass')`，**不含 `other`**
+
+硬约束（任何路径都不能推翻）：
+
+- `freshness == '1day'`
+- 非 `GitHub` / `PoC-GitHub`
+- `cvss_pr == 'N'`（未认证）
+- `cvss_ui` 为 `N` 或未知（`R` 锁 0）
+
+### CLI 与 daemon 对照
+
+| 入口 | 行为 |
+|---|---|
+| `daemon` | 循环：`fetch --no-push` 语义 + `enrich` + push |
+| `fetch` | 采集入库；有 LLM 时不标 pushed / 推送被 llm 门挡住 |
+| `fetch --no-push` | 显式只采集 |
+| `enrich` / `enrich --dry` | NVD + LLM +（可选）push |
+| `rescore` | 对 `llm_verified=0` 重算 score/freshness；有 LLM 时不单独抬 pushed |
+
+## 为何现在是 daemon（而不是 timer oneshot）
+
+历史上文档推荐 systemd timer + oneshot。当前部署改为 **常驻 daemon**：
+
+- 一轮 = fetch + enrich（LLM 可能较慢），timer 容易与下一 tick 重叠
+- daemon 内用 `SingletonLock` + `sleep(interval)`，逻辑集中在一个 service
+- 失败用 `Restart=on-failure`；单轮异常会告警限流，不拖死整进程
+
+oneshot 仍可用：`fetch --no-push && enrich`，效果等价。
 
 ## 去重为什么用 CVE 号
 
-- 同一 CVE 会出现在多个源（ZDI 先披露 → KEV 几天后纳入 → GitHub 几天后 PoC → watchTowr 写文章）
-- 如果按 URL 去重会重复推 4~5 次；按 CVE 号去重只推第一次
-- 例外：极少数源（早期 GreyNoise trend 博客）没 CVE 号，此时 fallback 到 `SHA1(title+link)` 保证不丢
+- 同一 CVE 会出现在多个源（ZDI → KEV → PoC → watchTowr）
+- 按 URL 去重会重复推；按 CVE 主键只推第一次
+- 无 CVE 时 fallback advisory id / `SHA1(link)` / title hash（见 `item_key()`）
 
-## 首次"预热"机制
+## 冷启动抑制
 
-首次真推 Telegram 会看到一堆过去几十天的历史 CVE——**不能直接让 systemd 开跑**。
+避免首次开推把历史存量灌进 Telegram：
 
-`deploy.sh` 的做法：
+1. **代码层**：库为空且无 `.seeded` 时，入库后把各通道 `*_sent=1`，抑制首轮通知；然后 touch `.seeded`
+2. **deploy 预热**（可选）：`env -i` 无 TG 凭证 dry-run 一次，只写 cache
 
-```bash
-sudo -u vuln env -i \
-    VULN_DATA_DIR=/opt/vuln-monitor \
-    PATH=/usr/bin:/bin \
-    /opt/vuln-monitor/venv/bin/python /opt/vuln-monitor/src/vuln_monitor.py
-```
-
-- `env -i` 清空所有 env → `TG_BOT_TOKEN` 不存在 → 脚本进入 dry mode → 只写 cache 不推送
-- 这一跑会把 1900+ 条当前"存量"全部标记成"已见"
-- 然后 `systemctl enable --now vuln-monitor.service vuln-web.service` 接管 → daemon 每 5 分钟自动 fetch+enrich，之后只推增量
+之后 DB 被清空但 `.seeded` 仍在时，**不会**再次静默吞掉真 0day。
 
 ## 下一步可能的演进
 
-暂未实现但设计已预留：
-
-| 功能 | 位置 | 思路 |
-|---|---|---|
-| 按严重性分频道 | `score()` + `send_telegram()` | score 返回 dict 带等级，不同等级路由到不同 chat_id |
-| Webhook 替代 Telegram | `send_telegram()` 同级加 `send_webhook()` | 抽象出 `Notifier` 基类 |
-| 多实例聚合 | `cache_key` 加实例前缀 | 适用于多个研究员共用 |
-| LLM 二次过滤 | `score()` 之后 | 对 score>0 的条目用 LLM 判一次，进一步降噪 |
+| 功能 | 思路 |
+|---|---|
+| 继续拆分 | `sources.py` / `notify.py` / `db.py` |
+| 按严重性分频道 | `_resolve_pushed` + 多 chat_id |
+| GHSA 降噪 | 入库限 severity 或 score 更严门槛 |
+| 版本化 schema | `schema_version` 表替代启动时一长串 ALTER |

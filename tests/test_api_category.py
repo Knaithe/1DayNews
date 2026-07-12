@@ -34,7 +34,8 @@ def client(tmp_path):
 
     web_mod.DB_FILE = db_path
     web_mod.TOKEN_FILE = tmp_path / ".web_token"
-    web_mod._MAGIC_TOKEN = None
+    web_mod._MAGIC_TOKEN = "test-token"
+    web_mod._LOOPBACK_MODE = True
     web_mod.app.config["TESTING"] = True
     yield web_mod.app.test_client()
 

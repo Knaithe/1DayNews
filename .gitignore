@@ -73,3 +73,11 @@ skills-lock.json
 
 # ad-hoc debug scripts
 _dash_check.js
+
+# quality compare snapshots
+data_orig_prod.db
+data_new_rules.db
+.env.remote
+
+data_gate_check.db
+
