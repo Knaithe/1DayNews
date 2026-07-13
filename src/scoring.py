@@ -343,6 +343,21 @@ _STRONG_RCE_RE = re.compile("|".join([
     r"arbitrary file (?:write|upload)",
     _ab("JNDI"), _ab("OGNL"),
     r"execute arbitrary (?:\w+ ){0,3}(?:code|commands?)",
+    # memory-corruption primitives — all carry RCE on their own merits; without
+    # these in _STRONG_RCE_RE, a "heap overflow ... DoS" advisory is killed by
+    # the DoS EXCLUDE filter even though the vuln is exploitable for code exec.
+    r"memory corruption", r"(?:heap|stack|buffer) overflow",
+    r"use[- ]after[- ]free", _ab("UAF"), r"double free", r"type confusion",
+    r"out[- ]of[- ]bounds (?:read|write)", _ab("OOB"),
+    # deserialization / injection chains — only the code-execution-specific forms;
+    # bare "deserialization" is excluded (it can be memory-exhaustion DoS, see
+    # test_dos_deserialization_not_rce), but object-injection/unserialize/gadget-chain
+    # are unambiguous RCE primitives.
+    r"object injection", r"\bunserialize\b",
+    r"pop chain", r"gadget chain", _ab("SSTI"),
+    r"server[- ]side template injection",
+    # famous exploit nicknames (unambiguous RCE)
+    r"log4shell", r"spring4shell", r"proxyshell", r"proxylogon",
 ]), re.I)
 
 

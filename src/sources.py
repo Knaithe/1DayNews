@@ -9,6 +9,14 @@ from pathlib import Path
 import defusedxml.ElementTree as ET
 import feedparser
 import requests
+# TWCERT's cert carries a non-standard 32-byte SKI (RFC 5280 mandates 20); we
+# fetch it with verify=False, so suppress the per-request InsecureRequestWarning
+# (otherwise ~51 warnings per TWCERT cycle spam the log).
+try:
+    from urllib3.exceptions import InsecureRequestWarning
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+except Exception:
+    pass
 
 try:
     from src.config import (

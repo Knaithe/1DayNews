@@ -1,5 +1,6 @@
 """Fetch pipeline, push pending, rescore/rebuild orchestration."""
 import hashlib
+import json
 import os
 import re
 import time
