@@ -48,7 +48,8 @@ RCE_PATTERNS = [
     r"webshell",
     r"arbitrary file write", r"(?:create|overwrite|truncate) arbitrary files?",
     # in-the-wild / value tags
-    r"exploited in the wild", r"active(ly)? exploited", r"in[- ]the[- ]wild exploit",
+    r"exploited in the wild", r"active(ly)? exploited",
+    r"in[- ]the[- ]wild exploit", r"exploit\s+in\s+the\s+wild",
     r"zero[- ]?day\b", r"\b0[- ]?day\b",
     r"exploit chain", r"full chain", r"pre[- ]auth.*(?:chain|code exec|\bRCE\b)",
     # famous exploit nicknames

@@ -126,6 +126,10 @@ RSS_FEEDS = [
     ("DailyCVE",    "https://dailycve.com/feed"),
     # ---- CERT (structured advisories, high CVE density) ----
     ("CERT_CC",     "https://www.kb.cert.org/vuls/atomfeed/"),
+    # oss-security: the primary open-source vulnerability disclosure mailing list
+    # (hosted by Openwall, mirrored with RSS by SecLists). 43% unique CVE coverage
+    # vs our existing sources; many CVEs appear here first, before NVD/GHSA index them.
+    ("OpenWall",    "https://seclists.org/rss/oss-sec.rss"),
     # VMware (blog/marketing, 0% CVE) — removed
     # ProjectDisc (product marketing, 0% CVE) — removed
     # GreyNoise (trend analysis, 10% CVE) — removed
