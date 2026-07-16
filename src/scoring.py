@@ -334,6 +334,18 @@ def asset_hit(text_lower: str) -> bool:
     return False
 
 
+# WordPress plugin vulnerability databases — link-based hard exclusion.
+# WP plugin vulns are extremely high volume (thousands/month) and mostly affect
+# tiny-install-base plugins; they are noise for infrastructure/boundary-device
+# monitoring. This exclusion is NOT bypassable by _STRONG_RCE_RE: even a genuine
+# RCE in an obscure WP plugin is not actionable for infra defenders.
+_WP_PLUGIN_RE = re.compile(
+    r"patchstack\.com/database/wordpress"
+    r"|wordfence\.com/threat-intel/vulnerabilities"
+    r"|wpscan\.com/vulnerability",
+    re.I,
+)
+
 # Unambiguous RCE indicators. If any is present, the noise EXCLUDE filters (XSS/
 # CSRF/SSRF/info-disclosure/DoS) are bypassed — an XSS->RCE or "RCE ... SSRF"
 # chain is still RCE regardless of which term appears first or which is stronger.
@@ -362,12 +374,15 @@ _STRONG_RCE_RE = re.compile("|".join([
 ]), re.I)
 
 
-def score(text):
+def score(text, link=""):
     """Score text for exploitability. Returns (hit, reason, vuln_type).
 
     reason: detailed match info (RCE+asset/CVE, bypass+asset/CVE, asset+CVE, etc.)
     vuln_type: simplified classification (RCE / bypass / other / None)
+    link: item URL; checked for hard exclusions (e.g. WordPress plugin databases).
     """
+    if _WP_PLUGIN_RE.search(link) or _WP_PLUGIN_RE.search(text):
+        return False, "excluded", None
     if not _STRONG_RCE_RE.search(text) and _EXCLUDE_RE.search(text):
         return False, "excluded", None
     low = text.lower()

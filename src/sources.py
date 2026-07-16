@@ -9,14 +9,6 @@ from pathlib import Path
 import defusedxml.ElementTree as ET
 import feedparser
 import requests
-# TWCERT's cert carries a non-standard 32-byte SKI (RFC 5280 mandates 20); we
-# fetch it with verify=False, so suppress the per-request InsecureRequestWarning
-# (otherwise ~51 warnings per TWCERT cycle spam the log).
-try:
-    from urllib3.exceptions import InsecureRequestWarning
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-except Exception:
-    pass
 
 try:
     from src.config import (
@@ -321,10 +313,8 @@ def fetch_repo_advisories():
     headers = {"Accept": "application/vnd.github+json"}
     if GH_TOKEN:
         headers["Authorization"] = f"Bearer {GH_TOKEN}"
-    else:
-        # Without a token GitHub allows only 60 req/hr (shared with GHSA + PoC-GitHub);
-        # this fetcher alone needs ~14 req/cycle. Warn once so operators know GHSA-Repo
-        # will be starved until GH_TOKEN is set in .env.
+    elif not getattr(fetch_repo_advisories, "_no_token_warned", False):
+        fetch_repo_advisories._no_token_warned = True
         log.warning("GHSA-Repo: no GH_TOKEN — unauthenticated rate limit (60/hr) will "
                     "starve this source; set GH_TOKEN for reliable coverage")
     for repo in REPO_ADVISORY_SOURCES:
@@ -651,6 +641,11 @@ def fetch_twcert():
     so we use a dedicated session, close every response explicitly, and bail early
     rather than stall the fetch cycle.
     """
+    import warnings
+    try:
+        from urllib3.exceptions import InsecureRequestWarning
+    except ImportError:
+        InsecureRequestWarning = None
     _TWCERT_TIMEOUT = 8          # per-request — twcert is slow / TLS-interfered
     _TWCERT_MAX_FAILS = 3        # circuit-break threshold for consecutive failures
     _twcert_headers = {"User-Agent": "Mozilla/5.0"}
@@ -658,6 +653,11 @@ def fetch_twcert():
     # can exhaust the shared SESS pool and block other sources. Isolate them here.
     twsess = requests.Session()
     out = []
+    # Suppress InsecureRequestWarning only while TWCERT requests run (verify=False).
+    ctx = warnings.catch_warnings()
+    ctx.__enter__()
+    if InsecureRequestWarning:
+        warnings.simplefilter("ignore", InsecureRequestWarning)
     try:
         # Single-shot (no _get_with_retry): on TLS-interfered networks twcert.org.tw
         # handshakes hang until timeout; retrying multiplies the stall.
@@ -702,6 +702,7 @@ def fetch_twcert():
         log.warning(f"TWCERT err: {ex}")
     finally:
         twsess.close()
+        ctx.__exit__(None, None, None)
     return out
 
 
@@ -758,8 +759,7 @@ def _update_source_health(counts):
         bad = (name not in _LEGIT_EMPTY_SOURCES
                and len(recent) >= 3 and all(c == 0 for c in recent))
         hist[name] = {"recent": recent, "healthy": not bad}
-    for stale in [n for n in hist if n not in counts]:   # drop decommissioned sources
-        del hist[stale]
+    state["sources"] = {n: v for n, v in hist.items() if n in counts}
     try:
         tmp = SOURCE_HEALTH.with_suffix(".tmp")
         tmp.write_text(json.dumps(state), encoding="utf-8")

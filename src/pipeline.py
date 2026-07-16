@@ -273,7 +273,7 @@ def _run(no_push=False):
             seen_this_run.add(key)
 
             # ── Exploitability (severity) ──
-            hit, reason, vuln_type = score(it["text"])
+            hit, reason, vuln_type = score(it["text"], it.get("link", ""))
             category = classify_category(vuln_type, it["text"], reason)
 
             # ── Freshness — ALL records with CVE get cve_published + freshness ──
@@ -457,7 +457,7 @@ def _cmd_rescore_inner():
         for key, cve_id, source, title, link, summary, old_reason, old_pushed, existing_pub, cvss_pr, cvss_ui in rows:
             text = f"{title or ''}\n{summary or ''}"
 
-            hit, reason, vuln_type = score(text)
+            hit, reason, vuln_type = score(text, link or "")
             category = classify_category(vuln_type, text, reason)
             cve_pub = None
             freshness = None

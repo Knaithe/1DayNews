@@ -302,3 +302,67 @@ def test_jndi_bypasses_ssrf_exclude():
     # _STRONG_RCE_RE because they can be DoS — see test_dos_deserialization_not_rce.
     _, reason, vt = _score("CVE-2026-1 JNDI injection via SSRF endpoint in log4j", "")
     assert vt == "RCE", f"JNDI should stay RCE despite SSRF (reason={reason})"
+
+
+# --- WordPress plugin link-based hard exclusion ---
+
+def test_patchstack_wp_plugin_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-99999 Unauthenticated PHP Object Injection in SomePlugin",
+        link="https://patchstack.com/database/wordpress/plugin/some-plugin/CVE-2026-99999",
+    )
+    assert not hit and reason == "excluded", f"patchstack WP plugin should be excluded (reason={reason})"
+
+
+def test_patchstack_wp_plugin_rce_still_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-99999 Remote Code Execution in SomePlugin\nRCE via object injection in nginx",
+        link="https://patchstack.com/database/Wordpress/Plugin/some-plugin",
+    )
+    assert not hit and reason == "excluded", f"WP plugin RCE must be excluded even with _STRONG_RCE_RE match (reason={reason})"
+
+
+def test_wordfence_wp_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-99999 Auth Bypass in WPForms",
+        link="https://wordfence.com/threat-intel/vulnerabilities/id/abc-123",
+    )
+    assert not hit and reason == "excluded"
+
+
+def test_wpscan_wp_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-99999 SQLi in ContactForm",
+        link="https://wpscan.com/vulnerability/abc-123",
+    )
+    assert not hit and reason == "excluded"
+
+
+def test_patchstack_url_in_text_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-99999 RCE in SomePlugin\nhttps://patchstack.com/database/wordpress/plugin/some-plugin",
+    )
+    assert not hit and reason == "excluded", f"patchstack URL in text should trigger exclusion (reason={reason})"
+
+
+def test_non_wp_link_not_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-99999 Remote Code Execution in nginx",
+        link="https://nvd.nist.gov/vuln/detail/CVE-2026-99999",
+    )
+    assert hit and vt == "RCE", f"non-WP link must not be excluded (reason={reason})"
+
+
+# --- _write_fetch_state coverage ---
+
+def test_write_fetch_state(tmp_path, monkeypatch):
+    import json
+    import src.pipeline as pl
+    monkeypatch.setattr(pl, "FETCH_STATE", tmp_path / "fetch_state.json")
+    pl._write_fetch_state(100, 5, 10, 85, 3, 500)
+    state = json.loads((tmp_path / "fetch_state.json").read_text())
+    assert state["collected"] == 100
+    assert state["new"] == 15
+    assert state["pushed"] == 5
+    assert state["db_size"] == 500
+    assert "ts" in state
