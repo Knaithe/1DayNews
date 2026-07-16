@@ -336,18 +336,20 @@ def asset_hit(text_lower: str) -> bool:
     return False
 
 
-# WordPress plugin vulnerability databases — link-based hard exclusion.
-# WP plugin vulns are extremely high volume (thousands/month) and mostly affect
-# tiny-install-base plugins; they are noise for infrastructure/boundary-device
-# monitoring. This exclusion is NOT bypassable by _STRONG_RCE_RE: even a genuine
-# RCE in an obscure WP plugin is not actionable for infra defenders.
+# WordPress ecosystem — hard exclusion (not bypassable by _STRONG_RCE_RE).
+# WP plugin/theme vulns are extremely high volume and mostly affect tiny-install-base
+# plugins; they are noise for infrastructure/boundary-device monitoring.
+# Detection layers:
+#   1. Link: patchstack/wordfence/wpscan vulnerability database URLs
+#   2. Text: "WordPress" / "WooCommerce" / "Elementor" — these keywords appear
+#      exclusively in WP ecosystem advisories in all sources we ingest.
 _WP_PLUGIN_RE = re.compile(
     r"patchstack\.com/database/wordpress"
     r"|wordfence\.com/threat-intel/vulnerabilities"
     r"|wpscan\.com/vulnerability"
-    r"|plugin for WordPress"
-    r"|WordPress plugin"
-    r"|WordPress is vulnerable",
+    r"|\bWordPress\b"
+    r"|\bWooCommerce\b"
+    r"|\bElementor\b",
     re.I,
 )
 

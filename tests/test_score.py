@@ -361,12 +361,26 @@ def test_wp_plugin_text_excluded():
     assert not hit and reason == "excluded", f"'plugin for WordPress' in text should exclude (reason={reason})"
 
 
-def test_wp_plugin_text_wordpress_plugin_excluded():
+def test_wp_keyword_wordpress_excluded():
     hit, reason, vt = vm.score(
-        "CVE-2026-12583 The Newsletters WordPress plugin before 4.15 does not "
-        "prevent deserialization of untrusted input",
+        "CVE-2026-99999 Unauthenticated RCE in SomePlugin\n"
+        "The WordPress plugin has a deserialization vulnerability.",
     )
-    assert not hit and reason == "excluded", f"'WordPress plugin' in text should exclude (reason={reason})"
+    assert not hit and reason == "excluded", f"bare 'WordPress' should exclude (reason={reason})"
+
+
+def test_woocommerce_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-40725 Unauthenticated PHP Object Injection in WooCommerce Product Filters",
+    )
+    assert not hit and reason == "excluded", f"'WooCommerce' should exclude (reason={reason})"
+
+
+def test_elementor_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-49105 Unauthenticated PHP Object Injection in WP Zendesk for Elementor",
+    )
+    assert not hit and reason == "excluded", f"'Elementor' should exclude (reason={reason})"
 
 
 # --- RCE pattern gap fixes ---
