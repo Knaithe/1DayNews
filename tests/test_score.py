@@ -401,6 +401,13 @@ def test_upload_of_dangerous_file_type_is_rce():
     assert hit and vt == "RCE", f"'Upload of File with Dangerous Type' should be RCE (reason={reason})"
 
 
+def test_upload_of_dangerous_file_bypasses_exclude():
+    hit, reason, vt = vm.score(
+        "CVE-2026-99999 Upload of Malicious File via CSRF endpoint leads to code execution",
+    )
+    assert hit and vt == "RCE", f"'Upload of Malicious File' must bypass CSRF exclude (reason={reason})"
+
+
 def test_execute_code_does_not_match_sql():
     # "execute SQL code" must NOT be RCE
     hit, reason, vt = _score("CVE-x", "Allows an attacker to execute SQL code on the database.")

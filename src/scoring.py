@@ -361,6 +361,7 @@ _STRONG_RCE_RE = re.compile("|".join([
     r"arbitrary (?:\w+ ){0,3}(?:code|commands?) execution",
     r"webshell|web shell",
     r"arbitrary file (?:write|upload)",
+    r"upload of (?:\w+ ){0,3}(?:dangerous|malicious|executable) (?:file|type)",
     _ab("JNDI"), _ab("OGNL"),
     r"execute (?!sql\b)(?:\w+ ){0,3}(?:code|commands?)\b",
     # memory-corruption primitives — all carry RCE on their own merits; without
