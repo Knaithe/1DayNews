@@ -353,6 +353,46 @@ def test_non_wp_link_not_excluded():
     assert hit and vt == "RCE", f"non-WP link must not be excluded (reason={reason})"
 
 
+def test_wp_plugin_text_excluded():
+    hit, reason, vt = vm.score(
+        "[CRITICAL] CVE-2026-13001 The Podlove Podcast Publisher plugin for WordPress "
+        "is vulnerable to arbitrary file uploads due to missing checks",
+    )
+    assert not hit and reason == "excluded", f"'plugin for WordPress' in text should exclude (reason={reason})"
+
+
+def test_wp_plugin_text_wordpress_plugin_excluded():
+    hit, reason, vt = vm.score(
+        "CVE-2026-12583 The Newsletters WordPress plugin before 4.15 does not "
+        "prevent deserialization of untrusted input",
+    )
+    assert not hit and reason == "excluded", f"'WordPress plugin' in text should exclude (reason={reason})"
+
+
+# --- RCE pattern gap fixes ---
+
+def test_execute_code_over_network_is_rce():
+    hit, reason, vt = vm.score(
+        "[CRITICAL] CVE-2026-56190 Use of uninitialized resource in Windows RDP "
+        "allows an unauthorized attacker to execute code over a network. (CVSS 9.8)",
+    )
+    assert hit and vt == "RCE", f"'execute code over a network' should be RCE (reason={reason})"
+
+
+def test_upload_of_dangerous_file_type_is_rce():
+    hit, reason, vt = vm.score(
+        "[CRITICAL] CVE-2026-57719 Unrestricted Upload of File with Dangerous Type "
+        "vulnerability in CodeRevolution Aimogen Pro",
+    )
+    assert hit and vt == "RCE", f"'Upload of File with Dangerous Type' should be RCE (reason={reason})"
+
+
+def test_execute_code_does_not_match_sql():
+    # "execute SQL code" must NOT be RCE
+    hit, reason, vt = _score("CVE-x", "Allows an attacker to execute SQL code on the database.")
+    assert vt != "RCE", f"'execute SQL code' must not be RCE (reason={reason})"
+
+
 # --- _write_fetch_state coverage ---
 
 def test_write_fetch_state(tmp_path, monkeypatch):

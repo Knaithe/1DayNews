@@ -18,7 +18,8 @@ RCE_PATTERNS = [
     # naming
     _ab("RCE"), r"remote code execution", r"arbitrary (?:\w+ ){0,3}(?:code|(?<!sql )commands?) execution",
     r"(?<![a-zA-Z])command execution(?![a-zA-Z])", r"(?<![a-zA-Z])code execution(?![a-zA-Z])",  # bare exec forms
-    r"execute arbitrary (?:\w+ ){0,3}(?:code|(?<!sql )commands?)", r"execution of arbitrary (?:\w+ ){0,3}(?:code|(?<!sql )commands?)",
+    r"execute (?!sql\b)(?:\w+ ){0,3}(?:code|(?<!sql )commands?)\b",  # "execute code over a network"
+    r"execution of arbitrary (?:\w+ ){0,3}(?:code|(?<!sql )commands?)",
     r"code injection", r"(?<!SQL )command injection", r"OS command injection",
     # Chinese
     r"远程代码执行", r"远程命令执行", r"代码执行漏洞", r"命令执行漏洞", r"任意代码执行", r"反序列化漏洞",
@@ -42,7 +43,8 @@ RCE_PATTERNS = [
     r"integer overflow.*(?:exec|\bRCE\b|oob)",
     r"race condition.*(?:exec|\bRCE\b|kernel)",
     # file upload / traversal / file-write escalating to exec
-    r"(?:unrestricted|arbitrary|unauthenticated|unauth) file upload",
+    r"(?:unrestricted|arbitrary|unauthenticated|unauth) (?:file )?upload",
+    r"upload of (?:\w+ ){0,3}(?:dangerous|malicious|executable) (?:file|type)",
     r"任意文件上传", r"文件上传漏洞",
     r"(?:path|directory) traversal.*(?:write|overwrite|exec|upload|\bRCE\b)",
     r"webshell",
@@ -342,7 +344,10 @@ def asset_hit(text_lower: str) -> bool:
 _WP_PLUGIN_RE = re.compile(
     r"patchstack\.com/database/wordpress"
     r"|wordfence\.com/threat-intel/vulnerabilities"
-    r"|wpscan\.com/vulnerability",
+    r"|wpscan\.com/vulnerability"
+    r"|plugin for WordPress"
+    r"|WordPress plugin"
+    r"|WordPress is vulnerable",
     re.I,
 )
 
@@ -355,7 +360,7 @@ _STRONG_RCE_RE = re.compile("|".join([
     r"webshell|web shell",
     r"arbitrary file (?:write|upload)",
     _ab("JNDI"), _ab("OGNL"),
-    r"execute arbitrary (?:\w+ ){0,3}(?:code|commands?)",
+    r"execute (?!sql\b)(?:\w+ ){0,3}(?:code|commands?)\b",
     # memory-corruption primitives — all carry RCE on their own merits; without
     # these in _STRONG_RCE_RE, a "heap overflow ... DoS" advisory is killed by
     # the DoS EXCLUDE filter even though the vuln is exploitable for code exec.
