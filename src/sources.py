@@ -275,10 +275,15 @@ def fetch_github_advisories():
                         sev_str = f" [{sev.upper()}]" if sev else ""
                         full_text = desc or summary
                         display_summary = (desc or summary)[:500] + cvss_str
+                        refs = adv.get("references", [])
+                        ref_urls = " ".join(refs) if refs else ""
+                        link_all = adv.get("html_url", "")
+                        if ref_urls:
+                            link_all = f"{link_all} {ref_urls}"
                         out.append({
                             "source": "GHSA",
                             "title": f"{sev_str} {cve} {summary[:200]}".strip(),
-                            "link": adv.get("html_url", ""),
+                            "link": link_all,
                             "summary": display_summary,
                             "text": f"{cve} {full_text}",
                             "_severity": sev.lower() if sev else None,
