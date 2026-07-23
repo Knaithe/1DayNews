@@ -5,11 +5,11 @@ from datetime import datetime, timedelta, timezone
 
 try:
     from src.config import NVD_API_KEY, GH_TOKEN, FRESH_SOURCES, SESS, log
-    from src.scoring import CVE_RE, score
+    from src.scoring import CVE_RE, score, _WP_PLUGIN_RE
     from src.push_gate import _llm_configured
 except ImportError:
     from config import NVD_API_KEY, GH_TOKEN, FRESH_SOURCES, SESS, log
-    from scoring import CVE_RE, score
+    from scoring import CVE_RE, score, _WP_PLUGIN_RE
     from push_gate import _llm_configured
 
 def _extract_pr(vector):
@@ -92,7 +92,10 @@ def _nvd_detail(cve_id):
                 severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
             descs = cve_data.get("descriptions", [])
             desc_en = next((d["value"] for d in descs if d.get("lang") == "en"), "")
-            detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc_en, "vector": vector}
+            refs = cve_data.get("references", [])
+            ref_str = " ".join(r.get("url", "") for r in refs if isinstance(r, dict))
+            detail = {"published": pub_str, "cvss": cvss, "severity": severity,
+                      "description": desc_en, "vector": vector, "references": ref_str}
             _nvd_cache[cve_upper] = pub_str or ""
             _nvd_detail_cache[cve_upper] = detail
             return detail
@@ -122,7 +125,10 @@ def _nvd_detail(cve_id):
             if cvss and not severity:
                 severity = "critical" if cvss >= 9.0 else "high" if cvss >= 7.0 else "medium" if cvss >= 4.0 else "low"
             desc = adv.get("description", "") or adv.get("summary", "")
-            detail = {"published": pub_str, "cvss": cvss, "severity": severity, "description": desc, "vector": vector}
+            gh_refs = adv.get("references", [])
+            ref_str = " ".join(u for u in gh_refs if isinstance(u, str))
+            detail = {"published": pub_str, "cvss": cvss, "severity": severity,
+                      "description": desc, "vector": vector, "references": ref_str}
             _nvd_cache[cve_upper] = pub_str or ""
             _nvd_detail_cache[cve_upper] = detail
             return detail
@@ -132,6 +138,21 @@ def _nvd_detail(cve_id):
     _nvd_cache[cve_upper] = ""
     _nvd_detail_cache[cve_upper] = None
     return None
+
+def _nvd_refs_wp_excluded(cve_id):
+    """True when cached NVD/GitHub references reveal the WordPress ecosystem.
+
+    Patchstack-sourced WP plugin vulns often never say "WordPress" in the
+    description (e.g. CVE-2026-59544 "Unauthenticated PHP Object Injection in
+    Thrive Quiz Builder"), so the text/link layers in score() miss them — the
+    patchstack/wordfence/wpscan reference URL is the only signal. Reads the
+    detail cache already populated by freshness/backfill lookups: no extra HTTP.
+    """
+    if not cve_id or not cve_id.upper().startswith("CVE-"):
+        return False
+    detail = _nvd_detail_cache.get(cve_id.upper())
+    refs = (detail or {}).get("references") or ""
+    return bool(refs) and bool(_WP_PLUGIN_RE.search(refs))
 
 def _nvd_published_date(cve_id):
     """Thin wrapper: returns (datetime, "YYYY-MM-DD") or (None, None)."""
@@ -235,6 +256,7 @@ def _backfill_nvd_severity(conn):
         f"LIMIT {batch}"
     ).fetchall()
     updated = 0
+    wp_hits = 0
     for key, cve_id in rows:
         cves = CVE_RE.findall(cve_id)
         detail = None
@@ -253,8 +275,9 @@ def _backfill_nvd_severity(conn):
                     break
         if detail:
             desc = detail.get("description", "")
+            wp_excluded = bool(_WP_PLUGIN_RE.search(detail.get("references") or ""))
             vtype_upgrade = None
-            if desc:
+            if desc and not wp_excluded:
                 hit, _, vt = score(desc)
                 if hit and vt in ("RCE", "bypass"):
                     vtype_upgrade = vt
@@ -268,6 +291,12 @@ def _backfill_nvd_severity(conn):
             if vtype_upgrade:
                 sql += ", vuln_type=?"
                 params.append(vtype_upgrade)
+            if wp_excluded:
+                # NVD/GitHub references point at a WP plugin database — hard-exclude
+                # even though the description never said "WordPress". Same lock as
+                # init_db's reason='excluded' rule; enrich skips excluded rows.
+                sql += ", reason='excluded', pushed=0"
+                wp_hits += 1
             sql += " WHERE key=?"
             params.append(key)
             conn.execute(sql, params)
@@ -282,6 +311,8 @@ def _backfill_nvd_severity(conn):
     if updated:
         conn.commit()
         log.info(f"backfill_nvd_severity: updated {updated} records")
+    if wp_hits:
+        log.info(f"backfill_nvd_severity: {wp_hits} records excluded via WP references")
     # re-evaluate pushed for records that got PR=N after initial insert.
     # With LLM configured, only promote already-confirmed verdicts (never
     # skip the AI gate by promoting llm_verified=0). Without LLM, regex path.

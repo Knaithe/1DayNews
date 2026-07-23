@@ -18,7 +18,7 @@ try:
     from src.sources import _fetch_all_sources
     from src.nvd import (
         _warm_nvd_cache, _is_fresh, _extract_pr, _extract_ui,
-        _nvd_detail_cache, _FRESHNESS_DAYS,
+        _nvd_detail_cache, _FRESHNESS_DAYS, _nvd_refs_wp_excluded,
     )
     from src.push_gate import _llm_configured, _regex_push_candidate, _initial_pushed
     from src.notify import (
@@ -36,7 +36,7 @@ except ImportError:
     from sources import _fetch_all_sources
     from nvd import (
         _warm_nvd_cache, _is_fresh, _extract_pr, _extract_ui,
-        _nvd_detail_cache, _FRESHNESS_DAYS,
+        _nvd_detail_cache, _FRESHNESS_DAYS, _nvd_refs_wp_excluded,
     )
     from push_gate import _llm_configured, _regex_push_candidate, _initial_pushed
     from notify import (
@@ -335,6 +335,12 @@ def _run(no_push=False):
                 nvd_vector = it.get("_cvss_vector")
             pr = _extract_pr(nvd_vector)
             ui = _extract_ui(nvd_vector)
+            if hit and _nvd_refs_wp_excluded(cve_id):
+                # NVD/GitHub references reveal a WP plugin — the description never
+                # said "WordPress", so the text/link layers missed it (e.g. Thrive
+                # Quiz Builder). reason='excluded' keeps it out of enrich/push.
+                hit, reason, vuln_type = False, "excluded", None
+                category = classify_category(vuln_type, it["text"], reason)
             is_candidate = _regex_push_candidate(
                 hit, vuln_type, freshness, it["source"], pr, ui)
             pushed_val = _initial_pushed(
@@ -497,6 +503,12 @@ def _cmd_rescore_inner():
                 freshness = "nday"
                 fresh_reason = "no_cve_low_trust"
                 hit = False
+
+            # re-apply WP references exclusion (filled by _is_fresh above) so a
+            # rescore cannot revive rows excluded via NVD/GitHub references
+            if _nvd_refs_wp_excluded(cve_id):
+                hit, reason, vuln_type = False, "excluded", None
+                category = classify_category(vuln_type, text, reason)
 
             new_pushed = _initial_pushed(
                 hit, vuln_type, freshness, source, cvss_pr, cvss_ui)

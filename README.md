@@ -218,6 +218,7 @@ LLM_TOP_P=0.9
 │  └─ RCE/bypass + freshness=1day + PR=N + UI≠R → pushed=1
 │
 ├─ 4. LLM enrich → verdict: confirmed / not_relevant / noise
+│  ├─ NVD references 命中 WP 漏洞库 → excluded（描述未提 WordPress 的插件洞）
 │  ├─ 高优先源（HIGH_PRIORITY_SOURCES）+ CVSS≥9 → auto-confirm（跳 LLM）
 │  ├─ 高信任源 + 已有真实 severity/cvss → 跳过工具调用，LLM 直接判定
 │  ├─ 其他 → LLM 调用工具（NVD/URL/GitHub/长亭）后判定

@@ -343,6 +343,10 @@ def asset_hit(text_lower: str) -> bool:
 #   1. Link: patchstack/wordfence/wpscan vulnerability database URLs
 #   2. Text: "WordPress" / "WooCommerce" / "Elementor" — these keywords appear
 #      exclusively in WP ecosystem advisories in all sources we ingest.
+#   3. NVD/GitHub references: applied in nvd.py (_backfill_nvd_severity /
+#      _nvd_refs_wp_excluded) — Patchstack-sourced WP plugin vulns often never
+#      say "WordPress" in the description (e.g. "Thrive Quiz Builder"), so
+#      only their reference URL reveals the ecosystem.
 _WP_PLUGIN_RE = re.compile(
     r"patchstack\.com/database/wordpress"
     r"|wordfence\.com/threat-intel/vulnerabilities"

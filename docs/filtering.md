@@ -30,6 +30,16 @@
 - 命中 → `excluded`（**除非**正文同时有强 RCE 信号 `_STRONG_RCE_RE`，用于 XSS→RCE 链等）
 - 噪声：XSS / CSRF / 普通 DoS / LPE / 信息泄露 / 单独 SSRF / 浏览器补丁等
 
+### `_WP_PLUGIN_RE` — WordPress 生态硬排除
+
+WP 插件/主题漏洞量极大、多为小装机量插件，对基础设施/边界设备监控是噪声。三层检测：
+
+1. **链接**：patchstack / wordfence / wpscan 漏洞库 URL（`score()` 同时检查 `text` + `link`）
+2. **文本**：`WordPress` / `WooCommerce` / `Elementor` 字样
+3. **NVD/GitHub references**：Patchstack 系插件洞的描述从不提 "WordPress"（如 CVE-2026-59544 "Unauthenticated PHP Object Injection in Thrive Quiz Builder"），只有 reference URL 暴露生态。`_nvd_detail()` 提取 references 入缓存后，由 `_backfill_nvd_severity`（回填时命中 → `reason='excluded', pushed=0`）与 `_nvd_refs_wp_excluded()`（`_run` 入库 / `rescore` 复查）拦截，零额外 HTTP
+
+不受 `_STRONG_RCE_RE` 豁免影响。
+
 ## `score(text)` — 可利用性（实现真相）
 
 ```python
