@@ -2,7 +2,7 @@
 
 全部评分/分类纯逻辑在 `src/scoring.py`；新鲜度、CVSS 门禁与推送决议在 `src/vuln_monitor.py`。
 
-改过滤行为：优先改 `scoring.py` 的模式常量 + `score()` / `asset_hit()`；改 1day 定义改 `_is_fresh()`；改推送硬约束改 `_resolve_pushed()` / `_regex_push_candidate()`。
+改过滤行为：优先改 `scoring.py` 的模式常量 + `score()` / `asset_hit()`；改 1day 定义改 `_is_fresh()`；改推送硬约束改 `_resolve_pushed()` / `_regex_push_candidate()`；改 LLM 复核准入（含高分兜底）改 `enrich.py` 的 `_ENRICHABLE_WHERE`。
 
 ## 三层清单（`scoring.py`）
 
@@ -78,6 +78,8 @@ def score(text):
 | **nday** | 不推 | 老洞/不可验证新鲜度 |
 | **noise** | 不推 | excluded / no hit |
 
+> 例外（高分兜底）：`no hit` 但 `cvss >= 9.0` 且 `cvss_pr = 'N'` 的记录仍会进 LLM 复核——regex 召回层不能静默埋掉 critical 未授权漏洞（如 OT 分段绕过这类不含 RCE/auth 关键词的措辞）。`excluded` 记录不兜底（那是主动的噪声判定：WP/XSS/DoS/LPE 等）。准入条件在 `enrich.py` 的 `_ENRICHABLE_WHERE`。
+
 ### `_is_fresh(source, text)` 摘要
 
 1. 全部 CVE 年份 > 1 年 → `nday`（`old_cve`），无例外  
@@ -99,6 +101,10 @@ def score(text):
 6. 有 LLM 时：还要 `llm_verdict == confirmed`，且 `llm_verified=1` 才发通道  
 
 启动 `init_db` 会对存量执行：`pushed=0 WHERE vuln_type NOT IN ('RCE','bypass')`。
+
+### LLM 回写 `vuln_type`
+
+LLM 除 `verdict` 外还返回 `vuln_type`（RCE / bypass / other）。**仅当 regex 未分类（`vuln_type IS NULL`，即高分兜底进来的 `no hit` 记录）时**才采用该分类并同步刷新 `category`；已有 regex 分类绝不覆盖。回写后推送决议仍走 `_resolve_pushed` 同一套硬门禁——LLM 判 `other`（如 SQLi）依然不推。auto-approve（高可信源 + CVSS≥9.0）跳过含未分类记录的 CVE 组，交给 LLM 分类。
 
 ## 仪表盘 `category`
 

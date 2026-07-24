@@ -16,6 +16,7 @@ try:
     from src.db import _db, init_db
     from src.nvd import _nvd_detail, _warm_nvd_cache, _backfill_nvd_severity
     from src.push_gate import _resolve_pushed
+    from src.scoring import classify_category
 except ImportError:
     from config import (
         DATA_DIR, DEEPSEEK_API_KEY, OPENAI_API_KEY, LLM_MODEL, LLM_BASE_URL,
@@ -26,6 +27,7 @@ except ImportError:
     from db import _db, init_db
     from nvd import _nvd_detail, _warm_nvd_cache, _backfill_nvd_severity
     from push_gate import _resolve_pushed
+    from scoring import classify_category
 
 # ================== LLM ENRICHMENT ==================
 # System prompt: load from DATA_DIR/llm_prompt.txt if exists, else use default.
@@ -49,8 +51,13 @@ IMPORTANT: CVE-{year}-* are CURRENT-YEAR vulnerabilities, not future-dated or sp
 7. If you find a public exploit/PoC, mention it in notes — this is valuable intelligence.
 8. Do NOT underestimate WordPress plugin deployment — popular plugins (OttoKit, Elementor, WooCommerce addons, etc.) often have 100K+ active installs even if the developer is not well-known.
 
+## vuln_type classification (always required):
+- RCE: remote code/command execution, command/code injection, insecure deserialization, memory corruption exploitable for code execution, malicious file upload/webshell, SSTI.
+- bypass: authentication/authorization/access-control bypass, network segmentation bypass, account takeover, session/token theft.
+- other: everything else — SQLi, XSS, info disclosure, file read, DoS, crypto issues.
+
 Output ONLY JSON (no markdown):
-{"verdict": "confirmed|not_relevant|noise", "notes": "one-sentence rationale"}
+{"verdict": "confirmed|not_relevant|noise", "vuln_type": "RCE|bypass|other", "notes": "one-sentence rationale"}
 """
 
 def _get_llm_prompt():
@@ -223,13 +230,29 @@ _TOOL_DISPATCH = {
 # indices into enrich candidate tuples (must match SELECT column order)
 _E_KEY, _E_CVE, _E_SRC, _E_TITLE, _E_LINK, _E_SUM, _E_REASON, _E_SEV, _E_CVSS, _E_FRESH, _E_PR, _E_UI, _E_VT = range(13)
 
+# Enrich-eligible rows: everything regex didn't dismiss, plus a high-CVSS
+# backstop for "no hit" records (see _select_enrich_candidates docstring).
+_ENRICHABLE_WHERE = (
+    "llm_verified = 0 AND (reason NOT IN ('excluded', 'no hit') "
+    "OR (reason = 'no hit' AND cvss >= 9.0 AND cvss_pr = 'N'))"
+)
+
+# LLM vuln_type labels → canonical DB values (None = model didn't provide a valid one)
+_LLM_VT_MAP = {"RCE": "RCE", "BYPASS": "bypass", "OTHER": "other"}
+
+
 def _enrich_one(record):
-    """Run LLM agent loop on one vulnerability. Returns (verdict, notes) or (None, None)."""
+    """Run LLM agent loop on one vulnerability.
+
+    Returns (verdict, notes, vuln_type) or (None, None, None). vuln_type is the
+    LLM's classification ("RCE"/"bypass"/"other") or None when absent/invalid —
+    callers may adopt it only for records regex left unclassified (vuln_type NULL).
+    """
     global _llm_client, _llm_model
     if _llm_client is None:
         _llm_client, _llm_model = _get_llm_client()
     if _llm_client is None:
-        return None, None
+        return None, None, None
 
     cve_id = record[_E_CVE]
     source = record[_E_SRC]
@@ -324,14 +347,15 @@ def _enrich_one(record):
                             break
             try:
                 data = json.loads(content)
-                return data.get("verdict"), data.get("notes", "")
+                llm_vt = _LLM_VT_MAP.get(str(data.get("vuln_type") or "").strip().upper())
+                return data.get("verdict"), data.get("notes", ""), llm_vt
             except (json.JSONDecodeError, AttributeError):
                 log.warning(f"LLM unparseable for {cve_id}: {content[:200]}")
-                return None, None
+                return None, None, None
         log.warning(f"LLM exceeded {max_rounds} rounds for {cve_id}")
     except Exception as ex:
         log.warning(f"LLM err for {cve_id}: {ex}")
-    return None, None
+    return None, None, None
 
 
 
@@ -345,12 +369,18 @@ def _select_enrich_candidates(conn, limit=None):
     Now (per cycle, default ENRICH_LIMIT=200, overridable via env):
       1. Newest high-priority (RCE/bypass + 1day) — up to limit//2
       2. Oldest remaining unverified — fill the rest (drains backlog FIFO)
+
+    High-CVSS backstop: records regex dismissed as "no hit" (e.g. OT segmentation
+    bypass worded without RCE/auth keywords) still get LLM review when
+    cvss >= 9.0 and cvss_pr = 'N' — the regex recall layer must not silently
+    bury critical unauthenticated vulns. "excluded" records stay out (positive
+    noise classification: WP/XSS/DoS/LPE...).
     Returns (rows, backlog_total_before_batch).
     """
     limit = limit if limit is not None else ENRICH_LIMIT
     cols = ("key, cve_id, source, title, link, summary, reason, severity, cvss, "
             "freshness, cvss_pr, cvss_ui, vuln_type")
-    where = "llm_verified = 0 AND reason NOT IN ('excluded', 'no hit')"
+    where = _ENRICHABLE_WHERE
     backlog = conn.execute(f"SELECT COUNT(*) FROM vulns WHERE {where}").fetchone()[0]
     if backlog == 0:
         return [], 0
@@ -381,6 +411,31 @@ def _select_enrich_candidates(conn, limit=None):
     # Preserve high-priority first (so auto-approve / LLM sees fresh RCE sooner),
     # then oldest backlog filler.
     return list(high) + old, backlog
+
+
+def _apply_llm_result(conn, rec, verdict, notes, llm_vt):
+    """Persist one LLM result for a candidate record.
+
+    When regex left the record unclassified (vuln_type NULL — e.g. a high-CVSS
+    "no hit" backstop record), adopt the LLM's vuln_type (+ matching dashboard
+    category) so the push gate can actually see it. An existing regex
+    classification is never overridden; the push decision itself still goes
+    through the unchanged _resolve_pushed hard gates.
+    """
+    eff_vt = rec[_E_VT] or llm_vt
+    pushed_val = _resolve_pushed(
+        verdict, rec[_E_FRESH], rec[_E_SRC], rec[_E_PR], rec[_E_UI], eff_vt)
+    if llm_vt and not rec[_E_VT]:
+        cat = classify_category(
+            llm_vt, f"{rec[_E_TITLE] or ''}\n{rec[_E_SUM] or ''}", rec[_E_REASON])
+        conn.execute(
+            "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=?, "
+            "vuln_type=?, category=? WHERE key=?",
+            (verdict, (notes or "")[:500], pushed_val, llm_vt, cat, rec[_E_KEY]))
+    else:
+        conn.execute(
+            "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
+            (verdict, (notes or "")[:500], pushed_val, rec[_E_KEY]))
 
 
 def _cmd_enrich_inner(dry=False):
@@ -416,12 +471,17 @@ def _cmd_enrich_inner(dry=False):
 
                 auto_approved = llm_processed = llm_errors = 0
 
-                # auto-approve: any record from high-trust source + critical CVSS
+                # auto-approve: any record from high-trust source + critical CVSS.
+                # Groups containing an unclassified record (vuln_type NULL — e.g.
+                # a no-hit backstop row) are NOT auto-approved: auto-approve could
+                # never make them pushable and would mark them verified without an
+                # LLM classification, so they go through the LLM path instead.
                 for cve_id, records in by_cve.items():
                     rep = records[0]
                     any_high_trust = any(r[_E_SRC] in HIGH_PRIORITY_SOURCES for r in records)
                     best_cvss = max((r[_E_CVSS] for r in records if r[_E_CVSS]), default=None)
-                    if any_high_trust and best_cvss and best_cvss >= 9.0:
+                    if (any_high_trust and best_cvss and best_cvss >= 9.0
+                            and all(r[_E_VT] for r in records)):
                         for rec in records:
                             pushed_val = _resolve_pushed(
                                 "confirmed", rec[_E_FRESH], rec[_E_SRC],
@@ -435,39 +495,28 @@ def _cmd_enrich_inner(dry=False):
                         continue
 
                     # LLM enrichment
-                    verdict, notes = _enrich_one(rep)
+                    verdict, notes, llm_vt = _enrich_one(rep)
                     if verdict is None:
                         llm_errors += 1
                         continue
                     for rec in records:
-                        pushed_val = _resolve_pushed(
-                            verdict, rec[_E_FRESH], rec[_E_SRC],
-                            rec[_E_PR], rec[_E_UI], rec[_E_VT])
-                        conn.execute(
-                            "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
-                            (verdict, (notes or "")[:500], pushed_val, rec[_E_KEY]))
+                        _apply_llm_result(conn, rec, verdict, notes, llm_vt)
                     conn.commit()
                     llm_processed += 1
                     time.sleep(0.5)
 
                 # non-CVE records
                 for rec in no_cve:
-                    verdict, notes = _enrich_one(rec)
+                    verdict, notes, llm_vt = _enrich_one(rec)
                     if verdict is None:
                         llm_errors += 1
                         continue
-                    pushed_val = _resolve_pushed(
-                        verdict, rec[_E_FRESH], rec[_E_SRC],
-                        rec[_E_PR], rec[_E_UI], rec[_E_VT])
-                    conn.execute(
-                        "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=? WHERE key=?",
-                        (verdict, (notes or "")[:500], pushed_val, rec[_E_KEY]))
+                    _apply_llm_result(conn, rec, verdict, notes, llm_vt)
                     conn.commit()
                     llm_processed += 1
                     time.sleep(0.5)
                 remaining = conn.execute(
-                    "SELECT COUNT(*) FROM vulns WHERE llm_verified=0 "
-                    "AND reason NOT IN ('excluded', 'no hit')"
+                    f"SELECT COUNT(*) FROM vulns WHERE {_ENRICHABLE_WHERE}"
                 ).fetchone()[0]
                 log.info(
                     f"enrich: auto={auto_approved} llm={llm_processed} "
