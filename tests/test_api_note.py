@@ -286,4 +286,4 @@ def test_dashboard_html_has_tag_controls(client):
     assert "tag-badge" in html
     assert 'id="nmTags"' in html
     assert "TAG_PALETTE" in html
-    assert "重点关注" in html          # a palette tag is present
+    assert "不是主动打的目标" in html  # a palette tag is present
