@@ -370,6 +370,11 @@ def api_vulns():
         reason = request.args.get("reason", "").strip()
         if reason:
             where.append("reason = ?"); params.append(reason)
+        else:
+            # excluded records (WP ecosystem / noise patterns) are push-pipeline
+            # rejects — keep them out of the default browse view; audit them
+            # explicitly via ?reason=excluded
+            where.append("(reason IS NULL OR reason != 'excluded')")
         pushed = request.args.get("pushed", "").strip()
         if pushed == "1":
             where.append("pushed = 1")
@@ -430,7 +435,7 @@ def api_stats():
         total = conn.execute("SELECT COUNT(*) FROM vulns").fetchone()[0]
         pushed = conn.execute("SELECT COUNT(*) FROM vulns WHERE pushed=1").fetchone()[0]
         sources = conn.execute("SELECT source, COUNT(*) as n FROM vulns WHERE source IS NOT NULL AND created_at > strftime('%%s','now') - 7*86400 GROUP BY source ORDER BY n DESC").fetchall()
-        cat_rows = conn.execute("SELECT COALESCE(category,'(none)') c, COUNT(*) n FROM vulns GROUP BY category").fetchall()
+        cat_rows = conn.execute("SELECT COALESCE(category,'(none)') c, COUNT(*) n FROM vulns WHERE reason IS NULL OR reason != 'excluded' GROUP BY category").fetchall()
         repro_rows = conn.execute("SELECT reproduced, COUNT(*) n FROM vulns GROUP BY reproduced").fetchall()
     fetch_state = None
     try:
