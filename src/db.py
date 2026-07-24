@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 try:
     from src.config import DB_FILE, CACHE_TTL_DAYS, _JSON_LEGACY, log
+    from src.scoring import _HARDCODED_CRED_RE
 except ImportError:
     from config import DB_FILE, CACHE_TTL_DAYS, _JSON_LEGACY, log
+    from scoring import _HARDCODED_CRED_RE
 
 def _get_conn():
     conn = sqlite3.connect(DB_FILE, timeout=10)
@@ -108,7 +110,14 @@ def init_db(conn):
     # enforce hard locks on existing data: GitHub/nday/excluded must not remain pushed
     conn.execute("UPDATE vulns SET pushed=0 WHERE source IN ('GitHub','PoC-GitHub') AND pushed=1")
     conn.execute("UPDATE vulns SET pushed=0 WHERE freshness='nday' AND pushed=1")
-    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND (cvss_pr IS NULL OR cvss_pr != 'N')")
+    # PR lock: unknown PR / PR:H always un-push. PR:L un-pushes too — unless the
+    # only "login" is a hardcoded/default credential (effectively unauthenticated,
+    # same exception as push_gate._pr_blocks_push).
+    conn.execute("UPDATE vulns SET pushed=0 WHERE pushed=1 AND (cvss_pr IS NULL OR cvss_pr NOT IN ('N','L'))")
+    for _k, _t, _s in conn.execute(
+            "SELECT key, title, summary FROM vulns WHERE pushed=1 AND cvss_pr='L'").fetchall():
+        if not _HARDCODED_CRED_RE.search(f"{_t or ''}\n{_s or ''}"):
+            conn.execute("UPDATE vulns SET pushed=0 WHERE key=?", (_k,))
     if "cvss_ui" in _new_cols:
         conn.execute("""UPDATE vulns SET cvss_ui =
             CASE WHEN cvss_vector LIKE '%/UI:N/%' OR cvss_vector LIKE '%/UI:N' THEN 'N'

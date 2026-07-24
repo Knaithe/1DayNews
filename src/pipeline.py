@@ -342,9 +342,9 @@ def _run(no_push=False):
                 hit, reason, vuln_type = False, "excluded", None
                 category = classify_category(vuln_type, it["text"], reason)
             is_candidate = _regex_push_candidate(
-                hit, vuln_type, freshness, it["source"], pr, ui)
+                hit, vuln_type, freshness, it["source"], pr, ui, it["text"])
             pushed_val = _initial_pushed(
-                hit, vuln_type, freshness, it["source"], pr, ui)
+                hit, vuln_type, freshness, it["source"], pr, ui, it["text"])
             conn.execute(
                 "INSERT OR IGNORE INTO vulns (key,cve_id,source,title,link,summary,reason,vuln_type,category,freshness,freshness_reason,pushed,created_at,cve_published,severity,cvss,cvss_vector,cvss_pr,cvss_ui) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -511,7 +511,7 @@ def _cmd_rescore_inner():
                 category = classify_category(vuln_type, text, reason)
 
             new_pushed = _initial_pushed(
-                hit, vuln_type, freshness, source, cvss_pr, cvss_ui)
+                hit, vuln_type, freshness, source, cvss_pr, cvss_ui, text)
             if reason != old_reason or new_pushed != old_pushed or cve_pub:
                 conn.execute("UPDATE vulns SET reason=?, vuln_type=?, category=?, freshness=?, freshness_reason=?, pushed=?, cve_published=COALESCE(?,cve_published) WHERE key=?",
                             (reason, vuln_type, category, freshness, fresh_reason, new_pushed, cve_pub, key))

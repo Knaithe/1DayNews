@@ -97,6 +97,7 @@ def score(text):
 2. **`vuln_type in ("RCE", "bypass")`** — SQLi / 路径遍历读文件 / 硬编码凭据 / 纯密码学等（`other`）只入库不推送
 3. 源不是 GitHub / PoC-GitHub  
 4. `cvss_pr == "N"`（未知 PR 不推，等 NVD 回填）  
+   **例外**：PR:L 但标题/摘要命中 `_HARDCODED_CRED_RE`（hardcoded/default password、默认密码/口令、硬编码凭据等）视为事实未授权，放行——硬编码默认密码等于人人都能"登录"（如 CVE-2026-63732 9router RCE）。regex 路径、LLM 路径与 `init_db` 启动锁三处同一规则
 5. `cvss_ui` 为 `N` 或未知（`R` 锁 0）  
 6. 有 LLM 时：还要 `llm_verdict == confirmed`，且 `llm_verified=1` 才发通道  
 

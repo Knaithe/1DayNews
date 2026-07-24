@@ -357,6 +357,18 @@ _WP_PLUGIN_RE = re.compile(
     re.I,
 )
 
+# Hardcoded/default credentials — a PR:L whose only "login" is a password every
+# fresh install ships with (e.g. 9router's hardcoded default password 123456) is
+# effectively unauthenticated. The push gate treats such PR:L as PR=N.
+_HARDCODED_CRED_RE = re.compile(
+    r"hard[- ]?coded\w*\s+(?:default\s+)?(?:admin\s+|root\s+)?"
+    r"(?:password|passwd|credentials?|secret)"
+    r"|(?:factory[- ]?default|default)\s+(?:admin\s+|root\s+)?"
+    r"(?:password|passwd|credentials?)"
+    r"|默认(?:密码|口令|凭据)|硬编码(?:密码|凭据|口令)",
+    re.I)
+
+
 # Unambiguous RCE indicators. If any is present, the noise EXCLUDE filters (XSS/
 # CSRF/SSRF/info-disclosure/DoS) are bypassed — an XSS->RCE or "RCE ... SSRF"
 # chain is still RCE regardless of which term appears first or which is stronger.

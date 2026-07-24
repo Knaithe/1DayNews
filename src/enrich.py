@@ -423,11 +423,11 @@ def _apply_llm_result(conn, rec, verdict, notes, llm_vt):
     through the unchanged _resolve_pushed hard gates.
     """
     eff_vt = rec[_E_VT] or llm_vt
+    text = f"{rec[_E_TITLE] or ''}\n{rec[_E_SUM] or ''}"
     pushed_val = _resolve_pushed(
-        verdict, rec[_E_FRESH], rec[_E_SRC], rec[_E_PR], rec[_E_UI], eff_vt)
+        verdict, rec[_E_FRESH], rec[_E_SRC], rec[_E_PR], rec[_E_UI], eff_vt, text)
     if llm_vt and not rec[_E_VT]:
-        cat = classify_category(
-            llm_vt, f"{rec[_E_TITLE] or ''}\n{rec[_E_SUM] or ''}", rec[_E_REASON])
+        cat = classify_category(llm_vt, text, rec[_E_REASON])
         conn.execute(
             "UPDATE vulns SET llm_verified=1, llm_verdict=?, llm_notes=?, pushed=?, "
             "vuln_type=?, category=? WHERE key=?",
@@ -485,7 +485,8 @@ def _cmd_enrich_inner(dry=False):
                         for rec in records:
                             pushed_val = _resolve_pushed(
                                 "confirmed", rec[_E_FRESH], rec[_E_SRC],
-                                rec[_E_PR], rec[_E_UI], rec[_E_VT])
+                                rec[_E_PR], rec[_E_UI], rec[_E_VT],
+                                f"{rec[_E_TITLE] or ''}\n{rec[_E_SUM] or ''}")
                             conn.execute(
                                 "UPDATE vulns SET llm_verified=1, llm_verdict='confirmed', "
                                 "llm_notes='auto: high-trust + CVSS>=9.0', pushed=? WHERE key=?",

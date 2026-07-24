@@ -41,6 +41,66 @@ def test_authenticated_pr_high_still_blocked():
     assert vm._resolve_pushed("confirmed", "1day", "GHSA", "H", None, "RCE") == 0
 
 
+# --- hardcoded/default-credential exception: such PR:L is effectively unauthenticated ---
+
+_HARDCODED_TEXT = ("9router 0.4.59 contains a chain of vulnerabilities: a hardcoded "
+                   "default password (123456) that authenticates any fresh installation")
+_PLAIN_TEXT = "Some product has an authenticated command injection after admin login"
+
+
+def test_pr_low_hardcoded_password_pushes():
+    # PR:L but the only "login" is a hardcoded default password → effectively unauth
+    assert vm._resolve_pushed("confirmed", "1day", "GHSA", "L", None, "RCE", _HARDCODED_TEXT) == 1
+    assert vm._resolve_pushed("confirmed", "1day", "GHSA", "L", None, "bypass", _HARDCODED_TEXT) == 1
+
+
+def test_pr_low_without_hardcoded_text_still_blocked():
+    assert vm._resolve_pushed("confirmed", "1day", "GHSA", "L", None, "RCE", _PLAIN_TEXT) == 0
+    # text omitted → conservative: still blocked
+    assert vm._resolve_pushed("confirmed", "1day", "GHSA", "L", None, "RCE") == 0
+
+
+def test_pr_high_blocked_even_with_hardcoded_text():
+    assert vm._resolve_pushed("confirmed", "1day", "GHSA", "H", None, "RCE", _HARDCODED_TEXT) == 0
+
+
+def test_regex_gate_hardcoded_exception(monkeypatch):
+    import src.config as cfg
+    monkeypatch.setattr(cfg, "DEEPSEEK_API_KEY", "")
+    monkeypatch.setattr(cfg, "OPENAI_API_KEY", "")
+    assert vm._regex_push_candidate(True, "RCE", "1day", "GHSA", "L", None, _HARDCODED_TEXT) is True
+    assert vm._regex_push_candidate(True, "RCE", "1day", "GHSA", "L", None, _PLAIN_TEXT) is False
+
+
+def test_init_db_pr_lock_keeps_hardcoded_cred(tmp_path, monkeypatch):
+    """startup PR lock must not un-push PR:L records whose only login is a
+    hardcoded/default credential — but still un-pushes genuinely authenticated ones."""
+    import sqlite3
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(vm, "DB_FILE", db)
+    import src.db as dbmod
+    monkeypatch.setattr(dbmod, "DB_FILE", db)
+    conn = sqlite3.connect(str(db))
+    vm.init_db(conn)
+    for key, title, pr in [
+        ("keep",  "9router hardcoded default password (123456) allows RCE", "L"),
+        ("drop",  "authenticated admin command injection after login", "L"),
+        ("dropH", "hardcoded default password but PR:H", "H"),
+    ]:
+        conn.execute(
+            "INSERT INTO vulns (key,cve_id,source,title,reason,vuln_type,freshness,"
+            "pushed,created_at,cvss_pr) VALUES (?,?,?,?,?,?,?,1,1000.0,?)",
+            (key, f"CVE-2026-{key}", "GHSA", title, "RCE+CVE", "RCE", "1day", pr),
+        )
+    conn.commit()
+    vm.init_db(conn)  # second run applies the locks to the rows above
+    rows = dict(conn.execute("SELECT key, pushed FROM vulns").fetchall())
+    conn.close()
+    assert rows["keep"] == 1
+    assert rows["drop"] == 0
+    assert rows["dropH"] == 0
+
+
 def test_user_interaction_required_still_blocked():
     # UI:R (requires user interaction) still locked 0
     assert vm._resolve_pushed("confirmed", "1day", "GHSA", "N", "R", "RCE") == 0
