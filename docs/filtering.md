@@ -34,7 +34,7 @@
 
 WP 插件/主题漏洞量极大、多为小装机量插件，对基础设施/边界设备监控是噪声。三层检测：
 
-1. **链接**：patchstack / wordfence / wpscan 漏洞库 URL（`score()` 同时检查 `text` + `link`）
+1. **链接**：patchstack / wordfence / wpscan 漏洞库 URL（`score()` 同时检查 `text` + `link`）。GHSA 源的 `link` 字段是**有意**用空格拼接的「公告 URL + 全部 references」（`sources.fetch_ghsa`，commit 3447066）——专供匹配层使用；卡片/推送消息等展示场景一律用 `scoring.first_url()` 取首个 URL
 2. **文本**：`WordPress` / `WooCommerce` / `Elementor` 字样
 3. **NVD/GitHub references**：Patchstack 系插件洞的描述从不提 "WordPress"（如 CVE-2026-59544 "Unauthenticated PHP Object Injection in Thrive Quiz Builder"），只有 reference URL 暴露生态。`_nvd_detail()` 提取 references 入缓存后，由 `_backfill_nvd_severity`（回填时命中 → `reason='excluded', pushed=0`）与 `_nvd_refs_wp_excluded()`（`_run` 入库 / `rescore` 复查）拦截，零额外 HTTP
 

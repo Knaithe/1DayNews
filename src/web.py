@@ -28,6 +28,11 @@ NOTE_MAX = 200   # per-card note char cap (api_note); injected into dashboard JS
 from flask import Flask, jsonify, request, abort, g
 from waitress import serve
 
+try:
+    from src.scoring import first_url
+except ImportError:
+    from scoring import first_url
+
 # ── Magic token auth ──
 _MAGIC_TOKEN = None  # set at startup (always loaded; public mode enforces on all methods)
 # True when bound to loopback without --public: GET is open, mutating methods need token.
@@ -409,7 +414,7 @@ def api_vulns():
     has_tags = "tags" in cols_avail
     return jsonify([{
         "key": r["key"], "id": r["cve_id"], "source": r["source"], "title": r["title"],
-        "url": r["link"], "summary": r["summary"], "reason": r["reason"],
+        "url": first_url(r["link"]), "summary": r["summary"], "reason": r["reason"],
         "vuln_type": r["vuln_type"] if has_vt else None,
         "category": r["category"] if has_cat else None,
         "note": r["note"] if has_note else None,

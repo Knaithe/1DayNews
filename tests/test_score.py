@@ -427,3 +427,20 @@ def test_write_fetch_state(tmp_path, monkeypatch):
     assert state["pushed"] == 5
     assert state["db_size"] == 500
     assert "ts" in state
+
+
+# --- first_url: display rendering of space-joined GHSA link fields ---
+
+def test_first_url_single_and_none():
+    from src.scoring import first_url
+    assert first_url(None) == ""
+    assert first_url("") == ""
+    assert first_url("https://github.com/advisories/GHSA-x") == "https://github.com/advisories/GHSA-x"
+
+
+def test_first_url_space_joined_takes_first():
+    from src.scoring import first_url
+    blob = ("https://github.com/advisories/GHSA-x "
+            "https://nvd.nist.gov/vuln/detail/CVE-2026-1 "
+            "https://patchstack.com/database/wordpress/vulnerability/x")
+    assert first_url(blob) == "https://github.com/advisories/GHSA-x"

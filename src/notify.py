@@ -17,7 +17,7 @@ try:
         ALERT_STATE, ALERT_COOLDOWN_SEC, PUSH_SLEEP_SEC, REQUEST_TIMEOUT,
         log, SESS,
     )
-    from src.scoring import CVE_RE, ADVISORY_RE
+    from src.scoring import CVE_RE, ADVISORY_RE, first_url
 except ImportError:
     from config import (
         TG_BOT_TOKEN, TG_CHAT_IDS, WECOM_WEBHOOK_KEY,
@@ -25,7 +25,7 @@ except ImportError:
         ALERT_STATE, ALERT_COOLDOWN_SEC, PUSH_SLEEP_SEC, REQUEST_TIMEOUT,
         log, SESS,
     )
-    from scoring import CVE_RE, ADVISORY_RE
+    from scoring import CVE_RE, ADVISORY_RE, first_url
 
 def tg_escape(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -54,7 +54,7 @@ def format_msg(it, reason):
     return (
         f"<b>[{tg_escape(it['source'])}]</b> <code>{tg_escape(tag)}</code>\n"
         f"<b>{tg_escape(it['title'][:220])}</b>\n"
-        f"{tg_escape(it['link'])}\n"
+        f"{tg_escape(first_url(it['link']))}\n"
         f"{tg_escape(it['summary'][:400])}\n"
         f"<i>match: {tg_escape(reason)}</i>"
     )[:4000]
@@ -115,7 +115,7 @@ def format_msg_wecom(it, reason):
     src = _md_escape(it["source"])
     title = _md_escape(it["title"][:220])
     summary = _md_escape(it["summary"][:400])
-    link = it["link"] or ""
+    link = first_url(it["link"])
     msg = (
         f"**{src}** {tag}\n"
         f"**{title}**\n"
@@ -131,7 +131,7 @@ def format_msg_dingtalk(it, reason):
     dt_title = f"{it['source']} {_extract_id(it['text'], it['link'])}"
     title_esc = _md_escape(it["title"][:220])
     summary = _md_escape(it["summary"][:400])
-    link = it["link"] or ""
+    link = first_url(it["link"])
     text = (
         f"**{src}** {tag}\n\n"
         f"**{title_esc}**\n\n"
@@ -144,9 +144,10 @@ def format_msg_dingtalk(it, reason):
 def format_msg_feishu(it, reason):
     tag = _extract_id(it["text"], it["link"])
     title = f"[{it['source']}] {tag}"
+    link = first_url(it["link"])
     content = [[
         {"tag": "text", "text": f"{it['title'][:220]}\n"},
-        {"tag": "a", "text": it["link"] or "N/A", "href": it["link"] or ""},
+        {"tag": "a", "text": link or "N/A", "href": link},
         {"tag": "text", "text": f"\n{it['summary'][:400]}\nmatch: {reason}"},
     ]]
     return title, content

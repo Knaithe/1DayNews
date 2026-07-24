@@ -381,3 +381,37 @@ def test_tg_retry_after_missing_parameters():
 def test_tg_retry_after_garbage_json():
     # non-JSON / unparseable body → 0, never an exception
     assert vm._tg_retry_after(_FakeResp(raise_json=True)) == 0
+
+
+# --- notify message rendering: space-joined GHSA link fields use first url only ---
+
+_BLOB_LINK = "https://github.com/advisories/GHSA-x https://nvd.nist.gov/vuln/detail/CVE-2026-1 https://b/y"
+_IT = {"source": "GHSA", "title": "t", "link": _BLOB_LINK,
+       "summary": "s", "text": "CVE-2026-1 t"}
+
+
+def test_format_msg_first_url_only():
+    from src.notify import format_msg
+    msg = format_msg(_IT, "RCE+CVE")
+    assert "https://github.com/advisories/GHSA-x" in msg
+    assert "https://b/y" not in msg
+
+
+def test_format_msg_wecom_first_url_only():
+    from src.notify import format_msg_wecom
+    msg = format_msg_wecom(_IT, "RCE+CVE")
+    assert "https://github.com/advisories/GHSA-x" in msg
+    assert "https://b/y" not in msg
+
+
+def test_format_msg_dingtalk_first_url_only():
+    from src.notify import format_msg_dingtalk
+    _t, text = format_msg_dingtalk(_IT, "RCE+CVE")
+    assert "https://github.com/advisories/GHSA-x" in text
+    assert "https://b/y" not in text
+
+
+def test_format_msg_feishu_first_url_only():
+    from src.notify import format_msg_feishu
+    _t, content = format_msg_feishu(_IT, "RCE+CVE")
+    assert content[0][1]["href"] == "https://github.com/advisories/GHSA-x"

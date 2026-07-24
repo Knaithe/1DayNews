@@ -291,6 +291,18 @@ ADVISORY_RE = re.compile(
     re.I,
 )
 
+
+def first_url(link):
+    """First token of a possibly space-joined `link` field.
+
+    GHSA items deliberately carry the advisory URL followed by space-joined
+    reference URLs in `link` (sources.fetch_ghsa — lets score()'s link layer
+    see patchstack/wordfence/wpscan references for WP detection). Good for
+    pattern matching, broken as a clickable link: use this for display /
+    message rendering, keep the full field for matching.
+    """
+    return link.split()[0] if link else ""
+
 # ================== FILTER ==================
 # Pre-compile patterns into single combined regexes for performance.
 _RCE_RE = re.compile("|".join(f"(?:{p})" for p in RCE_PATTERNS), re.I)
